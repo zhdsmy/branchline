@@ -125,7 +125,29 @@ func screenshotStates() []screenshotState {
 		{name: "apply-stash-dialog", setup: setupScreenshotApplyStashDialog, crop: screenshotCropDialog},
 		{name: "new-tag-dialog", setup: setupScreenshotNewTagDialog, crop: screenshotCropDialog},
 		{name: "file-reset-modal", setup: setupScreenshotFileResetModal, crop: screenshotCropDialog},
+		{name: "checkout-blocked-dialog", setup: setupScreenshotCheckoutBlockedDialog, crop: screenshotCropDialog},
 	}
+}
+
+// setupScreenshotCheckoutBlockedDialog blocks a double-click checkout of the
+// feature branch with a local edit in the way, so the capture shows the
+// dialog listing the file with both choices at their default.
+func setupScreenshotCheckoutBlockedDialog(t *testing.T) *testHarness {
+	t.Helper()
+	r, _ := buildRichRepo(t, "branchline")
+	// main.go differs between main and feature: editing it locally blocks
+	// the checkout of feature.
+	r.WriteFile("main.go", "package main\n\nfunc main() {\n\tprintln(greet(\"branchline\"))\n\tprintln(\"local edit in the way\")\n}\n")
+
+	h := newSnapshotApp(t)
+	h.openRepo(r.StoreRepo())
+	h.drain()
+	doubleClick(t, h.ui, "feature")
+	h.drain()
+	if !h.ui.HasText("Checking out 'feature' would overwrite:") || !h.ui.HasText("Stash local changes, check out, then reapply them") {
+		t.Fatalf("checkout-blocked dialog missing target line or choices; texts=%q", h.ui.Texts())
+	}
+	return h
 }
 
 func TestUIScreenshots(t *testing.T) {
@@ -1028,8 +1050,8 @@ func TestScreenshotGoldenBudget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("glob screenshot baselines: %v", err)
 	}
-	if len(entries) != 38 {
-		t.Fatalf("screenshot baseline PNG count = %d, want 38", len(entries))
+	if len(entries) != 40 {
+		t.Fatalf("screenshot baseline PNG count = %d, want 40", len(entries))
 	}
 	var total int64
 	for _, path := range entries {

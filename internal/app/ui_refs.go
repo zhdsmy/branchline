@@ -88,6 +88,7 @@ func (a *app) refsSidebar(c *ui.Context) {
 	a.rebaseDialog(c)
 	a.renameBranchDialog(c)
 	a.checkoutSyncDialog(c)
+	a.checkoutBlockedDialog(c)
 	a.remoteBranchMenuDialogs(c)
 	a.remoteDialogs(c)
 	a.branchCreateModals(c)
@@ -171,7 +172,10 @@ func (a *app) branchRow(c *ui.Context, br git.Branch, inflight bool) {
 	})
 	if row.DoubleClicked() && !br.Current {
 		name := br.Name
-		a.session.do("Checkout "+name, func(r *git.Repo) error {
+		a.checkoutOfferingStash("Checkout "+name, name, func(r *git.Repo, force bool) error {
+			if force {
+				return r.CheckoutForce(name)
+			}
 			return r.Checkout(name)
 		})
 	}

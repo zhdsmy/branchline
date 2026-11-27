@@ -168,8 +168,9 @@ func TestBranchDoubleClickCheckout(t *testing.T) {
 }
 
 // Double-clicking a branch whose checkout would overwrite uncommitted local
-// changes fails with Git's error shown in the UI: the current branch stays
-// checked out and the uncommitted file content is untouched.
+// changes opens the dialog offering to stash or discard them instead of an
+// error banner. Canceling it leaves the current branch checked out and the
+// uncommitted file content untouched.
 func TestBranchDoubleClickCheckoutConflict(t *testing.T) {
 	repo := setupSidebarRepo(t, "refs-checkout-conflict")
 	// conflicting.txt exists on both branches with different content.
@@ -190,6 +191,12 @@ func TestBranchDoubleClickCheckoutConflict(t *testing.T) {
 
 	doubleClickCheckout(t, h, "feature")
 
+	// The dialog opens with the file in the way, instead of an error banner.
+	assertCheckoutBlockedPanel(t, h, "feature", []string{"conflict.txt"}, nil)
+
+	cancelCheckoutBlocked(t, h)
+	h.drain()
+
 	if got := currentBranch(t, repo); got != "main" {
 		t.Fatalf("branch after conflicting checkout = %q, want main (unchanged)", got)
 	}
@@ -200,20 +207,11 @@ func TestBranchDoubleClickCheckoutConflict(t *testing.T) {
 	if string(data) != "local uncommitted edits\n" {
 		t.Fatalf("uncommitted content = %q, want preserved %q", string(data), "local uncommitted edits\n")
 	}
-	if err := h.app.session.ActionErr(); err == nil {
-		t.Fatal("checkout conflict produced no ActionErr")
-	} else if !strings.Contains(err.Error(), "conflict.txt") && !strings.Contains(strings.ToLower(err.Error()), "local changes") {
-		t.Fatalf("ActionErr = %q, want git checkout conflict wording", err)
-	}
-	// The error is not only on the session: the toolbar status shows it.
-	if _, ok := h.ui.AccessByRole(ui.RoleStatus, "Repository Error"); !ok {
-		t.Fatalf("no Repository Error status after checkout conflict; texts=%q", h.ui.Texts())
-	}
-	if !h.ui.HasText("conflict.txt") {
-		t.Fatalf("conflicting file name not visible in the UI; texts=%q", h.ui.Texts())
+	if _, ok := h.ui.AccessByRole(ui.RoleStatus, "Repository Error"); ok {
+		t.Fatalf("Repository Error status after the canceled checkout; texts=%q", h.ui.Texts())
 	}
 	if row, ok := findAccessNode(t, h.ui, "main"); !ok || !row.Selected {
-		t.Fatalf("main row after failed checkout Selected = %+v, want still selected", row)
+		t.Fatalf("main row after the canceled checkout Selected = %+v, want still selected", row)
 	}
 }
 
@@ -761,10 +759,17 @@ func TestBranchDoubleClickCheckoutLoopbackSSH(t *testing.T) {
 	}
 }
 
-// A conflicting double-click checkout on a loopback SSH repository fails
-// with the error shown, the server stays on the original branch, and the
-// uncommitted file content is untouched.
+// A conflicting double-click checkout on a loopback SSH repository opens
+// the dialog offering to stash or discard the changes instead of an error
+// banner. Canceling leaves the server on the original branch with the
+// uncommitted content untouched. Repeating the checkout with the stash
+// choice moves the server to the branch: the file's single line differs on
+// all three sides of the reapply, so the restore conflicts as designed —
+// the edit survives inside the conflict markers and stays in the stash
+// list, which the error banner says.
 func TestBranchCheckoutConflictLoopbackSSH(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("SSH_AUTH_SOCK", "")
 	repo, srv := loopbackSSHRepo(t)
 	// conflicting content on main and feature.
 	srv.WriteFile(t, repo.Path, "conflict.txt", []byte("main version\n"))
@@ -784,23 +789,51 @@ func TestBranchCheckoutConflictLoopbackSSH(t *testing.T) {
 
 	doubleClickCheckout(t, h, "feature")
 
+	// The dialog opens with the file in the way, instead of an error banner.
+	assertCheckoutBlockedPanel(t, h, "feature", []string{"conflict.txt"}, nil)
+
+	cancelCheckoutBlocked(t, h)
+	h.drain()
+
 	got := srv.RunGit(t, repo.Path, "rev-parse", "--abbrev-ref", "HEAD")
 	if got != "main" {
-		t.Fatalf("SSH branch after conflicting checkout = %q, want main unchanged", got)
+		t.Fatalf("SSH branch after the canceled checkout = %q, want main unchanged", got)
 	}
 	content := srv.ReadFile(t, repo.Path, "conflict.txt")
 	if string(content) != "server uncommitted edits\n" {
 		t.Fatalf("SSH uncommitted content = %q, want preserved", string(content))
 	}
-	if err := h.app.session.ActionErr(); err == nil {
-		t.Fatal("SSH checkout conflict produced no ActionErr")
+	if _, ok := h.ui.AccessByRole(ui.RoleStatus, "Repository Error"); ok {
+		t.Fatalf("Repository Error status after the canceled SSH checkout; texts=%q", h.ui.Texts())
 	}
-	if _, ok := h.ui.AccessByRole(ui.RoleStatus, "Repository Error"); !ok {
-		t.Fatalf("no Repository Error status after SSH checkout conflict; texts=%q", h.ui.Texts())
+
+	// Again with the stash choice: the checkout itself succeeds. The edit's
+	// line is different on all three sides of the reapply, so the merge of
+	// the stash conflicts — the designed outcome keeps the changes in the
+	// stash list and inside the file's conflict markers.
+	doubleClickCheckout(t, h, "feature")
+	assertCheckoutBlockedPanel(t, h, "feature", []string{"conflict.txt"}, nil)
+	clickStashAndCheckout(t, h)
+
+	if got := srv.RunGit(t, repo.Path, "rev-parse", "--abbrev-ref", "HEAD"); got != "feature" {
+		t.Fatalf("SSH branch after stash and checkout = %q, want feature — the checkout itself succeeded", got)
 	}
-	if !h.ui.HasText("conflict.txt") {
-		t.Fatalf("conflicting file name not visible in the UI after SSH conflict; texts=%q", h.ui.Texts())
+	content = srv.ReadFile(t, repo.Path, "conflict.txt")
+	if !strings.Contains(string(content), "server uncommitted edits") {
+		t.Fatalf("SSH conflicted content = %q, want the uncommitted edit surviving inside the markers", string(content))
 	}
+	if !strings.Contains(string(content), "feature version") {
+		t.Fatalf("SSH conflicted content = %q, want the branch's version inside the markers", string(content))
+	}
+	if out := strings.TrimSpace(srv.RunGit(t, repo.Path, "stash", "list")); out == "" {
+		t.Fatal("SSH stash list is empty after the conflicting restore — the changes must stay there")
+	}
+	if err := h.app.session.ActionErr(); err == nil || !strings.Contains(err.Error(), "stash list") {
+		t.Fatalf("ActionErr after the conflicting restore = %v, want it to say the changes remain in the stash list", err)
+	}
+	srv.RunGit(t, repo.Path, "reset", "-q", "--hard")
+	srv.RunGit(t, repo.Path, "checkout", "-q", "main")
+	srv.RunGit(t, repo.Path, "stash", "drop", "stash@{0}")
 }
 
 // The New Branch dialog creates the branch on the loopback SSH server and
