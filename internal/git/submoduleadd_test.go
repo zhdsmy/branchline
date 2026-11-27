@@ -23,6 +23,12 @@ func TestSubmoduleFolder(t *testing.T) {
 // A submodule that has a submodule of its own: only a recursive add
 // fetches the inner one.
 func TestSubmoduleAddAtFetchesNestedSubmodulesWhenAsked(t *testing.T) {
+	// The fixture's nested submodule URL is a local path of this test.
+	// Git refuses the file transport for it by default, so the test
+	// process allows it through GIT_CONFIG_COUNT, never a config file.
+	t.Setenv("GIT_CONFIG_COUNT", "1")
+	t.Setenv("GIT_CONFIG_KEY_0", "protocol.file.allow")
+	t.Setenv("GIT_CONFIG_VALUE_0", "always")
 	inner := initRepo(t)
 	writeFile(t, inner, "inner.txt", "inner\n")
 	gitRun(t, inner, "add", ".")
