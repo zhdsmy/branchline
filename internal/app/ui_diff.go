@@ -49,6 +49,14 @@ type diffRequest struct {
 	// diff -w. Load copies the session's current choice into every request on
 	// the UI thread so the background worker reads no live state.
 	IgnoreSpace bool
+	// EntireFile asks for a diff covering the whole file rather than only the
+	// changes and their context, copied from the session's choice as
+	// IgnoreSpace is.
+	EntireFile bool
+	// ContextLines is how many unchanged lines show around a change, as git
+	// diff -U; it applies where EntireFile does not cover them all. Load
+	// copies it from the session's choice as IgnoreSpace.
+	ContextLines int
 }
 
 func commitFileDiffRequest(commit git.Commit, file git.FileChange) diffRequest {
@@ -100,7 +108,9 @@ func (r diffRequest) key() string {
 		string([]byte{r.File.Status}) + "\x00" +
 		strconv.FormatBool(r.File.Staged) + "\x00" +
 		r.Revision + "\x00" +
-		strconv.FormatBool(r.IgnoreSpace)
+		strconv.FormatBool(r.IgnoreSpace) + "\x00" +
+		strconv.FormatBool(r.EntireFile) + "\x00" +
+		strconv.Itoa(r.ContextLines)
 }
 
 func (r diffRequest) title() string {
@@ -177,8 +187,9 @@ func (d *diffPanel) SetLayout(l editor.DiffLayout) {
 }
 
 // Load requests the diff for req via sessionRead under scope. The session's
-// current ignore-whitespace choice is copied into the request on the UI
-// thread, so a changed choice counts as a changed request and reloads.
+// current diff choices — ignoring whitespace, the entire file, the context
+// line count — are copied into the request on the UI thread, so a changed
+// choice counts as a changed request and reloads.
 // Calling Load repeatedly with an unchanged request on the same repository
 // generation is a no-op, so callers can synchronize selection safely without
 // triggering loops. When the selection changes, sessionRead discards any
@@ -189,6 +200,8 @@ func (d *diffPanel) Load(s *repoSession, scope string, req diffRequest) bool {
 		return false
 	}
 	req.IgnoreSpace = s.IgnoreSpace()
+	req.EntireFile = s.DiffEntireFile()
+	req.ContextLines = s.DiffContextLines()
 	gen := s.Generation()
 	key := req.key()
 	if d.repoGen == gen && d.loadedKey == key {
@@ -199,13 +212,15 @@ func (d *diffPanel) Load(s *repoSession, scope string, req diffRequest) bool {
 
 // Reload forces a fresh background load of the current request, for example
 // when the user clicks Retry after a transient error. The session's current
-// ignore-whitespace choice is applied, as in Load.
+// diff choices are applied, as in Load.
 func (d *diffPanel) Reload(s *repoSession, scope string) bool {
 	if s == nil || !s.HasRepo() || !d.req.valid() {
 		return false
 	}
 	req := d.req
 	req.IgnoreSpace = s.IgnoreSpace()
+	req.EntireFile = s.DiffEntireFile()
+	req.ContextLines = s.DiffContextLines()
 	return d.startLoad(s, scope, req, req.key(), s.Generation())
 }
 
@@ -279,7 +294,7 @@ func (d *diffPanel) startLoad(s *repoSession, scope string, req diffRequest, key
 			KeepScrollbars: true,
 		}
 		st.SetPatch(res.patch)
-		applyDiffDisplayPrefs(st, s.Settings())
+		applyDiffDisplayPrefs(st, s.Settings(), s.DiffWrap())
 		d.patch = res.patch
 		d.state = st
 		d.added, d.deleted = st.Stats()
@@ -295,7 +310,7 @@ func readDiffPatch(repo *git.Repo, req diffRequest, limit int) (diffLoadResult, 
 		raw string
 		err error
 	)
-	opts := git.DiffOptions{IgnoreSpace: req.IgnoreSpace}
+	opts := git.DiffOptions{IgnoreSpace: req.IgnoreSpace, Context: diffGitContext(req)}
 	switch req.Kind {
 	case diffCommitFile:
 		raw, err = repo.CommitFileDiffOpts(req.Commit, req.File, opts)
@@ -356,11 +371,14 @@ func hasBinaryDiffMarker(raw string) bool {
 
 // applyDiffDisplayPrefs applies the display preferences to a diff state: the
 // code font size — zero keeps the viewer's built-in default — the tab width
-// the columns expand with — zero the framework default of 4 — and whether
-// changed lines are marked with + and - instead of bars. The state is updated
-// where it is built and again where it renders, so a changed preference shows
-// in an already open diff on the next frame.
-func applyDiffDisplayPrefs(st *editor.DiffState, prefs store.Settings) {
+// the columns expand with — zero the framework default of 4 — whether
+// changed lines are marked with + and - instead of bars, and whether long
+// lines wrap rather than scroll sideways. The wrap choice lives on the
+// session rather than in the persisted settings the other preferences read
+// from, so callers pass it beside them. The state is updated where it is
+// built and again where it renders, so a changed preference shows in an
+// already open diff on the next frame.
+func applyDiffDisplayPrefs(st *editor.DiffState, prefs store.Settings, wrap bool) {
 	if sz := normalizedDiffFontSize(prefs); sz > 0 {
 		st.Font = ui.Font{Family: "monospace", Size: sz}
 	} else {
@@ -372,6 +390,7 @@ func applyDiffDisplayPrefs(st *editor.DiffState, prefs store.Settings) {
 	} else {
 		st.Indicators = editor.DiffBars
 	}
+	st.Wrap = wrap
 }
 
 // View renders the shared diff header (file title, change badge, stats,
@@ -381,10 +400,13 @@ func (d *diffPanel) View(c *ui.Context, s *repoSession, scope string, p palette)
 		d.resetContent()
 		d.repoGen = s.Generation()
 	}
-	// The session's ignore-whitespace choice is part of the request key, so
-	// a change of it — from the header's own toggle or the Settings window —
-	// reloads the active diff on the frame the panel renders in.
-	if s != nil && d.req.valid() && !d.loading && d.req.IgnoreSpace != s.IgnoreSpace() {
+	// The session's diff choices are part of the request key, so a change of
+	// one — from the header's own controls or the Settings window — reloads
+	// the active diff on the frame the panel renders in.
+	if s != nil && d.req.valid() && !d.loading &&
+		(d.req.IgnoreSpace != s.IgnoreSpace() ||
+			d.req.EntireFile != s.DiffEntireFile() ||
+			d.req.ContextLines != s.DiffContextLines()) {
 		d.Load(s, scope, d.req)
 	}
 
@@ -400,8 +422,9 @@ func (d *diffPanel) View(c *ui.Context, s *repoSession, scope string, p palette)
 }
 
 // The diff header's compactness levels, richest first: the change
-// statistics hide before the file badge, and the controls never hide. The
-// title shrinks and ellipsizes on its own at every level.
+// statistics hide before the single row gives way to two, where the toolbar
+// choices move under the title so every control keeps its room. The title
+// shrinks and ellipsizes on its own at every level.
 const (
 	diffHeaderFull = iota
 	diffHeaderNoStats
@@ -409,8 +432,8 @@ const (
 )
 
 // diffHeaderLevelFor picks the richest level whose fixed content fits
-// avail DIPs of header content width. controls is the width the two
-// controls always take; statsExtra and badgeExtra are the width the
+// avail DIPs of header content width. controls is the width the controls
+// always take in one row; statsExtra and badgeExtra are the width the
 // statistics and the badge add when they render, each including the row
 // gap they bring. The level depends only on avail and the content, so a
 // width that stays put keeps the same layout frame after frame.
@@ -430,19 +453,24 @@ func diffHeaderLevelFor(avail, controls, statsExtra, badgeExtra float32) int {
 
 // diffHeaderLevel measures the header's fixed content in the fonts it
 // renders with and picks the level fitting avail. The controls' width is
-// the -w button plus the Split/Unified capsule with its own padding and
-// gap; the extras include the row gap each optional item adds beside its
-// own width.
-func diffHeaderLevel(c *ui.Context, avail float32, badge string, statsShown bool, added, deleted int) int {
+// the toolbar's icon buttons while a diff is selected, the -w button and
+// the Split/Unified capsule with its own padding and gap; the extras
+// include the row gap each optional item adds beside its own width.
+func diffHeaderLevel(c *ui.Context, avail float32, badge string, statsShown bool, added, deleted int, tools bool) int {
 	measure := func(text string, size float32, weight int) float32 {
 		w, _ := c.MeasureText(0, ui.Span{Text: text, Size: size, Weight: weight})
 		return w
 	}
+	gaps := float32(3 * 8) // row gaps of the items that always render
 	controls := measure("-w", 11.5, 500) + 10 +
 		measure("Split", 11.5, 500) + 16 +
 		measure("Unified", 11.5, 500) + 16 +
-		4 + 2 + // capsule padding and inner gap
-		3*8 // row gaps of the four items that always render
+		4 + 2 // capsule padding and inner gap
+	if tools {
+		controls += diffToolbarGroupWidth()
+		gaps += 8
+	}
+	controls += gaps
 	statsExtra := float32(0)
 	if statsShown {
 		if added > 0 {
@@ -464,78 +492,131 @@ func diffHeaderLevel(c *ui.Context, avail float32, badge string, statsShown bool
 }
 
 func (d *diffPanel) header(c *ui.Context, s *repoSession, scope string, p palette) {
-	row := ui.Row(c.Key("diff-header")).
-		Height(36).
+	box := ui.Column(c.Key("diff-header")).
 		FillWidth().
 		PaddingX(12).
-		Gap(8).
-		AlignItems(ui.Center).
 		Label("Diff Header")
 
-	// The row's bounds are the previous frame's: empty on the first frame,
-	// for which the level reads as full, settling once the row has laid
-	// out. Its width follows the panel, not the content, so the level does
-	// not feed back into itself.
+	// The header's bounds are the previous frame's: empty on the first
+	// frame, for which the level reads as full, settling once the header
+	// has laid out. Its width follows the panel, not the content, so the
+	// level does not feed back into itself.
 	avail := float32(0)
-	if b := row.Bounds(); b.W > 0 {
+	if b := box.Bounds(); b.W > 0 {
 		avail = b.W - 24 // PaddingX(12) on both sides
 	}
 	badge := d.req.badge()
 	statsShown := d.state != nil && (d.added > 0 || d.deleted > 0)
-	level := diffHeaderLevel(c, avail, badge, statsShown, d.added, d.deleted)
+	// The toolbar choices edit what a diff shows, so they render only while
+	// a diff is selected: the empty header stays the quiet placeholder the
+	// pages without a selection have always shown.
+	tools := d.req.valid()
+	level := diffHeaderLevel(c, avail, badge, statsShown, d.added, d.deleted, tools)
 
-	row.Children(func() {
-		title := d.req.title()
-		if title == "" {
-			title = "Diff"
-		}
-		ui.Text(c, title).
-			FontSize(12.5).
-			FontWeight(600).
-			TextColor(p.text).
-			SingleLine().
-			Ellipsis("…").
-			Shrink(1).
-			MinWidth(0)
-
-		if badge != "" && level < diffHeaderCompact {
-			ui.Box(c).
-				Padding(2, 6).
-				Radius(5).
-				Background(p.hover).
-				Shrink(0).
+	if level == diffHeaderCompact && tools {
+		// Two rows: the title, badge and layout choice keep the first, and
+		// the content choices — the toolbar buttons and -w — move to the
+		// second. At the minimum window width one row can no longer hold
+		// them all, and clipping a control is worse than a taller header.
+		box.Height(58).Gap(2).Children(func() {
+			ui.Row(c.Key("diff-header-title")).
+				Height(28).
+				FillWidth().
+				Gap(8).
+				AlignItems(ui.Center).
 				Children(func() {
-					ui.Text(c, badge).FontSize(11).FontWeight(500).TextColor(p.muted).SingleLine()
+					d.headerLeading(c, level, badge, statsShown, p)
+					ui.Spacer(c)
+					d.layoutCapsule(c, p)
 				})
-		}
+			ui.Row(c.Key("diff-header-options")).
+				Height(26).
+				FillWidth().
+				Gap(8).
+				AlignItems(ui.Center).
+				Children(func() {
+					d.diffOptionsGroup(c, s, scope, p)
+					d.ignoreSpaceBtn(c, s, scope, p)
+				})
+		})
+		return
+	}
 
-		if statsShown && level == diffHeaderFull {
-			ui.Row(c).Gap(6).AlignItems(ui.Center).Shrink(0).Children(func() {
-				if d.added > 0 {
-					ui.Text(c, fmt.Sprintf("+%d", d.added)).FontSize(11.5).FontWeight(600).TextColor(c.Theme().Success).SingleLine()
-				}
-				if d.deleted > 0 {
-					ui.Text(c, fmt.Sprintf("-%d", d.deleted)).FontSize(11.5).FontWeight(600).TextColor(p.danger).SingleLine()
-				}
-			})
-		}
-
-		ui.Spacer(c)
-
-		d.ignoreSpaceBtn(c, s, scope, p)
-
-		ui.Row(c.Key("diff-layout-toggle")).
-			Padding(2).
-			Gap(2).
-			Radius(7).
-			Background(p.hover).
+	box.Height(36).Children(func() {
+		ui.Row(c.Key("diff-header-row")).
+			Grow(1).
+			FillWidth().
+			Gap(8).
 			AlignItems(ui.Center).
-			Shrink(0).
 			Children(func() {
-				d.layoutBtn(c, "Split", editor.DiffSplit, p)
-				d.layoutBtn(c, "Unified", editor.DiffUnified, p)
+				d.headerLeading(c, level, badge, statsShown, p)
+
+				ui.Spacer(c)
+
+				if tools {
+					d.diffOptionsGroup(c, s, scope, p)
+				}
+
+				d.ignoreSpaceBtn(c, s, scope, p)
+
+				d.layoutCapsule(c, p)
 			})
 	})
+}
+
+// headerLeading renders the diff header's identifying content: the file
+// title, which shrinks and ellipsizes, the change badge, and the change
+// statistics while the level has room for them.
+func (d *diffPanel) headerLeading(c *ui.Context, level int, badge string, statsShown bool, p palette) {
+	title := d.req.title()
+	if title == "" {
+		title = "Diff"
+	}
+	ui.Text(c, title).
+		FontSize(12.5).
+		FontWeight(600).
+		TextColor(p.text).
+		SingleLine().
+		Ellipsis("…").
+		Shrink(1).
+		MinWidth(0)
+
+	if badge != "" {
+		ui.Box(c).
+			Padding(2, 6).
+			Radius(5).
+			Background(p.hover).
+			Shrink(0).
+			Children(func() {
+				ui.Text(c, badge).FontSize(11).FontWeight(500).TextColor(p.muted).SingleLine()
+			})
+	}
+
+	if statsShown && level == diffHeaderFull {
+		ui.Row(c).Gap(6).AlignItems(ui.Center).Shrink(0).Children(func() {
+			if d.added > 0 {
+				ui.Text(c, fmt.Sprintf("+%d", d.added)).FontSize(11.5).FontWeight(600).TextColor(c.Theme().Success).SingleLine()
+			}
+			if d.deleted > 0 {
+				ui.Text(c, fmt.Sprintf("-%d", d.deleted)).FontSize(11.5).FontWeight(600).TextColor(p.danger).SingleLine()
+			}
+		})
+	}
+}
+
+// layoutCapsule renders the Split/Unified layout toggle the header ends with.
+func (d *diffPanel) layoutCapsule(c *ui.Context, p palette) {
+	ui.Row(c.Key("diff-layout-toggle")).
+		Padding(2).
+		Gap(2).
+		Radius(7).
+		Background(p.hover).
+		AlignItems(ui.Center).
+		Shrink(0).
+		Children(func() {
+			d.layoutBtn(c, "Split", editor.DiffSplit, p)
+			d.layoutBtn(c, "Unified", editor.DiffUnified, p)
+		})
 }
 
 // ignoreSpaceBtn renders the header's ignore-whitespace toggle. It is global
@@ -652,7 +733,7 @@ func (d *diffPanel) body(c *ui.Context, s *repoSession, scope string, p palette)
 	case d.state != nil:
 		d.state.Layout = d.layout
 		if s != nil {
-			applyDiffDisplayPrefs(d.state, s.Settings())
+			applyDiffDisplayPrefs(d.state, s.Settings(), s.DiffWrap())
 		}
 		editor.DiffView(c.Key("diff-view"), d.state).Grow(1).FillWidth().MinHeight(0)
 	default:

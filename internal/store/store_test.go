@@ -235,3 +235,60 @@ func TestRemoveFailureKeepsTheRepositoryAndItsTab(t *testing.T) {
 		t.Fatal("failed removal changed the file")
 	}
 }
+
+// The diff toolbar choices survive a store round trip: only the changed
+// lines, the context line count with its explicit-zero marker, and line
+// wrapping. A store that never saved them reads them at their zero values,
+// which is the entire-file default without migration.
+func TestDiffToolbarSettingsRoundTrip(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "repos.json")
+	s, err := Open(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := s.Settings(); got.DiffChangesOnly || got.DiffContextLines != 0 || got.DiffContextSaved || got.DiffWrap {
+		t.Fatalf("fresh store diff choices = %+v, want all zero", got)
+	}
+	settings := s.Settings()
+	settings.DiffChangesOnly = true
+	settings.DiffContextLines = 0
+	settings.DiffContextSaved = true
+	settings.DiffWrap = true
+	if err := s.SetSettings(settings); err != nil {
+		t.Fatal(err)
+	}
+
+	again, err := Open(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := again.Settings()
+	if !got.DiffChangesOnly {
+		t.Fatal("DiffChangesOnly did not survive the round trip")
+	}
+	if got.DiffContextLines != 0 || !got.DiffContextSaved {
+		t.Fatalf("explicit zero context lines = (%d, saved %v), want (0, true)", got.DiffContextLines, got.DiffContextSaved)
+	}
+	if !got.DiffWrap {
+		t.Fatal("DiffWrap did not survive the round trip")
+	}
+}
+
+// A settings struct holding only diff toolbar choices is no longer unset:
+// saving one such choice is what separates a configured installation from a
+// fresh one, whose defaults would otherwise overwrite the zero reading.
+func TestDiffToolbarChoicesCountAsSetSettings(t *testing.T) {
+	if !settingsUnset(Settings{}) {
+		t.Fatal("zero settings reported as set")
+	}
+	for name, v := range map[string]Settings{
+		"diffChangesOnly":       {DiffChangesOnly: true},
+		"diffContextSavedZero":  {DiffContextSaved: true},
+		"diffContextSavedCount": {DiffContextLines: 5, DiffContextSaved: true},
+		"diffWrap":              {DiffWrap: true},
+	} {
+		if settingsUnset(v) {
+			t.Fatalf("%s settings reported as unset", name)
+		}
+	}
+}

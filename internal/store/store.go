@@ -507,7 +507,17 @@ type Settings struct {
 	UpdateSubmodules bool   `json:"updateSubmodules,omitempty"`
 	PushAfterCommit  bool   `json:"pushAfterCommit,omitempty"`
 	IgnoreSpace      bool   `json:"ignoreSpace,omitempty"`
-	DateOrder        bool   `json:"dateOrder,omitempty"`
+	// DiffChangesOnly limits file diffs to the changed lines and their
+	// context. Unset, the diff header shows the entire file, so a store that
+	// predates the choice needs no migration.
+	DiffChangesOnly bool `json:"diffChangesOnly,omitempty"`
+	// DiffContextLines is how many unchanged lines show around a change, as
+	// git diff -U; DiffContextSaved marks it chosen, since 0 is a choice.
+	DiffContextLines int  `json:"diffContextLines,omitempty"`
+	DiffContextSaved bool `json:"diffContextSaved,omitempty"`
+	// DiffWrap wraps long diff lines rather than scrolling them sideways.
+	DiffWrap  bool   `json:"diffWrap,omitempty"`
+	DateOrder bool   `json:"dateOrder,omitempty"`
 	BranchSpace      string `json:"branchSpace,omitempty"` // "-", "_", or "" to leave spaces
 	RememberCheckout bool   `json:"rememberCheckout,omitempty"`
 	MarkDirtyTabs    bool   `json:"markDirtyTabs,omitempty"`
@@ -640,7 +650,7 @@ func (s *Settings) UnmarshalJSON(data []byte) error {
 
 func settingsUnset(v Settings) bool {
 	return v.LocalBranchSort == "" && v.RemoteBranchSort == "" && !v.AutoFetch && v.FetchMinutes == 0 && !v.FetchTags && !v.UpdateSubmodules &&
-		!v.PushAfterCommit && !v.IgnoreSpace && !v.DateOrder && v.BranchSpace == "" &&
+		!v.PushAfterCommit && !v.IgnoreSpace && !v.DiffChangesOnly && v.DiffContextLines == 0 && !v.DiffContextSaved && !v.DiffWrap && !v.DateOrder && v.BranchSpace == "" &&
 		!v.RememberCheckout && !v.MarkDirtyTabs && !v.CompactLabels &&
 		v.SubjectLow == 0 && !v.SubjectLowSaved && v.SubjectHigh == 0 && !v.SubjectHighSaved && v.PageGuide == 0 && !v.NoPageGuide && !v.ChangeMarks && !v.SpellCheck &&
 		v.AuthorName == "" && v.AuthorEmail == "" && !v.SignedOffBy && v.GitPath == "" && v.EnvPath == "" && !v.VerboseGit && !v.TraceGit && !v.TraceCurl && !v.TraceSSH && !v.TracePack && !v.TracePerf && v.Terminal == "" &&
