@@ -299,13 +299,13 @@ func (a *app) changesListRow(c *ui.Context, cache *changesListCache, row changes
 	case changesRowUnstaged:
 		a.changesFileRow(c, row.file, false)
 	case changesRowUnstagedEmpty:
-		a.changesFileEmptyHint(c, false)
+		a.changesFileEmptyHint(c, false, filtered && len(cache.ordinary) > 0)
 	case changesRowStagedHeader:
 		a.changesFileSectionHeader(c, true, cache.shownStaged, len(cache.staged), filtered)
 	case changesRowStaged:
 		a.changesFileRow(c, row.file, true)
 	case changesRowStagedEmpty:
-		a.changesFileEmptyHint(c, true)
+		a.changesFileEmptyHint(c, true, filtered && len(cache.staged) > 0)
 	}
 }
 
@@ -316,6 +316,6 @@ func (a *app) changesListRow(c *ui.Context, cache *changesListCache, row changes
 func (a *app) changesConflictHeaderFiltered(c *ui.Context, shown, total int) {
 	p := a.pal
 	ui.Row(c.Key("changes-section-header-conflicted")).Height(30).FillWidth().Padding(0, 2).Gap(6).AlignItems(ui.Center).Children(func() {
-		ui.Text(c, fmt.Sprintf("Conflicted %d of %d", shown, total)).FontSize(12).FontWeight(650).TextColor(p.danger).SingleLine()
+		ui.Text(c, fmt.Sprintf("Conflicted (%d of %d)", shown, total)).FontSize(12).FontWeight(650).TextColor(p.danger).SingleLine()
 	})
 }

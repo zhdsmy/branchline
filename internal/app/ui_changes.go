@@ -562,8 +562,9 @@ func (a *app) pruneFilteredSelection(cache *changesListCache) {
 // changesFileSectionHeader renders the title row of the Unstaged or Staged
 // section: its file count and the bulk action buttons of the section.
 // files is what the section shows, total the files it holds without the
-// filter. While the filter is active the count reads "shown of total" and
-// the bulk buttons act on, and speak of, the shown files alone.
+// filter. While the filter is active the count reads "(shown of total)"
+// and the bulk buttons act on, and speak of, the shown files alone; a
+// section the unfiltered status leaves empty keeps its plain "(0)".
 func (a *app) changesFileSectionHeader(c *ui.Context, staged bool, files []git.FileChange, total int, filtered bool) {
 	p := a.pal
 	title := "Unstaged"
@@ -571,8 +572,8 @@ func (a *app) changesFileSectionHeader(c *ui.Context, staged bool, files []git.F
 		title = "Staged"
 	}
 	count := fmt.Sprintf("%s (%d)", title, len(files))
-	if filtered {
-		count = fmt.Sprintf("%s %d of %d", title, len(files), total)
+	if filtered && total > 0 {
+		count = fmt.Sprintf("%s (%d of %d)", title, len(files), total)
 	}
 
 	ui.Row(c.Key("changes-section-header-"+title)).Height(30).FillWidth().Padding(0, 2).Gap(6).AlignItems(ui.Center).Children(func() {
@@ -641,15 +642,19 @@ func unstageBulkPaths(files []git.FileChange) []string {
 }
 
 // changesFileEmptyHint renders the rounded placeholder of an empty Unstaged
-// or Staged section.
-func (a *app) changesFileEmptyHint(c *ui.Context, staged bool) {
+// or Staged section. filteredOut is set when the section holds files the
+// filter hides: saying the working tree is clean would be wrong, so the
+// hint speaks of the filter instead.
+func (a *app) changesFileEmptyHint(c *ui.Context, staged bool, filteredOut bool) {
 	p := a.pal
 	title := "Unstaged"
 	if staged {
 		title = "Staged"
 	}
 	empty := "Working tree is clean"
-	if staged {
+	if filteredOut {
+		empty = "No matching files"
+	} else if staged {
 		empty = "No staged changes"
 	} else if len(a.session.Snapshot().Status.Staged) > 0 || a.session.Snapshot().Status.Conflicted() {
 		empty = "No unstaged changes"

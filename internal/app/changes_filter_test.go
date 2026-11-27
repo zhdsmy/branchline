@@ -63,7 +63,7 @@ func TestChangesFilterMatchesCaseOrigPathAndSpacing(t *testing.T) {
 	// Uppercase with surrounding space matches lowercase paths: the
 	// comparison folds case and trims the ends.
 	typeChangesFilter(t, h, " ALPHA ")
-	for _, text := range []string{"Unstaged 1 of 2", "Staged 0 of 1"} {
+	for _, text := range []string{"Unstaged (1 of 2)", "Staged (0 of 1)"} {
 		if !h.ui.HasText(text) {
 			t.Fatalf("filtered count %q missing; texts=%q", text, h.ui.Texts())
 		}
@@ -77,8 +77,8 @@ func TestChangesFilterMatchesCaseOrigPathAndSpacing(t *testing.T) {
 	if changeRowShown(h, "Staged newplace.txt") {
 		t.Fatal("newplace.txt must be hidden by a filter matching nothing of it")
 	}
-	if !h.ui.HasText("No staged changes") {
-		t.Fatalf("the emptied staged section keeps its empty hint; texts=%q", h.ui.Texts())
+	if !h.ui.HasText("No matching files") {
+		t.Fatalf("the emptied staged section must not claim No staged changes; texts=%q", h.ui.Texts())
 	}
 	if _, ok := h.ui.AccessByRole(ui.RoleButton, "Clear Filter"); !ok {
 		t.Fatalf("Clear Filter missing while the box holds text; texts=%q", h.ui.Texts())
@@ -87,19 +87,19 @@ func TestChangesFilterMatchesCaseOrigPathAndSpacing(t *testing.T) {
 	// A rename answers to the path it was renamed from, not only to where
 	// it is now.
 	typeChangesFilter(t, h, "oldname")
-	if !h.ui.HasText("Staged 1 of 1") {
+	if !h.ui.HasText("Staged (1 of 1)") {
 		t.Fatalf("rename matched by its original path does not show; texts=%q", h.ui.Texts())
 	}
 	if !changeRowShown(h, "Staged newplace.txt") {
 		t.Fatalf("newplace.txt row missing when filtering its original path; texts=%q", h.ui.Texts())
 	}
-	if !h.ui.HasText("Unstaged 0 of 2") || !h.ui.HasText("No unstaged changes") {
-		t.Fatalf("the emptied unstaged section keeps its hint; texts=%q", h.ui.Texts())
+	if !h.ui.HasText("Unstaged (0 of 2)") || !h.ui.HasText("No matching files") {
+		t.Fatalf("the emptied unstaged section must not claim unstaged changes are gone; texts=%q", h.ui.Texts())
 	}
 
 	// Nothing matching anywhere leaves both sections with title and hint.
 	typeChangesFilter(t, h, "zzz-no-such-file")
-	if !h.ui.HasText("Unstaged 0 of 2") || !h.ui.HasText("Staged 0 of 1") {
+	if !h.ui.HasText("Unstaged (0 of 2)") || !h.ui.HasText("Staged (0 of 1)") {
 		t.Fatalf("fully filtered counts missing; texts=%q", h.ui.Texts())
 	}
 	if changeRowShown(h, "Unstaged alpha-notes.txt") || changeRowShown(h, "Staged newplace.txt") {
@@ -147,7 +147,7 @@ func TestChangesFilterConflictedSectionFilters(t *testing.T) {
 	}
 
 	typeChangesFilter(t, h, "c-0000")
-	if !h.ui.HasText("Conflicted 1 of 2") {
+	if !h.ui.HasText("Conflicted (1 of 2)") {
 		t.Fatalf("filtered conflict count missing; texts=%q", h.ui.Texts())
 	}
 	if !changeRowShown(h, "Conflicted c-0000.txt") {
@@ -179,7 +179,7 @@ func TestChangesFilterStageAndUnstageShown(t *testing.T) {
 	h := openChangesHarness(t, repo)
 	typeChangesFilter(t, h, "match")
 
-	if !h.ui.HasText("Unstaged 2 of 3") || !h.ui.HasText("Staged 0 of 1") {
+	if !h.ui.HasText("Unstaged (2 of 3)") || !h.ui.HasText("Staged (0 of 1)") {
 		t.Fatalf("filtered counts missing; texts=%q", h.ui.Texts())
 	}
 	if _, ok := h.ui.AccessByRole(ui.RoleButton, "Stage All"); ok {
@@ -200,10 +200,10 @@ func TestChangesFilterStageAndUnstageShown(t *testing.T) {
 	if porcelain := repo.Git("status", "--porcelain", "--", "hidden.txt"); !strings.HasPrefix(porcelain, "??") {
 		t.Fatalf("hidden.txt porcelain = %q, want an untracked file", porcelain)
 	}
-	if !h.ui.HasText("Staged 2 of 3") {
+	if !h.ui.HasText("Staged (2 of 3)") {
 		t.Fatalf("staged count after Stage Shown missing; texts=%q", h.ui.Texts())
 	}
-	if !h.ui.HasText("Unstaged 0 of 1") {
+	if !h.ui.HasText("Unstaged (0 of 1)") {
 		t.Fatalf("unstaged count after Stage Shown missing; texts=%q", h.ui.Texts())
 	}
 
@@ -218,7 +218,7 @@ func TestChangesFilterStageAndUnstageShown(t *testing.T) {
 	if out := repo.Git("ls-files", "--", "staged-other.txt"); strings.TrimSpace(out) == "" {
 		t.Fatalf("staged-other.txt lost its index entry although the filter hides it; ls-files=%q", out)
 	}
-	if !h.ui.HasText("Unstaged 2 of 3") {
+	if !h.ui.HasText("Unstaged (2 of 3)") {
 		t.Fatalf("unstaged count after Unstage Shown missing; texts=%q", h.ui.Texts())
 	}
 }
@@ -268,7 +268,7 @@ func TestChangesFilterStageShownSkipsConflicted(t *testing.T) {
 	h := openChangesHarness(t, repo)
 	typeChangesFilter(t, h, "c-")
 
-	if !h.ui.HasText("Conflicted 1 of 1") || !h.ui.HasText("Unstaged 1 of 1") {
+	if !h.ui.HasText("Conflicted (1 of 1)") || !h.ui.HasText("Unstaged (1 of 1)") {
 		t.Fatalf("filtered counts missing; texts=%q", h.ui.Texts())
 	}
 
@@ -347,7 +347,7 @@ func TestChangesFilterSurvivesReloadAndClearsOnRepoSwitch(t *testing.T) {
 	}
 
 	typeChangesFilter(t, h, "alpha")
-	if !h.ui.HasText("Unstaged 1 of 2") {
+	if !h.ui.HasText("Unstaged (1 of 2)") {
 		t.Fatalf("filtered count missing before reload; texts=%q", h.ui.Texts())
 	}
 
@@ -356,14 +356,14 @@ func TestChangesFilterSurvivesReloadAndClearsOnRepoSwitch(t *testing.T) {
 	if got := h.app.changesView.filter; got != "alpha" {
 		t.Fatalf("filter after a reload = %q, want %q", got, "alpha")
 	}
-	if !h.ui.HasText("Unstaged 1 of 2") {
+	if !h.ui.HasText("Unstaged (1 of 2)") {
 		t.Fatalf("the filter stopped applying after a reload; texts=%q", h.ui.Texts())
 	}
 
 	repoA.WriteFile("alpha-2.txt", "a2\n")
 	h.app.session.Reload()
 	h.drain()
-	if !h.ui.HasText("Unstaged 2 of 3") {
+	if !h.ui.HasText("Unstaged (2 of 3)") {
 		t.Fatalf("the filter did not keep up with a changed snapshot; texts=%q", h.ui.Texts())
 	}
 
@@ -380,5 +380,58 @@ func TestChangesFilterSurvivesReloadAndClearsOnRepoSwitch(t *testing.T) {
 	}
 	if _, ok := h.ui.AccessByRole(ui.RoleButton, "Stage Shown"); ok {
 		t.Fatal("filtered bulk buttons survived the repository switch")
+	}
+}
+
+func TestChangesFilterFilteredOutSectionHints(t *testing.T) {
+	// A section whose files the filter hides says No matching files rather
+	// than claiming the working tree is clean, and a section holding no
+	// files at all keeps its plain "(0)" count and its usual hint, filter
+	// or not.
+	repo := newGitRepo(t, "changesfilter-hints")
+	repo.CommitFile("base.txt", "base\n", "initial")
+	repo.WriteFile("only-change.txt", "change\n")
+
+	h := openChangesHarness(t, repo)
+
+	typeChangesFilter(t, h, "zzz-no-match")
+	if !h.ui.HasText("Unstaged (0 of 1)") {
+		t.Fatalf("filtered-out unstaged count missing; texts=%q", h.ui.Texts())
+	}
+	if !h.ui.HasText("No matching files") {
+		t.Fatalf("the filtered-out unstaged section must say No matching files; texts=%q", h.ui.Texts())
+	}
+	if h.ui.HasText("Working tree is clean") {
+		t.Fatalf("files hidden by the filter claimed a clean working tree; texts=%q", h.ui.Texts())
+	}
+	if !h.ui.HasText("Staged (0)") {
+		t.Fatalf("an empty staged section must not count files under a filter; texts=%q", h.ui.Texts())
+	}
+	if h.ui.HasText("Staged (0 of 0)") {
+		t.Fatalf("the empty staged section counted zero of zero; texts=%q", h.ui.Texts())
+	}
+	if !h.ui.HasText("No staged changes") {
+		t.Fatalf("the always-empty staged section must keep its usual hint; texts=%q", h.ui.Texts())
+	}
+
+	// Committing the one file empties the unstaged section for real: the
+	// same filter then shows the clean-tree hints, because nothing is
+	// hidden anymore.
+	repo.Git("add", "-A")
+	repo.Git("commit", "-q", "-m", "commit the change")
+	h.app.session.Reload()
+	h.drain()
+
+	if !h.ui.HasText("Unstaged (0)") {
+		t.Fatalf("genuinely empty unstaged count missing; texts=%q", h.ui.Texts())
+	}
+	if h.ui.HasText("No matching files") {
+		t.Fatalf("a section empty without the filter spoke of the filter; texts=%q", h.ui.Texts())
+	}
+	if !h.ui.HasText("Working tree is clean") {
+		t.Fatalf("the genuinely empty unstaged section lost its clean hint; texts=%q", h.ui.Texts())
+	}
+	if !h.ui.HasText("No staged changes") {
+		t.Fatalf("the empty staged section lost its hint after the commit; texts=%q", h.ui.Texts())
 	}
 }
