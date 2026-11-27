@@ -3,7 +3,6 @@ package app
 import (
 	"fmt"
 	"strings"
-	"sync"
 
 	"github.com/egoist/mygo/ui"
 
@@ -14,8 +13,7 @@ import (
 // context menu of a local branch, a remote-tracking branch or a tag opens:
 // the source reference and the exact commit it pointed at when the dialog
 // opened, the HEAD hash and branch a checked-out create must still find, the
-// name and checkout draft, and the repository generation they belong to. It
-// lives in the app-keyed table because app is a shared file.
+// name and checkout draft, and the repository generation they belong to.
 type branchCreateUIState struct {
 	repoGen uint64
 
@@ -30,23 +28,12 @@ type branchCreateUIState struct {
 	nameChanged     bool
 }
 
-var branchCreateUIStates = struct {
-	sync.Mutex
-	m map[*app]*branchCreateUIState
-}{m: map[*app]*branchCreateUIState{}}
-
 // branchCreateUI returns the app's branch-create state, creating it on first
 // use and discarding an open draft when the repository generation moved past
 // it: a switch makes the captured source commit and HEAD meaningless, so
 // nothing of the previous repository carries over. It runs on the UI thread.
 func (a *app) branchCreateUI() *branchCreateUIState {
-	branchCreateUIStates.Lock()
-	defer branchCreateUIStates.Unlock()
-	st := branchCreateUIStates.m[a]
-	if st == nil {
-		st = &branchCreateUIState{}
-		branchCreateUIStates.m[a] = st
-	}
+	st := featureState(a, func() *branchCreateUIState { return &branchCreateUIState{} })
 	if gen := a.session.Generation(); st.repoGen != gen {
 		st.repoGen = gen
 		st.clearBranchCreateDraft()

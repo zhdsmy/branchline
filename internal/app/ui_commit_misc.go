@@ -3,7 +3,6 @@ package app
 import (
 	"fmt"
 	"strings"
-	"sync"
 
 	"github.com/egoist/mygo/ui"
 
@@ -13,8 +12,7 @@ import (
 // commitMiscUIState is the per-app state of the commit context menu items
 // this file owns: the Checkout Commit dialog draft with the HEAD and branch
 // it was confirmed against, and the clipboard text a copy menu item asked
-// for. It lives outside the shared app struct, keyed by the app instance,
-// exactly as the Reset actions' state does.
+// for.
 type commitMiscUIState struct {
 	repoGen uint64
 
@@ -27,24 +25,13 @@ type commitMiscUIState struct {
 	hasPendingClipboard bool
 }
 
-var commitMiscUIStates = struct {
-	sync.Mutex
-	m map[*app]*commitMiscUIState
-}{m: map[*app]*commitMiscUIState{}}
-
 // commitMiscUI returns the app's state of the misc commit actions, creating
 // it on first use and discarding every open dialog draft when the repository
 // generation moved past it: a switch or close makes the captured target, HEAD
 // and branch meaningless, so the dialog of the previous repository never
 // carries over.
 func commitMiscUI(a *app) *commitMiscUIState {
-	commitMiscUIStates.Lock()
-	defer commitMiscUIStates.Unlock()
-	st := commitMiscUIStates.m[a]
-	if st == nil {
-		st = &commitMiscUIState{}
-		commitMiscUIStates.m[a] = st
-	}
+	st := featureState(a, func() *commitMiscUIState { return &commitMiscUIState{} })
 	if gen := a.session.Generation(); st.repoGen != gen {
 		st.repoGen = gen
 		st.clearCheckoutDraft()

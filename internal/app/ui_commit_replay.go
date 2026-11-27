@@ -3,7 +3,6 @@ package app
 import (
 	"fmt"
 	"slices"
-	"sync"
 
 	"github.com/egoist/mygo/ui"
 
@@ -42,8 +41,7 @@ func captureOperationIdentity(st git.Status) operationIdentity {
 // commitReplayUIState is the per-app state of the commit replay actions: the
 // Cherry-pick/Revert dialog draft with the HEAD and branch it was opened
 // against, the Abort confirmation's captured operation, and the repository
-// generation they belong to. It lives outside the shared app struct, keyed by
-// the app instance, exactly as the reset dialog state does.
+// generation they belong to.
 type commitReplayUIState struct {
 	repoGen uint64
 
@@ -60,24 +58,13 @@ type commitReplayUIState struct {
 	abortTarget operationIdentity
 }
 
-var commitReplayUIStates = struct {
-	sync.Mutex
-	m map[*app]*commitReplayUIState
-}{m: map[*app]*commitReplayUIState{}}
-
 // commitReplayUI returns the app's commit-replay state, creating it on first
 // use and discarding every open dialog draft when the repository generation
 // moved past it: a switch or close makes the captured target, HEAD, branch
 // and operation meaningless, so nothing of the previous repository carries
 // over.
 func commitReplayUI(a *app) *commitReplayUIState {
-	commitReplayUIStates.Lock()
-	defer commitReplayUIStates.Unlock()
-	st := commitReplayUIStates.m[a]
-	if st == nil {
-		st = &commitReplayUIState{}
-		commitReplayUIStates.m[a] = st
-	}
+	st := featureState(a, func() *commitReplayUIState { return &commitReplayUIState{} })
 	if gen := a.session.Generation(); st.repoGen != gen {
 		st.repoGen = gen
 		st.clearReplayDraft()

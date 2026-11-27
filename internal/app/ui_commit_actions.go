@@ -2,7 +2,6 @@ package app
 
 import (
 	"fmt"
-	"sync"
 
 	"github.com/egoist/mygo/ui"
 
@@ -11,9 +10,7 @@ import (
 
 // commitActionsUIState is the per-app state of the commit context actions:
 // the Reset dialog draft with the HEAD and branch it was opened against, and
-// the repository generation they belong to. It lives outside the shared app
-// struct, keyed by the app instance, exactly as the repository switcher and
-// sync states do.
+// the repository generation they belong to.
 type commitActionsUIState struct {
 	repoGen uint64
 
@@ -25,23 +22,12 @@ type commitActionsUIState struct {
 	resetHardAgreed   bool
 }
 
-var commitActionsUIStates = struct {
-	sync.Mutex
-	m map[*app]*commitActionsUIState
-}{m: map[*app]*commitActionsUIState{}}
-
 // commitActionsUI returns the app's commit-action state, creating it on first
 // use and discarding every open dialog draft when the repository generation
 // moved past it: a switch or close makes the captured target, HEAD and branch
 // meaningless, so the dialogs of the previous repository never carry over.
 func commitActionsUI(a *app) *commitActionsUIState {
-	commitActionsUIStates.Lock()
-	defer commitActionsUIStates.Unlock()
-	st := commitActionsUIStates.m[a]
-	if st == nil {
-		st = &commitActionsUIState{}
-		commitActionsUIStates.m[a] = st
-	}
+	st := featureState(a, func() *commitActionsUIState { return &commitActionsUIState{} })
 	if gen := a.session.Generation(); st.repoGen != gen {
 		st.repoGen = gen
 		st.clearResetDraft()
