@@ -92,6 +92,13 @@ type historyState struct {
 	selection ui.Selection[string]
 	compare   historyCompareState
 
+	// selCache is the one-entry cache syncHistorySelection derives the
+	// detail pane from: the chosen commits in list order, and the
+	// hash-to-index table of the snapshot slice they were collected
+	// against. It resets with the rest of the state on a repository
+	// switch.
+	selCache historySelectionCache
+
 	diff diffPanel
 
 	splitSize float32
