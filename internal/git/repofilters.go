@@ -1,6 +1,7 @@
 package git
 
 import (
+	"slices"
 	"sort"
 	"strings"
 )
@@ -133,7 +134,9 @@ func (r *Repo) filterConfigValues(scope ...string) (map[string]string, error) {
 		return nil, nil
 	}
 	if err != nil {
-		if strings.Contains(err.Error(), "cannot be used with multiple working trees") {
+		if ExitCode(err) == 128 &&
+			slices.Contains(scope, "--worktree") &&
+			strings.Contains(err.Error(), "--worktree cannot be used with multiple working trees") {
 			return nil, nil
 		}
 		return nil, err

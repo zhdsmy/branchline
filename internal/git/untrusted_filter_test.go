@@ -343,6 +343,183 @@ func TestUntrustedFilterGlobalRewrittenNeverRuns(t *testing.T) {
 	}
 }
 
+// A long-running process filter defined only in the user's global
+// configuration — the layout git-lfs uses — still runs on a passive status
+// read even while a separate repository-owned filter in the same checkout is
+// neutralized.
+func TestUntrustedFilterGlobalProcessStillRuns(t *testing.T) {
+	home := t.TempDir()
+	global := filepath.Join(home, ".gitconfig")
+	f := newFilterFixture(t, "global-process")
+	content := "[filter \"userproc\"]\n\tprocess = sh " + f.procSh + "\n"
+	if err := os.WriteFile(global, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+
+	f.git(t, "init", "-q", "-b", "main")
+	f.git(t, "config", "user.name", "Branchline Test")
+	f.git(t, "config", "user.email", "test@branchline.invalid")
+	f.git(t, "config", "filter.repoown.clean", "sh "+f.cleanSh)
+	if err := os.WriteFile(filepath.Join(f.repoDir, ".gitattributes"), []byte("*.bin filter=userproc\n*.txt filter=repoown\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(f.repoDir, "a.bin"), []byte("binary\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(f.repoDir, "f.txt"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.git(t, "add", ".gitattributes", "a.bin", "f.txt")
+	f.git(t, "commit", "-q", "-m", "initial")
+	f.resetMarks(t)
+	old := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	for _, name := range []string{"a.bin", "f.txt"} {
+		if err := os.Chtimes(filepath.Join(f.repoDir, name), old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if _, err := f.repo().StatusOpts(false); err != nil {
+		t.Fatalf("status read: %v", err)
+	}
+	if !f.marked(t, f.procLog) {
+		t.Fatal("the user's global process filter did not run on a passive status read")
+	}
+	if f.marked(t, f.cleanLog) {
+		t.Fatal("the repository's own clean filter ran alongside the user's global process filter")
+	}
+}
+
+// Filters brought in through a conditional includeIf directive of .git/config
+// are resolved and neutralized on a passive status read too.
+func TestUntrustedFilterIncludeIfNeverRuns(t *testing.T) {
+	f := newFilterFixture(t, "include-if")
+	inc := filepath.Join(f.dir, "branch-filters.inc")
+	content := "[filter \"x\"]\n\tclean = sh " + f.cleanSh + "\n"
+	if err := os.WriteFile(inc, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.git(t, "init", "-q", "-b", "main")
+	f.git(t, "config", "user.name", "Branchline Test")
+	f.git(t, "config", "user.email", "test@branchline.invalid")
+	f.git(t, "config", "includeIf.onbranch:main.path", inc)
+	if err := os.WriteFile(filepath.Join(f.repoDir, ".gitattributes"), []byte("*.txt filter=x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(f.repoDir, "f.txt"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.git(t, "add", ".gitattributes", "f.txt")
+	f.git(t, "commit", "-q", "-m", "initial")
+	f.resetMarks(t)
+	f.backdate(t)
+
+	if _, err := f.repo().StatusOpts(false); err != nil {
+		t.Fatalf("status read: %v", err)
+	}
+	if f.marked(t, f.cleanLog) {
+		t.Fatal("a filter reached through includeIf ran on a passive status read")
+	}
+
+	f.controlStatus(t)
+	if !f.marked(t, f.cleanLog) {
+		t.Fatal("control: plain git status did not run the includeIf filter, the fixture is broken")
+	}
+}
+
+// In a multi-worktree repository with extensions.worktreeConfig enabled, a
+// filter defined only in a linked worktree's config.worktree — or overriding
+// a local key that matched the user's global config — never runs on a passive
+// status read of that linked worktree, while unrelated config.worktree errors
+// are surfaced instead of swallowed.
+func TestUntrustedFilterLinkedWorktreeConfigNeverRuns(t *testing.T) {
+	home := t.TempDir()
+	f := newFilterFixture(t, "linked-worktree")
+	honestSh := filepath.Join(f.dir, "honest-clean.sh")
+	honestLog := filepath.Join(f.dir, "honest.log")
+	writeScript(t, honestSh, honestLog)
+	if err := os.WriteFile(filepath.Join(home, ".gitconfig"), []byte("[filter \"same\"]\n\tclean = sh "+honestSh+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+
+	f.git(t, "init", "-q", "-b", "main")
+	f.git(t, "config", "user.name", "Branchline Test")
+	f.git(t, "config", "user.email", "test@branchline.invalid")
+	f.git(t, "config", "extensions.worktreeConfig", "true")
+	// Local repeats the user's global filter verbatim; the linked worktree
+	// below overrides the same key to its own command and also adds a
+	// worktree-only filter.
+	f.git(t, "config", "--local", "filter.same.clean", "sh "+honestSh)
+	if err := os.WriteFile(filepath.Join(f.repoDir, ".gitattributes"), []byte("*.txt filter=wt\n*.same filter=same\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(f.repoDir, "f.txt"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(f.repoDir, "g.same"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.git(t, "add", ".gitattributes", "f.txt", "g.same")
+	f.git(t, "commit", "-q", "-m", "initial")
+
+	linkedDir := filepath.Join(f.dir, "linked")
+	f.git(t, "worktree", "add", "-q", "-b", "feature", linkedDir)
+	linked := &filterFixture{
+		dir:      f.dir,
+		repoDir:  linkedDir,
+		cleanSh:  f.cleanSh,
+		procSh:   f.procSh,
+		cleanLog: f.cleanLog,
+		procLog:  f.procLog,
+	}
+	linked.git(t, "config", "--worktree", "filter.wt.clean", "sh "+f.cleanSh)
+	linked.git(t, "config", "--worktree", "filter.same.clean", "sh "+f.procSh)
+	linked.resetMarks(t)
+	_ = os.Remove(honestLog)
+
+	old := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	for _, name := range []string{"f.txt", "g.same"} {
+		if err := os.Chtimes(filepath.Join(linkedDir, name), old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if _, err := linked.repo().StatusOpts(false); err != nil {
+		t.Fatalf("linked worktree status read: %v", err)
+	}
+	if f.marked(t, f.cleanLog) {
+		t.Fatal("a filter defined only in the linked worktree's config.worktree ran on a passive status read")
+	}
+	if f.marked(t, f.procLog) {
+		t.Fatal("a worktree-scoped override of a local filter key ran on a passive status read")
+	}
+	if f.marked(t, honestLog) {
+		t.Fatal("the overridden local/global filter ran on a passive status read")
+	}
+
+	// Control: plain git status in the linked worktree runs both filters.
+	linked.controlStatus(t)
+	if !f.marked(t, f.cleanLog) || !f.marked(t, f.procLog) {
+		t.Fatal("control: plain git status in the linked worktree did not run the worktree-scoped filters")
+	}
+
+	// Other errors from reading the worktree config must not be swallowed.
+	wtCfg := strings.TrimSpace(linked.git(t, "rev-parse", "--git-path", "config.worktree"))
+	if !filepath.IsAbs(wtCfg) {
+		wtCfg = filepath.Join(linkedDir, wtCfg)
+	}
+	if err := os.WriteFile(wtCfg, []byte("[broken\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := linked.repo().StatusOpts(false); err == nil {
+		t.Fatal("corrupt config.worktree was swallowed instead of failing the passive status read")
+	}
+}
+
 // A repository that moves its configuration into the worktree scope with
 // extensions.worktreeConfig is still its own configuration: a filter written
 // into .git/config.worktree never runs on a passive status read either.

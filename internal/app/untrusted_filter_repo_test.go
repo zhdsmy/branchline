@@ -63,3 +63,54 @@ func TestUntrustedRepoFilterNeverRunsOnOpenAndPoll(t *testing.T) {
 		t.Fatal("control: plain git status did not run the filter, the fixture is broken")
 	}
 }
+
+// Opening a linked worktree whose filter lives only in its own
+// config.worktree (with extensions.worktreeConfig enabled) never runs that
+// filter on open or on the automatic refresh poll, while Local Changes still
+// shows the modified file.
+func TestUntrustedRepoFilterLinkedWorktreeNeverRunsOnOpen(t *testing.T) {
+	mainRepo := newGitRepo(t, "untrusted-filter-wt-main")
+	cleanLog := filepath.Join(t.TempDir(), "wt-clean.log")
+	cleanSh := filepath.Join(t.TempDir(), "wt-filter-clean.sh")
+	script := "#!/bin/sh\necho ran >> " + git.ShellQuote(cleanLog) + "\nexec cat\n"
+	if err := os.WriteFile(cleanSh, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mainRepo.Git("config", "extensions.worktreeConfig", "true")
+	mainRepo.WriteFile(".gitattributes", "*.txt filter=wt\n")
+	mainRepo.WriteFile("f.txt", "hello\n")
+	mainRepo.Git("add", ".gitattributes", "f.txt")
+	mainRepo.Git("commit", "-q", "-m", "initial")
+
+	linkedDir := filepath.Join(t.TempDir(), "wt-linked")
+	mainRepo.Git("worktree", "add", "-q", "-b", "feature", linkedDir)
+	linked := &gitRepoFixture{t: t, name: "untrusted-filter-wt-linked", dir: linkedDir}
+	linked.Git("config", "--worktree", "filter.wt.clean", "sh "+cleanSh)
+	if err := os.Remove(cleanLog); err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	linked.WriteFile("f.txt", "world\n")
+
+	h := newTestApp(t)
+	rig := installAutoRefresh(t, h)
+	openAutoRefreshRepo(t, h, rig, linked.StoreRepo())
+
+	if _, err := os.Stat(cleanLog); err == nil {
+		t.Fatal("the linked worktree's own filter ran while the app opened it")
+	}
+	cache := h.app.changesView.listCache.lookup(h.app.session.Snapshot().Status)
+	if _, ok := cache.lookupUnstaged("f.txt"); !ok {
+		t.Fatal("the modified file is missing from Local Changes")
+	}
+
+	rig.clock.advance(61 * time.Second)
+	tickAutoRefresh(t, h)
+	if _, err := os.Stat(cleanLog); err == nil {
+		t.Fatal("the linked worktree's own filter ran on the automatic refresh's poll")
+	}
+
+	linked.Git("status", "--porcelain=v2", "-z")
+	if _, err := os.Stat(cleanLog); err != nil {
+		t.Fatal("control: plain git status in the linked worktree did not run the filter, the fixture is broken")
+	}
+}
