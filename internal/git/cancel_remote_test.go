@@ -48,8 +48,10 @@ func newStuckSource(t *testing.T) *stuckSource {
 		case <-s.release:
 		}
 	}))
-	t.Cleanup(func() { close(s.release) })
+	// Letting go comes first: the server's close waits for the connections,
+	// which only a released or dropped request lets end.
 	t.Cleanup(s.server.Close)
+	t.Cleanup(func() { close(s.release) })
 	return s
 }
 
