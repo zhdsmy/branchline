@@ -453,20 +453,24 @@ func diffHeaderLevelFor(avail, controls, statsExtra, badgeExtra float32) int {
 
 // diffHeaderLevel measures the header's fixed content in the fonts it
 // renders with and picks the level fitting avail. The controls' width is
-// the toolbar's icon buttons, the -w button and the Split/Unified capsule
-// with its own padding and gap; the extras include the row gap each
-// optional item adds beside its own width.
-func diffHeaderLevel(c *ui.Context, avail float32, badge string, statsShown bool, added, deleted int) int {
+// the toolbar's icon buttons while a diff is selected, the -w button and
+// the Split/Unified capsule with its own padding and gap; the extras
+// include the row gap each optional item adds beside its own width.
+func diffHeaderLevel(c *ui.Context, avail float32, badge string, statsShown bool, added, deleted int, tools bool) int {
 	measure := func(text string, size float32, weight int) float32 {
 		w, _ := c.MeasureText(0, ui.Span{Text: text, Size: size, Weight: weight})
 		return w
 	}
-	controls := diffToolbarGroupWidth() +
-		measure("-w", 11.5, 500) + 10 +
+	gaps := float32(3 * 8) // row gaps of the items that always render
+	controls := measure("-w", 11.5, 500) + 10 +
 		measure("Split", 11.5, 500) + 16 +
 		measure("Unified", 11.5, 500) + 16 +
-		4 + 2 + // capsule padding and inner gap
-		4*8 // row gaps of the five items that always render
+		4 + 2 // capsule padding and inner gap
+	if tools {
+		controls += diffToolbarGroupWidth()
+		gaps += 8
+	}
+	controls += gaps
 	statsExtra := float32(0)
 	if statsShown {
 		if added > 0 {
@@ -503,9 +507,13 @@ func (d *diffPanel) header(c *ui.Context, s *repoSession, scope string, p palett
 	}
 	badge := d.req.badge()
 	statsShown := d.state != nil && (d.added > 0 || d.deleted > 0)
-	level := diffHeaderLevel(c, avail, badge, statsShown, d.added, d.deleted)
+	// The toolbar choices edit what a diff shows, so they render only while
+	// a diff is selected: the empty header stays the quiet placeholder the
+	// pages without a selection have always shown.
+	tools := d.req.valid()
+	level := diffHeaderLevel(c, avail, badge, statsShown, d.added, d.deleted, tools)
 
-	if level == diffHeaderCompact {
+	if level == diffHeaderCompact && tools {
 		// Two rows: the title, badge and layout choice keep the first, and
 		// the content choices — the toolbar buttons and -w — move to the
 		// second. At the minimum window width one row can no longer hold
@@ -545,7 +553,9 @@ func (d *diffPanel) header(c *ui.Context, s *repoSession, scope string, p palett
 
 				ui.Spacer(c)
 
-				d.diffOptionsGroup(c, s, scope, p)
+				if tools {
+					d.diffOptionsGroup(c, s, scope, p)
+				}
 
 				d.ignoreSpaceBtn(c, s, scope, p)
 
