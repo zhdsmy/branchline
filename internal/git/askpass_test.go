@@ -51,7 +51,7 @@ func credentialFill(t *testing.T, ex Executor) (string, error) {
 func noSecretOnDisk(t *testing.T, dirs ...string) {
 	t.Helper()
 	for _, dir := range dirs {
-		filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 			if err != nil || info.IsDir() {
 				return nil
 			}
@@ -64,7 +64,9 @@ func noSecretOnDisk(t *testing.T, dirs ...string) {
 				}
 			}
 			return nil
-		})
+		}); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 
@@ -174,8 +176,12 @@ func TestAskWriterKeepsOutput(t *testing.T) {
 		got = append(got, pipe+"|"+prompt)
 		mu.Unlock()
 	}}
-	w.Write([]byte("remote: counting\npartial " + askMarker + "L /tmp/branchline-ap.abc Password: \n"))
-	w.Write([]byte(askMarker + "L /etc/passwd x\n" + "fatal: done"))
+	if _, err := w.Write([]byte("remote: counting\npartial " + askMarker + "L /tmp/branchline-ap.abc Password: \n")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write([]byte(askMarker + "L /etc/passwd x\n" + "fatal: done")); err != nil {
+		t.Fatal(err)
+	}
 	w.pending.Wait()
 	if text := w.text(); text != "remote: counting\npartial fatal: done" {
 		t.Errorf("stderr %q", text)

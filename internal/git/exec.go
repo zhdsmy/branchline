@@ -200,7 +200,11 @@ func (l *LocalExecutor) Run(ctx context.Context, stdin []byte, args ...string) (
 				sess := l.AskPass.session(creds)
 				out, err := runAskContext(ctx, cmd, stdin, args, func(pipe, prompt string, _ bool) {
 					answer, ok := sess.ask(prompt)
-					writePipe(pipe, replyLine(answer, ok))
+					// The callback cannot report an error. When the answer
+					// does not reach the pipe, the script keeps waiting on
+					// it, and git or ssh keeps waiting on the script until
+					// the command's timeout or cancellation kills it.
+					_ = writePipe(pipe, replyLine(answer, ok))
 				})
 				sess.finish(err)
 				return out, err
@@ -488,18 +492,9 @@ func RemotePath(p string) string {
 	return ShellQuote(p)
 }
 
-func run(cmd *exec.Cmd, stdin []byte, args []string) ([]byte, error) {
-	return runContext(context.Background(), cmd, stdin, args)
-}
-
 func runContext(ctx context.Context, cmd *exec.Cmd, stdin []byte, args []string) ([]byte, error) {
 	var stderr bytes.Buffer
 	return runTo(ctx, cmd, stdin, args, &stderr, stderr.String)
-}
-
-// runAsk runs cmd, handing the questions of an askpass script to answer.
-func runAsk(cmd *exec.Cmd, stdin []byte, args []string, answer func(pipe, prompt string, remote bool)) ([]byte, error) {
-	return runAskContext(context.Background(), cmd, stdin, args, answer)
 }
 
 func runAskContext(ctx context.Context, cmd *exec.Cmd, stdin []byte, args []string, answer func(pipe, prompt string, remote bool)) ([]byte, error) {

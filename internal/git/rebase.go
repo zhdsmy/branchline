@@ -40,7 +40,7 @@ func (r *Repo) RebasePlan(onto string) ([]RebaseTodo, error) {
 	}
 	var plan []RebaseTodo
 	for _, line := range strings.Split(string(out), "\n") {
-		fields := strings.Split(line, "")
+		fields := strings.Split(line, "\x1f")
 		if len(fields) < 2 || !isHex(fields[0]) {
 			continue
 		}

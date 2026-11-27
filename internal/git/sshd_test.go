@@ -49,7 +49,7 @@ func startSSHD(t *testing.T) *sshServer {
 		t.Skipf("cannot listen here: %v", err)
 	}
 	port := l.Addr().(*net.TCPAddr).Port
-	l.Close()
+	_ = l.Close()
 	cfg := fmt.Sprintf("Port %d\nListenAddress 127.0.0.1\nHostKey %s\nAuthorizedKeysFile %s\nPidFile %s\n"+
 		"StrictModes no\nUsePAM no\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nLogLevel ERROR\n",
 		port, filepath.Join(dir, "host"), filepath.Join(dir, "authorized_keys"), filepath.Join(dir, "pid"))
@@ -70,7 +70,7 @@ func startSSHD(t *testing.T) *sshServer {
 	for i := 0; ; i++ {
 		c, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", port))
 		if err == nil {
-			c.Close()
+			_ = c.Close()
 			break
 		}
 		if i == 50 {
@@ -196,7 +196,7 @@ func startJumpSSHD(t *testing.T, targetPort int, identity string, logPath string
 		t.Skipf("cannot listen here: %v", err)
 	}
 	port := l.Addr().(*net.TCPAddr).Port
-	l.Close()
+	_ = l.Close()
 	cfg := fmt.Sprintf("Port %d\nListenAddress 127.0.0.1\nHostKey %s\nPidFile %s\n"+
 		"AllowTcpForwarding yes\nDisableForwarding no\nPermitOpen 127.0.0.1:%d\n"+
 		"AuthorizedKeysFile %s\nStrictModes no\nUsePAM no\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nLogLevel VERBOSE\n",
@@ -232,7 +232,7 @@ func startJumpSSHD(t *testing.T, targetPort int, identity string, logPath string
 		}
 		c, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 100*time.Millisecond)
 		if err == nil {
-			c.Close()
+			_ = c.Close()
 			break
 		}
 		time.Sleep(100 * time.Millisecond)

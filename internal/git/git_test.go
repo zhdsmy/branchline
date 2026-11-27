@@ -439,10 +439,10 @@ func TestIgnoreSpace(t *testing.T) {
 		}
 	}
 	git("init", "-q", "-b", "main")
-	os.WriteFile(filepath.Join(dir, "a.txt"), []byte("one\n"), 0o644)
+	must(t, os.WriteFile(filepath.Join(dir, "a.txt"), []byte("one\n"), 0o644))
 	git("add", "a.txt")
 	git("commit", "-q", "-m", "one")
-	os.WriteFile(filepath.Join(dir, "a.txt"), []byte("one \n"), 0o644)
+	must(t, os.WriteFile(filepath.Join(dir, "a.txt"), []byte("one \n"), 0o644))
 	git("commit", "-q", "-am", "space")
 	r := New(&LocalExecutor{Dir: dir})
 	cs, err := r.Log(LogOptions{Limit: 2})

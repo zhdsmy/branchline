@@ -189,7 +189,6 @@ func (l *CommandLog) Record(args []string, stdout []byte, stderr string, err err
 
 	errLimit := min(MaxCommandStreamBytes, rem)
 	boundedErr := truncateOrForceSuffix(errStr, errLimit, errPreTrunc, TruncatedOutputSuffix)
-	rem -= len(boundedErr)
 
 	rec := CommandRecord{
 		Command:  boundedCmd,
