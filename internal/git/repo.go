@@ -115,7 +115,10 @@ func (r *Repo) TopLevel() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return strings.TrimSpace(string(out)), nil
+	// Only the line's newline goes: a name ending in a space is a valid
+	// directory of both this machine and a server, and trimming it would
+	// point at a directory that is not the repository's.
+	return strings.TrimRight(string(out), "\r\n"), nil
 }
 
 // Version returns what git --version prints.
