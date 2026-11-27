@@ -237,7 +237,7 @@ func (a *app) historyCompareInfo(c *ui.Context, p palette) {
 // date. The row carries a label naming the comparison side so tests and
 // assistive technology can tell the two rows apart.
 func (a *app) historyCompareCommitRow(c *ui.Context, p palette, cm git.Commit, hashColor ui.Color, label string) {
-	ui.Row(c.Key("compare-row-"+cm.Hash)).FillWidth().Gap(6).AlignItems(ui.Center).Label(label).Children(func() {
+	ui.Row(c.Key("compare-row-" + cm.Hash)).FillWidth().Gap(6).AlignItems(ui.Center).Label(label).Children(func() {
 		ui.Text(c, cm.Short()).Font("monospace").FontSize(11).TextColor(hashColor).SingleLine().Shrink(0)
 		ui.Text(c, cm.Subject).FontSize(11.5).FontWeight(500).TextColor(p.text).SingleLine().Ellipsis("…").Shrink(1).MinWidth(0)
 		ui.Text(c, cm.Author).FontSize(10.5).TextColor(p.faint).SingleLine().Width(64).Shrink(0).Ellipsis("…")
