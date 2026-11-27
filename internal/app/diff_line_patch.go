@@ -100,13 +100,15 @@ func patchRunLines(f editor.FilePatch, hunk editor.DiffHunk) [][]bool {
 // buildLinesPatch is the patch of f's changed lines that chosen marks, in
 // the form git apply takes. Forward (reverse false) it stages the lines:
 // applied to the index, whose content is the diff's old side. In reverse it
-// unstages them: git apply --reverse takes additions out of the index and
-// puts deletions back, the index then being the diff's new side.
+// unstages or discards them: git apply --reverse takes additions out and
+// puts deletions back, the index or the working tree then being the diff's
+// new side.
 //
 // The lines of a hunk are rewritten one by one: a context line stays, a
 // chosen change line keeps its sign, and a change line not chosen turns
 // into context when the line it stands for must remain — a deletion while
-// staging, an addition while unstaging — and is left out otherwise.
+// staging, an addition while unstaging or discarding — and is left out
+// otherwise.
 //
 // Rewriting is not enough on its own: the order the lines end in decides
 // where every line lands, because a line rewritten to context is copied
@@ -408,6 +410,26 @@ func buildLinesPatch(f editor.FilePatch, chosen [][]bool, reverse bool) (string,
 		return "", errors.New("the lines selected have no changes")
 	}
 
+	// A file added or deleted keeps the diff's headers — the new file mode
+	// or deleted file mode line, and /dev/null on the side the file is not
+	// — while every line of the file is chosen: git then creates or removes
+	// the index entry, as staging a whole untracked or deleted file does.
+	// With lines not chosen the file must remain on the other side: an
+	// added file partially unstaged keeps its remaining lines in the index,
+	// and a deleted file partially staged keeps them too, so the patch is
+	// written as a plain modification, which git apply needs no header for.
+	// A file entirely added or deleted never keeps lines: an addition not
+	// staged is dropped and a deletion not unstaged is dropped as well, so
+	// counting the lines of both sides of the patch decides. The counts of
+	// the rewriting already do, oldN and newN the lines one side holds.
+	var totalOld, totalNew int
+	for _, oh := range hunks {
+		totalOld += oh.oldN
+		totalNew += oh.newN
+	}
+	created := f.OldName == "" && totalOld == 0
+	deleted := f.NewName == "" && totalNew == 0
+
 	name := f.NewName
 	if name == "" {
 		name = f.OldName
@@ -418,8 +440,22 @@ func buildLinesPatch(f editor.FilePatch, chosen [][]bool, reverse bool) (string,
 	qb := quotePatchPath("b/" + name)
 	var b strings.Builder
 	b.WriteString("diff --git " + qa + " " + qb + "\n")
-	b.WriteString("--- " + qa + "\n")
-	b.WriteString("+++ " + qb + "\n")
+	switch {
+	case created:
+		// git apply reads the creation from the /dev/null line, not from
+		// the mode line alone, so a creation written with a plain old name
+		// does not apply at all. /dev/null quotes nothing.
+		b.WriteString("new file mode " + patchFileMode(f.NewMode) + "\n")
+		b.WriteString("--- /dev/null\n")
+		b.WriteString("+++ " + qb + "\n")
+	case deleted:
+		b.WriteString("deleted file mode " + patchFileMode(f.OldMode) + "\n")
+		b.WriteString("--- " + qa + "\n")
+		b.WriteString("+++ /dev/null\n")
+	default:
+		b.WriteString("--- " + qa + "\n")
+		b.WriteString("+++ " + qb + "\n")
+	}
 	for _, oh := range hunks {
 		fmt.Fprintf(&b, "@@ -%d,%d +%d,%d @@", oh.oldStart, oh.oldN, oh.newStart, oh.newN)
 		if oh.section != "" {
@@ -436,6 +472,17 @@ func buildLinesPatch(f editor.FilePatch, chosen [][]bool, reverse bool) (string,
 		}
 	}
 	return b.String(), nil
+}
+
+// patchFileMode is the mode a new file mode or deleted file mode header
+// takes: the diff's when it names one, git's regular-file default when it
+// does not, as a diff read with plain options prints no mode line for a
+// file that keeps the common mode.
+func patchFileMode(mode string) string {
+	if mode == "" {
+		return "100644"
+	}
+	return mode
 }
 
 // patchStartOf is the start a hunk header gives a side whose lines begin
