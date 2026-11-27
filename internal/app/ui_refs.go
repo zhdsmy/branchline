@@ -82,6 +82,7 @@ func (a *app) refsSidebar(c *ui.Context) {
 	a.mergeDialog(c)
 	a.rebaseDialog(c)
 	a.renameBranchDialog(c)
+	a.checkoutSyncDialog(c)
 	a.remoteBranchMenuDialogs(c)
 	a.remoteDialogs(c)
 	a.branchCreateModals(c)
