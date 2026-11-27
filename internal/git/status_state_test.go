@@ -185,11 +185,13 @@ func TestStatusStateInProgressOperations(t *testing.T) {
 		assertStatusState(t, srv, dir, "", "", false)
 	})
 
-	// The pathspec the state read passes excludes everything instead of
-	// naming a path, so a file whose name spells the same magic is just
-	// another excluded path. One repository carries such a file through a
-	// merge conflict: the state must read the same, and the porcelain pass
-	// must still list the file itself.
+	// The state read passes literal ".git" under --literal-pathspecs so no
+	// tracked file can ever match it, even one whose name spells pathspec
+	// magic or contains an operation keyword. One repository carries a
+	// file named ":(exclude)*" through a merge conflict and another carries
+	// modified ":(exclude)*/bisect.txt" and ".gitignore" with no operation
+	// in progress: neither may confuse the state read or vanish from the
+	// porcelain pass.
 	t.Run("file named like the pathspec magic", func(t *testing.T) {
 		dir := stateMergeBase(t)
 		writeFile(t, dir, ":(exclude)*", "odd name\n")
@@ -218,5 +220,19 @@ func TestStatusStateInProgressOperations(t *testing.T) {
 				t.Errorf("%s: the oddly named file vanished from the porcelain pass: %+v", where, st)
 			}
 		}
+	})
+
+	t.Run("keyword path and dotgit prefix files never match state pathspec", func(t *testing.T) {
+		dir := initRepo(t)
+		must(t, os.MkdirAll(filepath.Join(dir, ":(exclude)*"), 0o755))
+		writeFile(t, dir, ":(exclude)*/bisect.txt", "one\n")
+		writeFile(t, dir, ".gitignore", "*.tmp\n")
+		writeFile(t, dir, "merging.txt", "one\n")
+		gitRun(t, dir, "add", "./:(exclude)*/bisect.txt", ".gitignore", "merging.txt")
+		gitRun(t, dir, "commit", "-q", "-m", "init")
+		writeFile(t, dir, ":(exclude)*/bisect.txt", "two\n")
+		writeFile(t, dir, ".gitignore", "*.tmp\n*.log\n")
+		writeFile(t, dir, "merging.txt", "two\n")
+		assertStatusState(t, srv, dir, "", "", false)
 	})
 }

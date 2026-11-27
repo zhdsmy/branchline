@@ -8,11 +8,12 @@ import (
 	"time"
 )
 
-// The state read prunes every path with an everything-excluding pathspec,
-// and the git that decides whether the operation lines still print is the
-// one on the server, not the one on this Mac. These cases drive a merge, a
-// rebase and a quiet repository on the configured Linux host and read the
-// state back through SSH, so each host's own git version is what answers.
+// The state read prunes every path with literal ".git" under
+// --literal-pathspecs, and the git that decides whether the operation
+// lines still print is the one on the server, not the one on this Mac.
+// These cases drive a merge, a rebase and a quiet repository on the
+// configured Linux host and read the state back through SSH, so each
+// host's own git version is what answers.
 func TestConfiguredLinuxStatusState(t *testing.T) {
 	target := resolveConfiguredLinuxSSHTarget(t)
 	t.Logf("remote git version: %q (parsed %+v)", target.gitVersionRaw, target.gitCaps.Version)
