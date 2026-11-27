@@ -578,6 +578,30 @@ func TestChangesTreeRepoSwitchClearsCollapse(t *testing.T) {
 	}
 }
 
+func TestChangesTreeConflictedSectionStaysFlat(t *testing.T) {
+	// Tree mode groups the unstaged and staged sections alone: conflicted
+	// files stay flat, never inside a folder row.
+	repo := newGitRepo(t, "changestree-conflict")
+	mergeConflictingFiles(t, repo, 2)
+	repo.WriteFile("nested/dir/plain.txt", "plain\n")
+
+	h := openChangesHarness(t, repo)
+	mustClick(t, h, "Show as Tree")
+	h.ui.Frame()
+
+	for _, label := range []string{"Conflicted c-0000.txt", "Conflicted c-0001.txt"} {
+		if !changeRowShown(h, label) {
+			t.Fatalf("conflict row %q missing in tree mode; texts=%q", label, h.ui.Texts())
+		}
+	}
+	if _, ok := treeFolderShown(h, "Unstaged Folder nested/dir, 1 file"); !ok {
+		t.Fatalf("ordinary folder row missing in tree mode; texts=%q", h.ui.Texts())
+	}
+	if _, ok := treeFolderShown(h, "Conflicted Folder c-0000.txt, 1 file"); ok {
+		t.Fatal("a conflicted file fell into a folder row")
+	}
+}
+
 func TestChangesTreeSaveFailureStillToggles(t *testing.T) {
 	// When the repository settings cannot be written the view still switches
 	// for this opening, and the failure surfaces as the settings save toast.
