@@ -105,7 +105,7 @@ func (a *AskPass) scriptPath() (string, error) {
 // Close removes the askpass script.
 func (a *AskPass) Close() {
 	if a != nil && a.dir != "" {
-		os.RemoveAll(a.dir)
+		_ = os.RemoveAll(a.dir)
 	}
 }
 
@@ -186,7 +186,9 @@ func writePipe(path string, line []byte) error {
 		if err == nil {
 			f := os.NewFile(uintptr(fd), path)
 			_, err = f.Write(line)
-			f.Close()
+			if cerr := f.Close(); err == nil {
+				err = cerr
+			}
 			return err
 		}
 		if !errors.Is(err, syscall.ENXIO) && !errors.Is(err, syscall.ENOENT) || time.Now().After(deadline) {
@@ -302,11 +304,15 @@ func (s *SSHExecutor) runContext(ctx context.Context, cmd *exec.Cmd, stdin []byt
 	out, err := runAskContext(ctx, cmd, stdin, args, func(pipe, prompt string, remote bool) {
 		answer, ok := sess.ask(prompt)
 		line := replyLine(answer, ok)
+		// The callback cannot report an error. When the answer does not
+		// reach the pipe, the script keeps waiting on it, and git or ssh
+		// keeps waiting on the script until the command's timeout or
+		// cancellation kills it.
 		if !remote {
-			writePipe(pipe, line)
+			_ = writePipe(pipe, line)
 			return
 		}
-		s.replyRemote(pipe, line)
+		_ = s.replyRemote(pipe, line)
 	})
 	sess.finish(err)
 	return out, err

@@ -227,13 +227,13 @@ func (r *Repo) ShowFileWith(tool, command, base, changed string, paths ...string
 	if command != "" {
 		args = append([]string{"-c", "difftool." + tool + ".cmd=" + command}, args...)
 	}
-	switch {
-	case changed == "index":
+	switch changed {
+	case "index":
 		args = append(args, "--cached")
 		if base != "" {
 			args = append(args, base)
 		}
-	case changed == "":
+	case "":
 		if base != "" {
 			args = append(args, base)
 		}

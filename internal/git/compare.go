@@ -23,8 +23,8 @@ func (r *Repo) CompareSides(base, changed string, paths ...string) (localData, r
 	if len(paths) > 1 && paths[1] != "" && paths[1] != remoteName {
 		localName = paths[1]
 	}
-	switch {
-	case changed == "index":
+	switch changed {
+	case "index":
 		if base == "" {
 			base = "HEAD"
 		}
@@ -33,7 +33,7 @@ func (r *Repo) CompareSides(base, changed string, paths ...string) (localData, r
 			return nil, nil, "", "", err
 		}
 		remoteData, err = r.sideContent("index", remoteName)
-	case changed == "":
+	case "":
 		if base == "" {
 			base = "HEAD"
 		}

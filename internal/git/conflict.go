@@ -14,12 +14,6 @@ func (r *Repo) MergeFile(tool, path string) error {
 	return err
 }
 
-// conflicted reports an unmerged path while an operation is in progress.
-func (r *Repo) conflicted() bool {
-	st, err := r.Status()
-	return err == nil && st.Conflicted()
-}
-
 // ConflictSides are the two versions git recorded for an unmerged path.
 type ConflictSides struct {
 	Ours, Theirs         string
