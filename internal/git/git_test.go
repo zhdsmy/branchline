@@ -234,7 +234,7 @@ func TestSSH(t *testing.T) {
 func TestSSHArgs(t *testing.T) {
 	ex := &SSHExecutor{Host: "example.com", User: "git", Port: 2200, Identity: "/k/id", Dir: "~/src/my app"}
 	remote := ex.RemoteCommand("log", "--format=%H %s", "it's")
-	want := `cd ~/'src/my app' && GIT_TERMINAL_PROMPT=0 GIT_OPTIONAL_LOCKS=0 LC_ALL=C git --literal-pathspecs -c core.quotepath=false -c color.ui=false -c log.showSignature=false -c core.pager=cat log '--format=%H %s' 'it'\''s'`
+	want := `cd ~/'src/my app' && GIT_TERMINAL_PROMPT=0 GIT_OPTIONAL_LOCKS=0 LC_ALL=C git --literal-pathspecs -c core.quotepath=false -c color.ui=false -c log.showSignature=false -c core.pager=cat -c core.fsmonitor=false -c protocol.ext.allow=never log '--format=%H %s' 'it'\''s'`
 	if remote != want {
 		t.Errorf("remote command\n got %s\nwant %s", remote, want)
 	}

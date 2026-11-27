@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -17,6 +18,54 @@ import (
 
 	"github.com/zhdsmy/branchline/internal/git"
 )
+
+// loopbackWatchdogScript supervises the loopback sshd so it cannot outlive the
+// test process. macOS has no PR_SET_PDEATHSIG equivalent, so instead the
+// watchdog shell starts sshd as its own child and blocks in wait, while a
+// background reader watches a pipe whose write end is held only by the test
+// process (passed as fd 3 through exec.Cmd.ExtraFiles; the write end never
+// enters any child). When the test process dies without running its cleanups
+// (SIGKILL, terminal closed), the pipe reaches EOF; the reader then ignores
+// SIGTERM so signalling the whole process group does not kill the reader
+// itself before its SIGKILL fallback can run. When sshd exits first, wait
+// returns and the watchdog kills and reaps the reader, leaving nothing behind.
+// The watchdog and sshd share one process group, so the normal cleanup path
+// terminates all of them together while the pipe is still open.
+//
+// Arguments: $1 is the pid file the watchdog writes the sshd pid into, the
+// rest is the sshd command line.
+const loopbackWatchdogScript = `#!/bin/sh
+pidfile=$1
+shift
+"$@" 3<&- &
+sshd_pid=$!
+if ! printf '%s\n' "$sshd_pid" > "$pidfile.tmp" || ! mv -f "$pidfile.tmp" "$pidfile"; then
+    kill -KILL "$sshd_pid" 2>/dev/null
+    exit 1
+fi
+(
+    while read -r _ignored <&3; do :; done
+    trap '' TERM
+    kill -TERM "$sshd_pid" 2>/dev/null
+    kill -TERM -$$ 2>/dev/null
+    i=0
+    while [ "$i" -lt 10 ]; do
+        kill -0 "$sshd_pid" 2>/dev/null || break
+        sleep 0.1
+        i=$((i + 1))
+    done
+    if kill -0 "$sshd_pid" 2>/dev/null; then
+        kill -KILL "$sshd_pid" 2>/dev/null
+    fi
+    kill -KILL -$$ 2>/dev/null
+) >/dev/null 2>&1 &
+reader_pid=$!
+exec 3<&-
+wait "$sshd_pid"
+kill -KILL "$reader_pid" 2>/dev/null
+wait "$reader_pid" 2>/dev/null
+exit 0
+`
 
 // loopbackDeps allows unit tests in package sshtest to test skip/fail policy
 // without mutating process-wide PATH or system binaries.
@@ -164,6 +213,11 @@ func startLoopback(t testing.TB, deps loopbackDeps) *Target {
 		t.Fatalf("init control_paths.log: %v", err)
 	}
 
+	watchdogScript := filepath.Join(binDir, "sshd-watchdog")
+	if err := os.WriteFile(watchdogScript, []byte(loopbackWatchdogScript), 0o755); err != nil {
+		t.Fatalf("write sshd watchdog script: %v", err)
+	}
+
 	// Retry up to 3 times in case another process grabs the ephemeral port
 	// between net.Listen().Close() and sshd binding it.
 	const maxAttempts = 3
@@ -232,14 +286,26 @@ func startLoopback(t testing.TB, deps loopbackDeps) *Target {
 		}
 
 		var stderrBuf syncBuffer
-		cmd := exec.Command(sshdBin, "-D", "-e", "-f", sshdConfig)
+		watchdogPIDFile := filepath.Join(baseDir, "sshd-watchdog.pid")
+		_ = os.Remove(watchdogPIDFile)
+		pipeR, pipeW, err := os.Pipe()
+		if err != nil {
+			t.Fatalf("create watchdog pipe: %v", err)
+		}
+		cmd := exec.Command(shBin, watchdogScript, watchdogPIDFile, sshdBin, "-D", "-e", "-f", sshdConfig)
 		cmd.Stdout = &stderrBuf
 		cmd.Stderr = &stderrBuf
+		cmd.ExtraFiles = []*os.File{pipeR}
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 		if err := cmd.Start(); err != nil {
-			skipOrFail("failed to start loopback sshd: %v", err)
+			_ = pipeR.Close()
+			_ = pipeW.Close()
+			skipOrFail("failed to start loopback sshd watchdog: %v", err)
 			return nil
 		}
+		// The child holds its own copy of the pipe read end (as fd 3); only the
+		// write end in this process keeps the watchdog alive.
+		_ = pipeR.Close()
 		exited := make(chan struct{})
 		go func() {
 			_ = cmd.Wait()
@@ -269,6 +335,7 @@ func startLoopback(t testing.TB, deps loopbackDeps) *Target {
 		}
 
 		if exitedEarly {
+			_ = pipeW.Close()
 			if !strings.Contains(strings.ToLower(lastErr), "address already in use") {
 				break
 			}
@@ -277,7 +344,16 @@ func startLoopback(t testing.TB, deps loopbackDeps) *Target {
 
 		if !ready {
 			terminateProcessGroup(cmd.Process.Pid, cmd.Process, exited)
+			_ = pipeW.Close()
 			lastErr = fmt.Sprintf("sshd did not accept TCP connections on 127.0.0.1:%d within 5s: %s", port, strings.TrimSpace(stderrBuf.String()))
+			continue
+		}
+
+		sshdPID, pidErr := readWatchdogPIDFile(watchdogPIDFile, exited)
+		if pidErr != nil {
+			terminateProcessGroup(cmd.Process.Pid, cmd.Process, exited)
+			_ = pipeW.Close()
+			lastErr = fmt.Sprintf("cannot determine loopback sshd pid: %v (stderr: %s)", pidErr, strings.TrimSpace(stderrBuf.String()))
 			continue
 		}
 
@@ -290,7 +366,7 @@ func startLoopback(t testing.TB, deps loopbackDeps) *Target {
 			SSH:             wrapper,
 			KnownHosts:      knownHosts,
 			RootDir:         rootDir,
-			PID:             cmd.Process.Pid,
+			PID:             sshdPID,
 			sshBin:          sshBin,
 			sshConfig:       sshConfig,
 			baseDir:         baseDir,
@@ -300,6 +376,7 @@ func startLoopback(t testing.TB, deps loopbackDeps) *Target {
 			controlPaths:    make(map[string]struct{}),
 			cmd:             cmd,
 			exited:          exited,
+			pipeW:           pipeW,
 		}
 
 		// Track default ControlPaths immediately so even if callers only use
@@ -390,6 +467,41 @@ func (s *Target) GenerateKey(t testing.TB, name, passphrase string) string {
 		Dir:      s.RootDir,
 	}).ControlPath())
 	return keyPath
+}
+
+// readWatchdogPIDFile polls for the sshd pid the watchdog script writes at
+// startup. The write happens before sshd binds its port, so a file missing or
+// unparsable after 2 seconds (or after the watchdog has already exited) means
+// the watchdog script itself failed.
+func readWatchdogPIDFile(path string, exited <-chan struct{}) (int, error) {
+	deadline := time.Now().Add(2 * time.Second)
+	var lastErr error
+	for {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			lastErr = err
+		} else {
+			text := strings.TrimSpace(string(data))
+			pid, convErr := strconv.Atoi(text)
+			if convErr == nil && pid > 0 {
+				return pid, nil
+			}
+			if convErr != nil {
+				lastErr = fmt.Errorf("invalid pid %q: %w", text, convErr)
+			} else {
+				lastErr = fmt.Errorf("non-positive pid %q", text)
+			}
+		}
+		select {
+		case <-exited:
+			return 0, fmt.Errorf("watchdog exited before writing valid pid to %s: %v", path, lastErr)
+		default:
+		}
+		if time.Now().After(deadline) {
+			return 0, fmt.Errorf("no valid pid in %s within 2s: %v", path, lastErr)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 var perSourcePenaltiesSupport = struct {
