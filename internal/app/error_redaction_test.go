@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/egoist/mygo/ui"
+
 	"github.com/zhdsmy/branchline/internal/git"
 	"github.com/zhdsmy/branchline/internal/store"
 )
@@ -36,7 +38,11 @@ func TestErrorRedactionPushHookCredentials(t *testing.T) {
 
 	repo.CommitFile("b.txt", "two\n", "second commit")
 	h.drain()
-	clickPush(t, h)
+	// Hold Option on toolbar Push to push directly through syncPush, so the
+	// raw *git.Error from git reaches session.doThen and is scrubbed there.
+	if err := h.ui.ClickWith(ui.Alt, "Push"); err != nil {
+		t.Fatalf("Option-click Push: %v", err)
+	}
 	h.drain()
 
 	err := h.app.session.ActionErr()
