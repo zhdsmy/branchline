@@ -92,6 +92,7 @@ func (st *conflictEditorState) resetDraft() {
 	st.draftDirty = false
 	st.activeHunk = 0
 	st.scrollHunk = false
+	st.hunkList = ui.ListState{}
 }
 
 // resetConflictEditor drops the entire conflict editor state: the cached
@@ -592,6 +593,12 @@ func (a *app) conflictHunkList(c *ui.Context, st *conflictEditorState, ins git.C
 	hunks := ins.Hunks
 	ui.Column(c.Key("conflict-hunks-pane")).Grow(1).Basis(0).MinWidth(0).MinHeight(0).FillHeight().Children(func() {
 		st.hunkList.Key = func(row int) any { return row }
+		if st.scrollHunk {
+			st.scrollHunk = false
+			if st.activeHunk >= 0 && st.activeHunk < len(hunks) {
+				st.hunkList.ScrollIntoView(st.activeHunk)
+			}
+		}
 		ui.List(c.Key("conflict-hunks-scroll"), &st.hunkList, len(hunks)).
 			Grow(1).FillWidth().MinHeight(0).Padding(6, 10, 10, 10).Gap(10).
 			Rows(func(r ui.ListRow) {
@@ -621,12 +628,6 @@ func (a *app) conflictHunkList(c *ui.Context, st *conflictEditorState, ins git.C
 					})
 				})
 			})
-		if st.scrollHunk {
-			st.scrollHunk = false
-			if st.activeHunk >= 0 && st.activeHunk < len(hunks) {
-				st.hunkList.ScrollIntoView(st.activeHunk)
-			}
-		}
 	})
 }
 

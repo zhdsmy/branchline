@@ -145,6 +145,7 @@ func (a *app) exitHistoryMode() {
 	hv.detailLoading = false
 	hv.files = nil
 	hv.fileSel = -1
+	hv.fileList = ui.ListState{}
 	hv.compare = historyCompareState{fileSel: -1}
 }
 

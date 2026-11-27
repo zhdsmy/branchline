@@ -479,3 +479,71 @@ func tail(s string, n int) string {
 	}
 	return s
 }
+
+// Reordering rows, closing the interactive rebase form and reopening it on
+// the same base commit resets both the scroll position and the plan order,
+// leaving no pending moves behind.
+func TestDialogListRebaseCloseAndReopenResetsScrollAndOrder(t *testing.T) {
+	repo, onto := dialogIRFixture(t, "ir-dialog-reopen", 41)
+	h := openDialogIR(t, repo, onto, 40)
+	h.ui.Advance(3 * time.Second)
+	wantOrder := slices.Clone(irExecOrder(t, h))
+
+	irScrollToBottom(t, h)
+	if first, _ := interactiveRebaseUI(h.app).list.Visible(); first == 0 {
+		t.Fatal("setup: plan list did not scroll away from its top")
+	}
+	hash2 := dialogIRHash(t, repo, 2)
+	if err := h.ui.Click("Move Up " + irShort(hash2)); err != nil {
+		t.Fatalf("move up before cancel: %v", err)
+	}
+	if err := h.ui.Click("Cancel"); err != nil {
+		t.Fatalf("click Cancel: %v", err)
+	}
+	h.ui.Frame()
+	assertIRDialogClosed(t, h)
+
+	row := commitRowLabel(onto, "ir commit 1")
+	if err := h.ui.RightClick(row); err != nil {
+		t.Fatalf("right-click oldest commit to reopen: %v", err)
+	}
+	if err := h.ui.ChooseMenuItem("Interactively Rebase 'main' to Here…"); err != nil {
+		t.Fatalf("reopen interactive rebase: %v", err)
+	}
+	h.ui.Frame()
+	h.drain()
+
+	if first, _ := interactiveRebaseUI(h.app).list.Visible(); first != 0 {
+		t.Fatalf("reopened plan list first visible row = %d, want 0", first)
+	}
+	if got := irExecOrder(t, h); !slices.Equal(got, wantOrder) {
+		t.Fatalf("reopened plan order diverged from the repository's original order")
+	}
+}
+
+// Jumping across a long conflict hunk list in one step — wrapping from the
+// first hunk to the 500th via Previous Conflict, then wrapping back to the
+// first via Next Conflict — lands directly on the target hunk in view.
+func TestDialogListConflictWrapJumpAcrossFiveHundredHunks(t *testing.T) {
+	repo := dialogConflictFixture(t, "conflict-dialog-wrap-500", 500)
+	h := openConflictedMerge(t, repo)
+	selectConflictRow(t, h, "f.txt")
+	openMergeHunks(t, h)
+	h.ui.Advance(3 * time.Second)
+
+	if err := h.ui.Click("Previous Conflict"); err != nil {
+		t.Fatalf("click Previous Conflict to wrap to end: %v", err)
+	}
+	h.ui.Frame()
+	if !hasExactText(h.ui, "Conflict 500") {
+		t.Fatalf("Conflict 500 not in view after one Previous Conflict wrap; texts=%q", lastTexts(h.ui, 30))
+	}
+
+	if err := h.ui.Click("Next Conflict"); err != nil {
+		t.Fatalf("click Next Conflict to wrap to start: %v", err)
+	}
+	h.ui.Frame()
+	if !hasExactText(h.ui, "Conflict 1") {
+		t.Fatalf("Conflict 1 not in view after one Next Conflict wrap; texts=%q", lastTexts(h.ui, 30))
+	}
+}

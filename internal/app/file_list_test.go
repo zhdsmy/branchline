@@ -211,3 +211,25 @@ func TestChangedFileListRenameShowsBothPaths(t *testing.T) {
 		t.Fatalf("rename row access = %+v (found=%v), want the new path selected", row, ok)
 	}
 }
+
+// Rapid arrow-key navigation in the shared changed-file list settles on the
+// final file and loads its diff without getting stuck on intermediate rows.
+func TestChangedFileListArrowKeysSelectFinalFile(t *testing.T) {
+	h, _, _, _ := openBigCommitDetail(t, "cfl-arrows", 20)
+	hv := &h.app.historyView
+
+	if err := h.ui.Click("File " + hv.files[0].Path); err != nil {
+		t.Fatalf("click first file to focus list: %v", err)
+	}
+	for range 5 {
+		h.ui.Key(0, ui.KeyDown)
+	}
+	h.drain()
+
+	if hv.fileSel != 5 {
+		t.Fatalf("fileSel after 5 Down presses = %d, want 5", hv.fileSel)
+	}
+	if got, want := hv.diff.req.File.Path, hv.files[5].Path; got != want {
+		t.Fatalf("diff path = %q, want %q", got, want)
+	}
+}

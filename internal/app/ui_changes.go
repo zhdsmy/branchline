@@ -209,6 +209,7 @@ func (a *app) resetChangesForRepo() {
 	s.amendErr = ""
 	s.diff.Clear(a.session, changesDiffScope)
 	s.repoGen = a.session.Generation()
+	s.list = ui.ListState{}
 	s.listCache.invalidate()
 }
 

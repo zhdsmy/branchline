@@ -117,6 +117,8 @@ func (st *interactiveRebaseUIState) clearInteractiveRebaseDraft() {
 	st.readErr = nil
 	st.rows = nil
 	st.submitClicked = false
+	st.list = ui.ListState{}
+	st.moves = nil
 }
 
 // commitInteractiveRebaseMenuItems adds the interactive rebase item to the
@@ -155,6 +157,8 @@ func (a *app) openInteractiveRebaseModal(cm git.Commit) {
 	st.readErr = nil
 	st.rows = nil
 	st.submitClicked = false
+	st.list = ui.ListState{}
+	st.moves = nil
 	a.clearInteractiveRebaseMessages()
 	a.startInteractiveRebasePlanRead(st)
 	a.startInteractiveRebaseOptionsRead(st.onto, st.branch, st.expectedHead)
@@ -170,6 +174,8 @@ func (a *app) startInteractiveRebasePlanRead(st *interactiveRebaseUIState) {
 	onto := st.onto
 	st.loading = true
 	st.readErr = nil
+	st.list = ui.ListState{}
+	st.moves = nil
 	sessionRead(a.session, "ir-plan", func(repo *git.Repo) ([]git.RebaseTodo, error) {
 		return repo.RebaseRangePlan(onto)
 	}, func(plan []git.RebaseTodo, err error) {
@@ -193,6 +199,8 @@ func (a *app) startInteractiveRebasePlanRead(st *interactiveRebaseUIState) {
 			}
 		}
 		st.rows = rows
+		st.list = ui.ListState{}
+		st.moves = nil
 	})
 }
 
@@ -284,13 +292,23 @@ func (a *app) interactiveRebaseModal(c *ui.Context) {
 				// the place of the rows it replaces means nothing to it, as
 				// the scroll container's reset offset did before.
 				st.list = ui.ListState{}
+				st.moves = nil
 				ui.Text(c, "Loading plan…").FontSize(12.5).TextColor(p.muted)
 			case st.readErr != nil:
+				st.moves = nil
 				ui.Text(c, st.readErr.Error()).FontSize(12).TextColor(p.danger).MaxWidth(604)
 				if ui.Button(c.Key("ir-retry"), "Retry").Label("Retry").Clicked() {
 					a.startInteractiveRebasePlanRead(st)
 				}
 			default:
+				// Drain any deferred move queued by a late-built row during
+				// the previous layout pass before this pass renders.
+				if len(st.moves) > 0 {
+					for _, m := range st.moves {
+						moveInteractiveRebaseRow(st.rows, m.hash, m.dir)
+					}
+					st.moves = st.moves[:0]
+				}
 				// The list draws only the rows in view; its order is the reverse
 				// of the execution order, the newest commit on top. A move
 				// button's click cannot swap rows while the rows build — the
