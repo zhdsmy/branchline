@@ -29,11 +29,20 @@ func isolatedPrefsGitConfig(t *testing.T) string {
 // loggingShim writes an executable that appends "PATH=<its PATH>\tGIT_TRACE=<its
 // GIT_TRACE>\t<args>" to log for every invocation and then executes target with
 // its arguments. It is both the proof that a custom program was used and the
-// record of the environment and arguments the product handed it.
+// record of the environment and arguments the product handed it. Parallel Git
+// invocations serialize their append through a sibling lock directory so lines
+// longer than stdio's buffer never interleave mid-line.
 func loggingShim(t *testing.T, dir, name, target, log string) string {
 	t.Helper()
 	shim := filepath.Join(dir, name)
-	script := "#!/bin/sh\nprintf '%s\\t%s\\t%s\\n' \"PATH=$PATH\" \"GIT_TRACE=${GIT_TRACE:-}\" \"$*\" >> " + git.ShellQuote(log) + "\nexec " + git.ShellQuote(target) + " \"$@\"\n"
+	script := "#!/bin/sh\n" +
+		"lock=" + git.ShellQuote(log+".lock") + "\n" +
+		"while ! mkdir \"$lock\" 2>/dev/null; do :; done\n" +
+		"trap 'rmdir \"$lock\" 2>/dev/null' EXIT\n" +
+		"printf '%s\\t%s\\t%s\\n' \"PATH=$PATH\" \"GIT_TRACE=${GIT_TRACE:-}\" \"$*\" >> " + git.ShellQuote(log) + "\n" +
+		"rmdir \"$lock\"\n" +
+		"trap - EXIT\n" +
+		"exec " + git.ShellQuote(target) + " \"$@\"\n"
 	if err := os.WriteFile(shim, []byte(script), 0o755); err != nil {
 		t.Fatalf("write shim %s: %v", shim, err)
 	}
