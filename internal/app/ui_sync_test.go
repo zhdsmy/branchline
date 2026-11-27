@@ -127,7 +127,7 @@ func TestSyncLocalFetchPullPushAndSetUpstream(t *testing.T) {
 	}
 
 	// Pull fast-forwards HEAD and updates the working tree.
-	if err := h.ui.Click("Pull"); err != nil {
+	if err := h.ui.ClickWith(ui.Alt, "Pull"); err != nil {
 		t.Fatalf("click Pull: %v", err)
 	}
 	h.drain()
@@ -143,7 +143,7 @@ func TestSyncLocalFetchPullPushAndSetUpstream(t *testing.T) {
 	}
 
 	// Pulling again toasts the up-to-date note instead of an error.
-	if err := h.ui.Click("Pull"); err != nil {
+	if err := h.ui.ClickWith(ui.Alt, "Pull"); err != nil {
 		t.Fatalf("click Pull again: %v", err)
 	}
 	h.drain()
@@ -556,7 +556,7 @@ func TestSyncPullConflictPreservesWorkingTree(t *testing.T) {
 	}
 	headBefore := strings.TrimSpace(repo.Git("rev-parse", "HEAD"))
 
-	if err := h.ui.Click("Pull"); err != nil {
+	if err := h.ui.ClickWith(ui.Alt, "Pull"); err != nil {
 		t.Fatalf("click Pull: %v", err)
 	}
 	h.drain()
@@ -1070,10 +1070,12 @@ func clickFetch(t *testing.T, h *testHarness) {
 	}
 }
 
-// clickPull clicks the toolbar Pull button and fails the test on error.
+// clickPull clicks the toolbar Pull button with Option held — the direct
+// pull a plain click ran before the Pull dialog — and fails the test on
+// error.
 func clickPull(t *testing.T, h *testHarness) {
 	t.Helper()
-	if err := h.ui.Click("Pull"); err != nil {
+	if err := h.ui.ClickWith(ui.Alt, "Pull"); err != nil {
 		t.Fatalf("click Pull: %v", err)
 	}
 }
