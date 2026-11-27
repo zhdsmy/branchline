@@ -1,0 +1,314 @@
+package app
+
+import (
+	"sort"
+
+	"github.com/egoist/mygo"
+	"github.com/egoist/mygo/ui"
+)
+
+// settingsPageDef describes one page of the Settings window: its identity,
+// the title its tab shows, where the page sorts among the tabs, an optional
+// priming hook that runs as the window opens on the page or a click selects
+// its tab, and the page itself.
+type settingsPageDef struct {
+	id     string
+	title  string
+	order  int
+	onOpen func(*app)
+	view   func(*app, *ui.Context, palette)
+}
+
+// registeredSettingsPages are the pages of the Settings window as their files
+// register them; settingsPages reads them in tab order.
+var registeredSettingsPages []settingsPageDef
+
+// registerSettingsPage adds a page to the Settings window. Pages register in
+// their file's init, so a new page joins the window without changes to the
+// window itself.
+func registerSettingsPage(def settingsPageDef) {
+	registeredSettingsPages = append(registeredSettingsPages, def)
+}
+
+// settingsPages are the registered pages in tab order: ascending order, ties
+// broken by id, so the row is stable however the files initialize.
+func settingsPages() []settingsPageDef {
+	pages := append([]settingsPageDef(nil), registeredSettingsPages...)
+	sort.SliceStable(pages, func(i, j int) bool {
+		if pages[i].order != pages[j].order {
+			return pages[i].order < pages[j].order
+		}
+		return pages[i].id < pages[j].id
+	})
+	return pages
+}
+
+func init() {
+	registerSettingsPage(settingsPageDef{
+		id:     "general",
+		title:  "General",
+		order:  0,
+		onOpen: (*app).syncGeneralSettings,
+		view:   (*app).settingsGeneralPage,
+	})
+}
+
+// settingsState holds the Settings window state on app. All fields are owned
+// by the UI thread: the window shares the main thread with the main window.
+//
+// Each control keeps the same triple: the value it shows (a click moves it
+// ahead before the view rebuilds), the value last saved successfully — which
+// a failed save reverts the control to — and its raw save error in errs,
+// shown under the control until one of its saves succeeds.
+type settingsState struct {
+	// page is the id of the page the window shows; empty resolves to the
+	// first page. opened is the page whose onOpen priming already ran for
+	// this activation of the window.
+	page   string
+	opened string
+	errs   map[string]string
+
+	appearance, appearanceApplied string
+	dateOrder, dateOrderApplied   bool
+	fetchTags, fetchTagsApplied   bool
+
+	fontSize, fontSizeApplied       float64
+	tabWidth, tabWidthApplied       int
+	changeMarks, changeMarksApplied bool
+	ignoreSpace, ignoreSpaceApplied bool
+}
+
+// syncSettingsChoice refreshes a control's shown and applied values from the
+// live one while no edit is pending: a click moves the shown value ahead of
+// the applied one, and the pending choice must survive until the save picks
+// it up. Changes made elsewhere — the same setting edited in another view —
+// flow into the control through the refresh.
+func syncSettingsChoice[T comparable](shown, applied *T, live T) {
+	if *shown == *applied {
+		*shown = live
+		*applied = live
+	}
+}
+
+// saveSettingsChoice persists a control's pending choice: the frame after a
+// click arrives with the shown value ahead of the applied one. A successful
+// save moves the applied value, and the control's effect runs inside the save
+// closure, after the write. A failure reverts the control to the applied
+// value — before the controls of this frame are built, so the unapplied
+// choice never paints — and keeps the raw error on the page.
+func saveSettingsChoice[T comparable](s *settingsState, key string, shown, applied *T, save func(T) error) {
+	if *shown == *applied {
+		return
+	}
+	choice := *shown
+	if err := save(choice); err != nil {
+		*shown = *applied
+		s.errs[key] = err.Error()
+		return
+	}
+	*applied = choice
+	s.errs[key] = ""
+}
+
+// openSettings opens the Settings window, or focuses the one already open:
+// the shortcut and the menu item never create a second window.
+func (a *app) openSettings() {
+	if a.settingsOpen {
+		if w := a.settingsWin; w != nil {
+			if w.IsMinimized() {
+				w.Restore()
+			}
+			w.Show()
+			w.Focus()
+			mygo.App.Focus()
+		}
+		return
+	}
+	a.settingsOpen = true
+	a.openSettingsWindowFn()
+}
+
+// createSettingsWindow is the production window hook: it opens the Settings
+// window and wires its close to clear the tracked reference, so the next
+// ⌘, opens a fresh window.
+func (a *app) createSettingsWindow() {
+	w := mygo.NewWindow(mygo.WindowOptions{
+		Title:           "Settings",
+		Width:           560,
+		Height:          420,
+		MinWidth:        480,
+		MinHeight:       360,
+		BackgroundColor: "light-dark(#fbfbfc, #151619)",
+		Content:         ui.View(a.settingsView),
+	})
+	a.settingsWin = w
+	w.OnClosed(a.closeSettingsWindow)
+}
+
+// closeSettingsWindow records the Settings window closing. The production
+// window's OnClosed callback runs it; tests call it to exercise the reopen
+// path without a real window. The priming marker clears so the next window
+// primes its page from the live values again.
+func (a *app) closeSettingsWindow() {
+	a.settingsWin = nil
+	a.settingsOpen = false
+	a.settings.opened = ""
+}
+
+// applyStartupAppearance applies the appearance saved in the store, which
+// Run calls before creating the main window so the app starts in it. A
+// store without a saved value reads back as system, leaving the default
+// behavior unchanged.
+func (a *app) applyStartupAppearance() {
+	a.applyAppearanceFn(mygo.ThemeSource(a.store.Appearance()))
+}
+
+// currentSettingsPage resolves the page the window shows: the chosen one, or
+// the first page before a choice and when the choice is unknown.
+func (a *app) currentSettingsPage(pages []settingsPageDef) settingsPageDef {
+	for _, def := range pages {
+		if def.id == a.settings.page {
+			return def
+		}
+	}
+	if len(pages) > 0 {
+		return pages[0]
+	}
+	return settingsPageDef{}
+}
+
+// settingsView renders the Settings window: a row of page tabs across the
+// top and the active page below it.
+func (a *app) settingsView(c *ui.Context) {
+	p := applyPalette(c, a.themeGen)
+	s := &a.settings
+	if s.errs == nil {
+		s.errs = map[string]string{}
+	}
+
+	pages := settingsPages()
+	cur := a.currentSettingsPage(pages)
+	if cur.id != s.opened {
+		s.opened = cur.id
+		if cur.onOpen != nil {
+			cur.onOpen(a)
+		}
+	}
+
+	ui.Column(c).Fill().Padding(0, 0, 16, 0).Children(func() {
+		a.settingsTabRow(c, p, pages, cur)
+		ui.Box(c.Key("settings-page")).Grow(1).Padding(16, 20, 0, 20).Children(func() {
+			if cur.view != nil {
+				cur.view(a, c, p)
+			}
+		})
+	})
+}
+
+// settingsTabRow builds the page tabs across the top of the window, one
+// button per page in their tab order.
+func (a *app) settingsTabRow(c *ui.Context, p palette, pages []settingsPageDef, cur settingsPageDef) {
+	s := &a.settings
+	ui.Row(c.Key("settings-tabs")).Gap(4).Justify(ui.Start).Padding(12, 20, 0, 20).Children(func() {
+		for _, def := range pages {
+			selected := cur.id == def.id
+			b := ui.ButtonBase(c.Key("settings-tab-" + def.id)).
+				Height(28).
+				PaddingX(12).
+				Radius(6).
+				AlignItems(ui.Center).
+				Justify(ui.Start).
+				Role(ui.RoleTab).
+				Label(def.title).
+				AccessSelected(selected).
+				FocusRing(false)
+			fg := p.muted
+			if selected {
+				b.Background(p.selected)
+				fg = p.text
+			} else if b.Hovered() {
+				b.Background(p.hover)
+			}
+			b.Children(func() {
+				ui.Text(c, def.title).FontSize(13).FontWeight(500).TextColor(fg).SingleLine()
+			})
+			if b.Clicked() {
+				s.page = def.id
+			}
+		}
+	})
+}
+
+// syncGeneralSettings refreshes the General page's controls from the live
+// values: the saved appearance, the history ordering and whether Fetch
+// brings every tag. Pending edits are left alone, as syncSettingsChoice
+// describes.
+func (a *app) syncGeneralSettings() {
+	s := &a.settings
+	prefs := a.store.Settings()
+	syncSettingsChoice(&s.appearance, &s.appearanceApplied, a.store.Appearance())
+	syncSettingsChoice(&s.dateOrder, &s.dateOrderApplied, prefs.DateOrder)
+	syncSettingsChoice(&s.fetchTags, &s.fetchTagsApplied, prefs.FetchTags)
+}
+
+// settingsGeneralPage renders the General page: the appearance, the commit
+// ordering of the history, and whether Fetch brings every tag.
+func (a *app) settingsGeneralPage(c *ui.Context, p palette) {
+	s := &a.settings
+	a.syncGeneralSettings()
+
+	// A click mutates a control's value before the view rebuilds, so a fresh
+	// choice is pending here. Save it before building the controls: the
+	// revert of a failed save then lands in this same frame instead of
+	// painting the unapplied choice for one frame.
+	saveSettingsChoice(s, "appearance", &s.appearance, &s.appearanceApplied, func(choice string) error {
+		if err := a.store.SetAppearance(choice); err != nil {
+			return err
+		}
+		a.applyAppearanceFn(mygo.ThemeSource(choice))
+		return nil
+	})
+	saveSettingsChoice(s, "dateOrder", &s.dateOrder, &s.dateOrderApplied, func(byDate bool) error {
+		cur := a.store.Settings()
+		cur.DateOrder = byDate
+		if err := a.store.SetSettings(cur); err != nil {
+			return err
+		}
+		a.session.SetDateOrder(byDate)
+		a.redraw()
+		return nil
+	})
+	saveSettingsChoice(s, "fetchTags", &s.fetchTags, &s.fetchTagsApplied, func(on bool) error {
+		if err := a.saveFetchTags(on); err != nil {
+			return err
+		}
+		a.redraw()
+		return nil
+	})
+
+	ui.Form(c, func() {
+		ui.Field(c, "Appearance", func() {
+			ui.RadioGroup(c, func() {
+				for _, choice := range []struct {
+					value string
+					name  string
+				}{
+					{"system", "System"},
+					{"light", "Light"},
+					{"dark", "Dark"},
+				} {
+					ui.Radio(c, &s.appearance, choice.value, choice.name).Label("Appearance " + choice.name)
+				}
+			}).Row()
+		}).Error(s.errs["appearance"])
+		ui.Field(c, "Commit Order", func() {
+			ui.RadioGroup(c, func() {
+				ui.Radio(c, &s.dateOrder, false, "Topologically").Label("Commit Order Topologically")
+				ui.Radio(c, &s.dateOrder, true, "By date").Label("Commit Order By date")
+			}).Row()
+		}).Error(s.errs["dateOrder"])
+		ui.Field(c, "Tags", func() {
+			ui.Checkbox(c, &s.fetchTags, "Fetch all tags").Label("Fetch all tags")
+		}).Error(s.errs["fetchTags"])
+	})
+}

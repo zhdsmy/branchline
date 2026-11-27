@@ -1,0 +1,31 @@
+{
+  "permissions": {
+    "deny": [
+      "Bash(sudo:*)",
+      "Bash(git push:*)",
+      "Bash(git branch -d:*)",
+      "Bash(git branch -D:*)",
+      "Bash(git branch --delete:*)",
+      "Bash(git update-ref:*)",
+      "Bash(git reflog expire:*)",
+      "Bash(git filter-branch:*)",
+      "Bash(git filter-repo:*)",
+      "Bash(git config --global:*)",
+      "Bash(docker system:*)",
+      "Bash(docker context:*)",
+      "Bash(docker volume:*)",
+      "Bash(docker container prune:*)",
+      "Bash(docker image prune:*)",
+      "Bash(docker network prune:*)",
+      "Bash(docker builder prune:*)",
+      "Bash(kiri:*)",
+      "Bash(launchctl:*)",
+      "Bash(defaults write:*)",
+      "Bash(tccutil:*)",
+      "Bash(diskutil:*)",
+      "Bash(osascript:*)",
+      "Bash(shutdown:*)",
+      "Bash(reboot:*)"
+    ]
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "goos": "darwin",
+  "goarch": "arm64",
+  "macos_version": "27.2.1",
+  "macos_major": 27,
+  "macos_build": "26B131",
+  "mygo_version": "v0.10.0",
+  "width": 1200,
+  "height": 800,
+  "scale": 2
+}

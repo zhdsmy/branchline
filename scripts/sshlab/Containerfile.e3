@@ -1,0 +1,42 @@
+# Branchline sshlab E3: Alpine Linux (BusyBox sh/coreutils + Git + OpenSSH Server)
+# Deliberately retains BusyBox sh/stat/sha256sum (non-GNU userland).
+# Note: Disposable SSH authorized_keys and host keys are generated/injected at runtime by up.sh.
+# The sshd_config below mirrors the hardened runtime config up.sh writes on every boot:
+# raised MaxStartups/MaxSessions, VERBOSE logging, and PerSourcePenalties disabled only
+# when the installed OpenSSH supports it (>= 9.8); the runtime startup uses `-E /tmp/sshd.log`.
+FROM alpine:latest
+
+RUN apk add --no-cache \
+        ca-certificates \
+        git \
+        iproute2 \
+        iptables \
+        openssh && \
+    sed -i 's/^root:!:/root:*:/' /etc/shadow && \
+    mkdir -p /run/sshd /root/.ssh && \
+    chmod 700 /root/.ssh && \
+    rm -f /etc/ssh/ssh_host_* && \
+    ssh-keygen -q -t ed25519 -N "" -f /etc/ssh/ssh_host_ed25519_key && \
+    printf '%s\n' \
+        'Port 22' \
+        'ListenAddress 0.0.0.0' \
+        'HostKey /etc/ssh/ssh_host_ed25519_key' \
+        'PermitRootLogin prohibit-password' \
+        'PubkeyAuthentication yes' \
+        'AuthorizedKeysFile .ssh/authorized_keys' \
+        'PasswordAuthentication no' \
+        'KbdInteractiveAuthentication no' \
+        'StrictModes yes' \
+        'Subsystem sftp internal-sftp' \
+        'MaxStartups 64:30:128' \
+        'MaxSessions 64' \
+        'LogLevel VERBOSE' \
+        > /etc/ssh/sshd_config && \
+    if /usr/sbin/sshd -T -o PerSourcePenalties=no >/dev/null 2>&1; then \
+        printf '%s\n' 'PerSourcePenalties no' >> /etc/ssh/sshd_config; \
+    fi && \
+    /usr/sbin/sshd -t && \
+    rm -f /etc/ssh/ssh_host_*
+
+EXPOSE 22
+CMD ["/usr/sbin/sshd", "-D", "-e", "-E", "/tmp/sshd.log"]

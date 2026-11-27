@@ -1,0 +1,506 @@
+package app
+
+import (
+	"errors"
+	"path/filepath"
+	"strings"
+
+	"github.com/zhdsmy/branchline/internal/git"
+	"github.com/zhdsmy/branchline/internal/repository"
+	"github.com/zhdsmy/branchline/internal/store"
+)
+
+const (
+	defaultLocalLogLimit = 500
+	defaultSSHLogLimit   = 1000
+	defaultLoadMoreStep  = 500
+)
+
+// repoSession coordinates repository reads and mutations for the active
+// repository without blocking the UI thread.
+//
+// All fields on repoSession are owned by the UI thread. Background workers
+// receive only immutable parameters captured on the UI thread (the *git.Repo
+// instance, repository.Options, and caller-captured inputs) and publish their
+// results back through post (Window.Update in production, or a controlled UI
+// queue in tests).
+type repoSession struct {
+	post     func(func())
+	spawn    func(func())
+	openRepo func(store.Repo) *git.Repo
+
+	meta    store.Repo
+	hasRepo bool
+	repo    *git.Repo
+
+	// repoGen identifies the currently open repository session. Every Open or
+	// Close advances repoGen so completions from an earlier repository are
+	// discarded even if they finish after the new repository loads.
+	repoGen uint64
+	// loadGen identifies the active snapshot read within the current repoGen.
+	// Reload and write start both advance loadGen so an older read cannot
+	// overwrite newer state or clear a newer request's loading flag.
+	loadGen uint64
+	// readSeq tracks per-scope generation numbers for auxiliary reads
+	// (such as commit details or file diffs) created via sessionRead.
+	readSeq map[string]uint64
+
+	logLimit    int
+	showIgnored bool
+	// ignoreSpace is the diff panel's global ignore-whitespace choice. The UI
+	// thread captures it into diff requests before background workers run, so
+	// workers never read this field.
+	ignoreSpace bool
+	// saveIgnoreSpace persists the ignore-whitespace choice. It is wired once
+	// when the app is created; tests without a store leave it nil.
+	saveIgnoreSpace func(bool) error
+
+	// settingsFn reads the app's persisted settings, wired when the app is
+	// created. Tests building a session alone leave it nil, and Settings then
+	// returns the zero value, which keeps every view option at its default.
+	settingsFn func() store.Settings
+	// dateOrder sorts the history by committer date rather than topology, as
+	// git log --date-order does; SetDateOrder reloads when the choice changes.
+	dateOrder bool
+
+	snapshot repository.Snapshot
+	loaded   bool
+	loading  bool
+	loadErr  error
+
+	// Git capability state of the current repository generation. The probe
+	// runs once per repository session inside the first successful snapshot
+	// load; capsLoaded marks a verified answer, capsErr a detection failure
+	// that a user can retry explicitly, and capsRetrying guards the explicit
+	// background retry against re-entry. A capsErr is never a verified old
+	// version, and neither state survives Open or Close.
+	caps         git.GitCapabilities
+	capsLoaded   bool
+	capsErr      error
+	capsRetrying bool
+
+	busy      bool
+	busyLabel string
+	actionErr error
+}
+
+func newRepoSession(post, spawn func(func()), openRepo func(store.Repo) *git.Repo) *repoSession {
+	if post == nil {
+		post = func(fn func()) {}
+	}
+	if spawn == nil {
+		spawn = func(fn func()) { go fn() }
+	}
+	if openRepo == nil {
+		openRepo = defaultOpenGitRepo
+	}
+	return &repoSession{
+		post:     post,
+		spawn:    spawn,
+		openRepo: openRepo,
+		readSeq:  map[string]uint64{},
+	}
+}
+
+// defaultOpenGitRepo builds a *git.Repo for either a local checkout or an SSH
+// server repository using the existing store and git executor constructors.
+func defaultOpenGitRepo(meta store.Repo) *git.Repo {
+	return git.New(meta.Executor())
+}
+
+// resolveRepoTarget parses a startup target from BRANCHLINE_OPEN, accepting
+// either an SSH address (user@host:/path or ssh://...) or a local directory.
+func resolveRepoTarget(raw string) (store.Repo, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return store.Repo{}, errors.New("empty repository path")
+	}
+	if store.IsAddress(raw) {
+		r, err := store.ParseAddress(raw)
+		if err != nil {
+			return store.Repo{}, err
+		}
+		if r.Name == "" {
+			r.Name = store.DefaultName(r.Path)
+		}
+		return r, nil
+	}
+	abs, err := filepath.Abs(raw)
+	if err != nil {
+		return store.Repo{}, err
+	}
+	abs = filepath.Clean(abs)
+	return store.Repo{
+		Kind: store.Local,
+		Path: abs,
+		Name: store.DefaultName(abs),
+	}, nil
+}
+
+// Open switches the session to meta, invalidates any in-flight reads or writes
+// from the previous repository, and begins loading a fresh snapshot.
+func (s *repoSession) Open(meta store.Repo) {
+	s.repoGen++
+	s.loadGen++
+	clear(s.readSeq)
+
+	s.meta = meta
+	s.hasRepo = true
+	s.repo = s.openRepo(meta)
+
+	s.snapshot = repository.Snapshot{}
+	s.loaded = false
+	s.loading = false
+	s.loadErr = nil
+	s.busy = false
+	s.busyLabel = ""
+	s.actionErr = nil
+
+	s.caps = git.GitCapabilities{}
+	s.capsLoaded = false
+	s.capsErr = nil
+	s.capsRetrying = false
+
+	if meta.Kind == store.SSH {
+		s.logLimit = defaultSSHLogLimit
+	} else {
+		s.logLimit = defaultLocalLogLimit
+	}
+	s.Reload()
+}
+
+// Close detaches the active repository and invalidates any in-flight work.
+func (s *repoSession) Close() {
+	s.repoGen++
+	s.loadGen++
+	clear(s.readSeq)
+
+	s.meta = store.Repo{}
+	s.hasRepo = false
+	s.repo = nil
+	s.snapshot = repository.Snapshot{}
+	s.loaded = false
+	s.loading = false
+	s.loadErr = nil
+	s.busy = false
+	s.busyLabel = ""
+	s.actionErr = nil
+
+	s.caps = git.GitCapabilities{}
+	s.capsLoaded = false
+	s.capsErr = nil
+	s.capsRetrying = false
+}
+
+// Reload starts an asynchronous repository.Load using options captured on the
+// UI thread. While a mutating write is in progress (s.busy), Reload is a no-op
+// because doThen unconditionally schedules a fresh Reload upon completion.
+// Stale completions are ignored without clearing newer state.
+func (s *repoSession) Reload() {
+	if !s.hasRepo || s.repo == nil || s.busy {
+		return
+	}
+	repo := s.repo
+	repoGen := s.repoGen
+	s.loadGen++
+	loadGen := s.loadGen
+	opts := s.loadOptions()
+
+	s.loading = true
+	s.loadErr = nil
+
+	s.spawn(func() {
+		snap, err := repository.Load(repo, opts)
+		s.post(func() {
+			if s.repoGen != repoGen || s.loadGen != loadGen {
+				return
+			}
+			s.loading = false
+			if err != nil {
+				s.loadErr = err
+				return
+			}
+			s.snapshot = snap
+			s.loaded = true
+			s.loadErr = nil
+			if !opts.SkipCapabilities {
+				// The first successful load of this repository carries the
+				// one probe result; every later refresh skips it. A probing
+				// load without a probe (a reader that cannot answer) leaves
+				// the state untouched, so a plain session reload never
+				// erases a verified answer either.
+				if snap.HasCapabilities {
+					s.caps = snap.Capabilities
+					s.capsLoaded = true
+					s.capsErr = nil
+				} else if snap.CapabilitiesErr != nil {
+					s.caps = git.GitCapabilities{}
+					s.capsLoaded = false
+					s.capsErr = snap.CapabilitiesErr
+				}
+			}
+		})
+	})
+}
+
+// LoadMore grows the history log limit and schedules a fresh snapshot load.
+// While a write operation is busy, the updated logLimit is recorded and the
+// read is deferred until the write finishes and triggers Reload.
+func (s *repoSession) LoadMore(step int) {
+	if !s.hasRepo || s.repo == nil {
+		return
+	}
+	if step <= 0 {
+		step = defaultLoadMoreStep
+	}
+	s.logLimit += step
+	s.Reload()
+}
+
+// do executes a mutating Git operation off the UI thread. It sets the busy
+// state, rejects concurrent re-entry while busy, reloads the snapshot after
+// completion, and retains any write error separately from snapshot load errors.
+//
+// Callers must capture all mutable UI inputs on the UI thread before calling
+// do; fn must use only its *git.Repo argument and captured values.
+func (s *repoSession) do(label string, fn func(*git.Repo) error) bool {
+	return s.doThen(label, fn, nil)
+}
+
+// doThen behaves like do and additionally invokes after on the UI thread once
+// the write completes (only if the session is still on the same repository).
+// Reload is scheduled before after runs; after must not assume the reload has
+// already finished.
+func (s *repoSession) doThen(label string, fn func(*git.Repo) error, after func(error)) bool {
+	if !s.hasRepo || s.repo == nil || fn == nil || s.busy {
+		return false
+	}
+	repo := s.repo
+	repoGen := s.repoGen
+	// Advance loadGen so an in-flight read started before this write cannot
+	// publish pre-mutation state while or after the write runs.
+	s.loadGen++
+	s.loading = false
+	s.busy = true
+	s.busyLabel = label
+	s.actionErr = nil
+
+	s.spawn(func() {
+		err := fn(repo)
+		s.post(func() {
+			if s.repoGen != repoGen {
+				return
+			}
+			s.busy = false
+			s.busyLabel = ""
+			s.actionErr = err
+			s.Reload()
+			if after != nil {
+				after(err)
+			}
+		})
+	})
+	return true
+}
+
+// sessionRead runs a scoped asynchronous read (for example commit detail or
+// file diff) off the UI thread and invokes done on the UI thread only if both
+// the repository generation and the scope's request sequence still match.
+func sessionRead[T any](s *repoSession, scope string, work func(*git.Repo) (T, error), done func(T, error)) bool {
+	if s == nil || !s.hasRepo || s.repo == nil || work == nil || done == nil {
+		return false
+	}
+	repo := s.repo
+	repoGen := s.repoGen
+	seq := s.readSeq[scope] + 1
+	s.readSeq[scope] = seq
+
+	s.spawn(func() {
+		res, err := work(repo)
+		s.post(func() {
+			if s.repoGen != repoGen || s.readSeq[scope] != seq {
+				return
+			}
+			done(res, err)
+		})
+	})
+	return true
+}
+
+// cancelRead invalidates any in-flight sessionRead for scope so late results
+// are discarded when a caller clears its selection.
+func (s *repoSession) cancelRead(scope string) {
+	if s == nil {
+		return
+	}
+	s.readSeq[scope]++
+}
+
+func (s *repoSession) loadOptions() repository.Options {
+	limit := s.logLimit
+	if limit <= 0 {
+		limit = defaultLocalLogLimit
+	}
+	return repository.Options{
+		ShowIgnored: s.showIgnored,
+		Log: git.LogOptions{
+			Limit:     limit,
+			DateOrder: s.dateOrder,
+		},
+		// Once this repository generation has a verified answer or a
+		// detection failure, ordinary reloads, pagination, and post-write
+		// refreshes never run git --version again; only an explicit retry
+		// re-probes after a failure.
+		SkipCapabilities: s.capsLoaded || s.capsErr != nil,
+	}
+}
+
+// Settings returns the app's persisted settings, or the zero value in tests
+// that build a session alone: every view option then reads as its default.
+func (s *repoSession) Settings() store.Settings {
+	if s.settingsFn == nil {
+		return store.Settings{}
+	}
+	return s.settingsFn()
+}
+
+// DateOrder reports whether the history sorts by committer date rather than
+// topology.
+func (s *repoSession) DateOrder() bool { return s.dateOrder }
+
+// SetDateOrder records the history ordering and reloads the snapshot when it
+// changes, so the log is walked again with the new order.
+func (s *repoSession) SetDateOrder(on bool) {
+	if s.dateOrder == on {
+		return
+	}
+	s.dateOrder = on
+	s.Reload()
+}
+
+// RebuildExecutor replaces the executor of the active repository with a fresh
+// one, so changes to how git itself is run — its program, its PATH, its
+// traces — take effect without reopening the repository. The metadata and the
+// log limit are kept. While no write is in progress the snapshot reloads at
+// once; a write in progress is not interrupted, and its automatic reload
+// already runs on the new executor.
+func (s *repoSession) RebuildExecutor() {
+	if !s.hasRepo {
+		return
+	}
+	s.repo = s.openRepo(s.meta)
+	if !s.busy {
+		s.Reload()
+	}
+}
+
+// IgnoreSpace reports whether file diffs ignore whitespace changes.
+func (s *repoSession) IgnoreSpace() bool { return s.ignoreSpace }
+
+// SetIgnoreSpace records the ignore-whitespace choice. The choice only takes
+// effect after it is persisted: when the save callback fails, the in-memory
+// value is left unchanged and the error is returned, so a view can keep its
+// previous rendering instead of reloading.
+func (s *repoSession) SetIgnoreSpace(v bool) error {
+	if s.saveIgnoreSpace != nil {
+		if err := s.saveIgnoreSpace(v); err != nil {
+			return err
+		}
+	}
+	s.ignoreSpace = v
+	return nil
+}
+
+// saveIgnoreSpacePref writes the ignore-whitespace choice to the store,
+// leaving every other setting untouched. A failure is surfaced as a toast:
+// the toggle is a global preference rather than diff content, so the panel's
+// own error area — reserved for diff load failures — is not the place for it.
+func saveIgnoreSpacePref(a *app, v bool) error {
+	if a.store == nil {
+		return nil
+	}
+	settings := a.store.Settings()
+	settings.IgnoreSpace = v
+	if err := a.store.SetSettings(settings); err != nil {
+		a.toast = "Cannot save settings: " + err.Error()
+		return err
+	}
+	return nil
+}
+
+func (s *repoSession) HasRepo() bool                 { return s.hasRepo }
+func (s *repoSession) Meta() store.Repo              { return s.meta }
+func (s *repoSession) Repo() *git.Repo               { return s.repo }
+func (s *repoSession) Snapshot() repository.Snapshot { return s.snapshot }
+func (s *repoSession) Loaded() bool                  { return s.loaded }
+func (s *repoSession) Loading() bool                 { return s.loading }
+func (s *repoSession) LoadErr() error                { return s.loadErr }
+func (s *repoSession) Busy() bool                    { return s.busy }
+func (s *repoSession) BusyLabel() string             { return s.busyLabel }
+func (s *repoSession) ActionErr() error              { return s.actionErr }
+func (s *repoSession) ClearActionErr()               { s.actionErr = nil }
+func (s *repoSession) Generation() uint64            { return s.repoGen }
+
+// RetryGitCapabilities re-probes the current repository's Git version in the
+// background after a detection failure. It returns false when there is no
+// repository, no recorded detection failure, or a retry already in flight.
+// The probe runs through sessionRead, so a completion arriving after the
+// repository switched or closed is discarded with the other stale reads and
+// never touches the new repository's capability state.
+func (s *repoSession) RetryGitCapabilities() bool {
+	if s == nil || !s.hasRepo || s.repo == nil || s.capsLoaded || s.capsErr == nil || s.capsRetrying {
+		return false
+	}
+	s.capsRetrying = true
+	if !sessionRead(s, "git-capabilities", func(repo *git.Repo) (git.GitCapabilities, error) {
+		return repo.Capabilities()
+	}, func(caps git.GitCapabilities, err error) {
+		s.capsRetrying = false
+		if err != nil {
+			s.caps = git.GitCapabilities{}
+			s.capsLoaded = false
+			s.capsErr = err
+			return
+		}
+		s.caps = caps
+		s.capsLoaded = true
+		s.capsErr = nil
+	}) {
+		s.capsRetrying = false
+		return false
+	}
+	return true
+}
+
+// GitCapabilities returns the verified capability answer of the current
+// repository generation. The bool is false while the first probe is still in
+// flight and after a detection failure: an unverified state must never read
+// as an answer.
+func (s *repoSession) GitCapabilities() (git.GitCapabilities, bool) {
+	if s.capsLoaded && s.capsErr == nil {
+		return s.caps, true
+	}
+	return git.GitCapabilities{}, false
+}
+
+// GitCapabilitiesErr returns the detection failure of the current repository
+// generation, or nil when the probe succeeded or has not finished yet.
+func (s *repoSession) GitCapabilitiesErr() error { return s.capsErr }
+
+// GitCapabilitiesRetrying reports whether an explicit probe retry is in flight.
+func (s *repoSession) GitCapabilitiesRetrying() bool { return s.capsRetrying }
+
+// SupportsRebaseUpdateRefs reports whether the repository's verified Git
+// supports rebase --update-refs. Unverified or failed detection is never
+// support: the answer is false until the probe succeeds.
+func (s *repoSession) SupportsRebaseUpdateRefs() bool {
+	caps, ok := s.GitCapabilities()
+	return ok && caps.RebaseUpdateRefs
+}
+
+// SupportsStashStaged reports whether the repository's verified Git supports
+// stash --staged. Unverified or failed detection is never support.
+func (s *repoSession) SupportsStashStaged() bool {
+	caps, ok := s.GitCapabilities()
+	return ok && caps.StashStaged
+}

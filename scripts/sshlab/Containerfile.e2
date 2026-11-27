@@ -1,0 +1,45 @@
+# Branchline sshlab E2: Ubuntu 20.04 (Git 2.25 minimum supported version + GNU coreutils + OpenSSH Server)
+# Note: Disposable SSH authorized_keys and host keys are generated/injected at runtime by up.sh.
+# The sshd_config below mirrors the hardened runtime config up.sh writes on every boot:
+# raised MaxStartups/MaxSessions, VERBOSE logging, and PerSourcePenalties disabled only
+# when the installed OpenSSH supports it (>= 9.8); the runtime startup uses `-E /tmp/sshd.log`.
+FROM ubuntu:20.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update -qq && \
+    apt-get install -y -qq --no-install-recommends \
+        ca-certificates \
+        git \
+        iproute2 \
+        iptables \
+        openssh-server && \
+    rm -rf /var/lib/apt/lists/* && \
+    mkdir -p /run/sshd /root/.ssh && \
+    chmod 700 /root/.ssh && \
+    rm -f /etc/ssh/ssh_host_* && \
+    ssh-keygen -q -t ed25519 -N "" -f /etc/ssh/ssh_host_ed25519_key && \
+    printf '%s\n' \
+        'Port 22' \
+        'ListenAddress 0.0.0.0' \
+        'HostKey /etc/ssh/ssh_host_ed25519_key' \
+        'PermitRootLogin prohibit-password' \
+        'PubkeyAuthentication yes' \
+        'AuthorizedKeysFile .ssh/authorized_keys' \
+        'PasswordAuthentication no' \
+        'KbdInteractiveAuthentication no' \
+        'UsePAM no' \
+        'StrictModes yes' \
+        'Subsystem sftp internal-sftp' \
+        'MaxStartups 64:30:128' \
+        'MaxSessions 64' \
+        'LogLevel VERBOSE' \
+        > /etc/ssh/sshd_config && \
+    if /usr/sbin/sshd -T -o PerSourcePenalties=no >/dev/null 2>&1; then \
+        printf '%s\n' 'PerSourcePenalties no' >> /etc/ssh/sshd_config; \
+    fi && \
+    /usr/sbin/sshd -t && \
+    rm -f /etc/ssh/ssh_host_*
+
+EXPOSE 22
+CMD ["/usr/sbin/sshd", "-D", "-e", "-E", "/tmp/sshd.log"]

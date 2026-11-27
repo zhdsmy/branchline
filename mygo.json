@@ -1,0 +1,21 @@
+{
+  "name": "Branchline",
+  "identifier": "com.zhdsmy.branchline",
+  "version": "0.2.0",
+  "icon": "resources/icon.png",
+  "out": "build",
+  "resources": [
+    "LICENSE",
+    "THIRD_PARTY_NOTICES"
+  ],
+  "resourcesExclude": [
+    "icon-src/**",
+    "AppIcon.icon/**"
+  ],
+  "urlSchemes": [
+    "branchline"
+  ],
+  "macos": {
+    "icon": "resources/AppIcon.icon"
+  }
+}
