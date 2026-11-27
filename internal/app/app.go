@@ -23,7 +23,6 @@ const (
 type route struct {
 	page   pageKind
 	repoID string
-	ref    string
 }
 
 // app owns the single-window UI state, routing history, repository store, and
@@ -60,8 +59,6 @@ type app struct {
 	historyView   historyState
 	changesView   changesState
 	refsView      refsState
-	reposView     reposState
-	syncView      syncState
 	settings      settingsState
 
 	// settingsWin is the open Settings window, nil while closed.

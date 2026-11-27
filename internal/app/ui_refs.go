@@ -221,20 +221,6 @@ func (a *app) remoteRows(c *ui.Context, remote string, refs git.Refs) {
 	}
 }
 
-func (a *app) refStubRow(c *ui.Context, key, sfName string, fallback *ui.SVG, name string, current bool) {
-	p := a.pal
-	iconColor := p.faint
-	weight := 400
-	if current {
-		iconColor = p.accent
-		weight = 600
-	}
-	ui.Row(c.Key(key)).Height(26).PaddingX(10).Gap(8).AlignItems(ui.Center).Children(func() {
-		symbolIcon(c, sfName, fallback, 13, iconColor)
-		ui.Text(c, name).FontSize(12.5).FontWeight(weight).TextColor(p.text).SingleLine().Shrink(1).MinWidth(0)
-	})
-}
-
 func (a *app) refPlaceholderRow(c *ui.Context, text string) {
 	ui.Row(c).Height(24).PaddingX(18).AlignItems(ui.Center).Children(func() {
 		ui.Text(c, text).FontSize(12).TextColor(a.pal.faint).SingleLine()

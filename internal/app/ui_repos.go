@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"sync"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
@@ -36,12 +35,6 @@ var pickLocalFolderFn = func(parent *mygo.Window) (string, error) {
 	return paths[0], nil
 }
 
-// reposState is the repository switcher slot in the app state struct. It
-// stays empty: the app struct is shared with the other feature modules, so
-// the repository switcher keeps its mutable UI state in the app-keyed
-// reposUIStates table below instead.
-type reposState struct{}
-
 // reposUIState is the repository switcher's UI state of one app instance:
 // the popup flag, the Add SSH form draft with its connection-check generation,
 // the not-a-git-repository notice and the remove failure notice.
@@ -65,20 +58,10 @@ type reposUIState struct {
 	removeErr string
 }
 
-var reposUIStates = struct {
-	sync.Mutex
-	m map[*app]*reposUIState
-}{m: map[*app]*reposUIState{}}
-
+// reposUI returns the app's repository switcher state, creating it on first
+// use. It runs on the UI thread.
 func (a *app) reposUI() *reposUIState {
-	reposUIStates.Lock()
-	defer reposUIStates.Unlock()
-	st := reposUIStates.m[a]
-	if st == nil {
-		st = &reposUIState{}
-		reposUIStates.m[a] = st
-	}
-	return st
+	return featureState(a, func() *reposUIState { return &reposUIState{} })
 }
 
 // repoSwitcher is the sidebar-top repository switcher: a trigger
