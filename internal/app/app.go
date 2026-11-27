@@ -144,7 +144,7 @@ func (a *app) buildGitRepo(meta store.Repo) *git.Repo {
 	}
 	if a.store != nil {
 		prefs := a.store.Settings()
-		return git.New(meta.ExecutorWith(prefs.GitPath, prefs.Trace(), prefs.EnvPath))
+		return git.New(meta.ExecutorFor(prefs))
 	}
 	return defaultOpenGitRepo(meta)
 }
