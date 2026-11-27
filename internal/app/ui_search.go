@@ -76,6 +76,10 @@ type searchUIState struct {
 	detailErr     error
 
 	fileSel int
+	// fileList is the scroll state of the chosen result's changed-file
+	// list; it resets wherever fileSel does, so a newly chosen result's
+	// list starts at its first row.
+	fileList ui.ListState
 
 	diff diffPanel
 
@@ -382,6 +386,7 @@ func (a *app) clearSearchSelection(st *searchUIState) {
 	st.detailLoading = false
 	st.files = nil
 	st.fileSel = -1
+	st.fileList = ui.ListState{}
 	st.listSel = -1
 	a.session.cancelRead("search-detail")
 	st.diff.Clear(a.session, "search-diff")
@@ -400,6 +405,7 @@ func (a *app) selectSearchResult(cm git.Commit) {
 	st.detailErr = nil
 	st.files = nil
 	st.fileSel = -1
+	st.fileList = ui.ListState{}
 	st.diff.Clear(a.session, "search-diff")
 	a.startSearchDetailLoad(cm)
 }
@@ -432,6 +438,7 @@ func (a *app) startSearchDetailLoad(cm git.Commit) {
 			st.files = nil
 			st.detail = git.CommitDetail{}
 			st.fileSel = -1
+			st.fileList = ui.ListState{}
 			st.diff.Clear(a.session, "search-diff")
 			return
 		}
@@ -440,10 +447,12 @@ func (a *app) startSearchDetailLoad(cm git.Commit) {
 		st.detailErr = nil
 		if len(res.files) == 0 {
 			st.fileSel = -1
+			st.fileList = ui.ListState{}
 			st.diff.Clear(a.session, "search-diff")
 			return
 		}
 		st.fileSel = 0
+		st.fileList = ui.ListState{}
 		st.diff.Load(a.session, "search-diff", commitFileDiffRequest(st.commit, res.files[0]))
 	})
 }
@@ -729,53 +738,15 @@ func (a *app) searchFileList(c *ui.Context, p palette, st *searchUIState) {
 				ui.Text(c, "No files changed").FontSize(11.5).TextColor(p.faint).SingleLine()
 			})
 		default:
-			ui.Scroll(c.Key("search-files-scroll")).Grow(1).FillWidth().MinHeight(0).Children(func() {
-				ui.Column(c).FillWidth().Padding(4, 0).Children(func() {
-					for i, f := range st.files {
-						a.searchFileRow(c, p, st, i, f)
+			changedFileList(c.Key("search-files"), &st.fileList, st.files, p, &st.fileSel,
+				nil,
+				func(i int, f git.FileChange) {
+					if st.selHash != "" {
+						st.diff.Load(a.session, "search-diff", commitFileDiffRequest(st.commit, f))
 					}
 				})
-			})
 		}
 	})
-}
-
-func (a *app) searchFileRow(c *ui.Context, p palette, st *searchUIState, i int, f git.FileChange) {
-	selected := st.fileSel == i
-	b := ui.ButtonBase(c.Key("search-file-" + st.commit.Hash + "-" + f.Path)).
-		Height(24).
-		FillWidth().
-		PaddingX(14).
-		Gap(7).
-		AlignItems(ui.Center).
-		Justify(ui.Start).
-		Role(ui.RoleListItem).
-		Label("File " + f.Path).
-		AccessSelected(selected).
-		FocusRing(false)
-	switch {
-	case selected:
-		b.Background(p.selected)
-	case b.Hovered():
-		b.Background(p.hover)
-	}
-	b.Children(func() {
-		col := historyStatusColor(p, f.Status)
-		ui.Box(c).Size(16, 16).Radius(4).Background(col.Alpha(0.18)).Center().Shrink(0).Children(func() {
-			ui.Text(c, string(f.Status)).FontSize(9.5).FontWeight(700).TextColor(col).SingleLine()
-		})
-		name := f.Path
-		if f.OrigPath != "" && f.OrigPath != f.Path {
-			name = f.OrigPath + " → " + f.Path
-		}
-		ui.Text(c, name).FontSize(11.5).TextColor(p.text).SingleLine().Ellipsis("…").Shrink(1).MinWidth(0)
-	})
-	if b.Clicked() {
-		if st.fileSel != i && st.selHash != "" {
-			st.fileSel = i
-			st.diff.Load(a.session, "search-diff", commitFileDiffRequest(st.commit, f))
-		}
-	}
 }
 
 // showSelectedResultInHistory jumps the currently chosen match back to the

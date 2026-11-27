@@ -73,6 +73,10 @@ type historyState struct {
 	detailErr     error
 
 	fileSel int
+	// fileList is the scroll state of the commit's changed-file list; it
+	// resets wherever fileSel does, so a newly chosen commit's list starts
+	// at its first row.
+	fileList ui.ListState
 
 	// mode is the detail pane's current mode; selection holds every chosen
 	// commit hash, as the list's multi-selection does. compare is the
@@ -335,6 +339,7 @@ func (a *app) selectHistoryCommit(cm git.Commit) {
 	hv.detailErr = nil
 	hv.files = nil
 	hv.fileSel = -1
+	hv.fileList = ui.ListState{}
 	hv.diff.Clear(a.session, "history-diff")
 	a.startHistoryDetailLoad(cm)
 }
@@ -366,6 +371,7 @@ func (a *app) startHistoryDetailLoad(cm git.Commit) {
 			hv.files = nil
 			hv.detail = git.CommitDetail{}
 			hv.fileSel = -1
+			hv.fileList = ui.ListState{}
 			hv.diff.Clear(a.session, "history-diff")
 			return
 		}
@@ -374,10 +380,12 @@ func (a *app) startHistoryDetailLoad(cm git.Commit) {
 		hv.detailErr = nil
 		if len(res.files) == 0 {
 			hv.fileSel = -1
+			hv.fileList = ui.ListState{}
 			hv.diff.Clear(a.session, "history-diff")
 			return
 		}
 		hv.fileSel = 0
+		hv.fileList = ui.ListState{}
 		hv.diff.Load(a.session, "history-diff", commitFileDiffRequest(hv.commit, res.files[0]))
 	})
 }
@@ -490,57 +498,17 @@ func (a *app) historyFileList(c *ui.Context, p palette) {
 				ui.Text(c, "No files changed").FontSize(11.5).TextColor(p.faint).SingleLine()
 			})
 		default:
-			ui.Scroll(c.Key("history-files-scroll")).Grow(1).FillWidth().MinHeight(0).Children(func() {
-				ui.Column(c).FillWidth().Padding(4, 0).Children(func() {
-					for i, f := range hv.files {
-						a.historyFileRow(c, p, i, f)
+			changedFileList(c.Key("history-files"), &hv.fileList, hv.files, p, &hv.fileSel,
+				func(m *ui.Menu, f git.FileChange) {
+					a.historyFileContextMenu(m, hv.commit, f)
+				},
+				func(i int, f git.FileChange) {
+					if hv.sel != "" {
+						hv.diff.Load(a.session, "history-diff", commitFileDiffRequest(hv.commit, f))
 					}
 				})
-			})
 		}
 	})
-}
-
-func (a *app) historyFileRow(c *ui.Context, p palette, i int, f git.FileChange) {
-	hv := &a.historyView
-	selected := hv.fileSel == i
-	b := ui.ButtonBase(c.Key("file-" + hv.commit.Hash + "-" + f.Path)).
-		Height(24).
-		FillWidth().
-		PaddingX(14).
-		Gap(7).
-		AlignItems(ui.Center).
-		Justify(ui.Start).
-		Role(ui.RoleListItem).
-		Label("File " + f.Path).
-		AccessSelected(selected).
-		FocusRing(false)
-	switch {
-	case selected:
-		b.Background(p.selected)
-	case b.Hovered():
-		b.Background(p.hover)
-	}
-	b.Children(func() {
-		col := historyStatusColor(p, f.Status)
-		ui.Box(c).Size(16, 16).Radius(4).Background(col.Alpha(0.18)).Center().Shrink(0).Children(func() {
-			ui.Text(c, string(f.Status)).FontSize(9.5).FontWeight(700).TextColor(col).SingleLine()
-		})
-		name := f.Path
-		if f.OrigPath != "" && f.OrigPath != f.Path {
-			name = f.OrigPath + " → " + f.Path
-		}
-		ui.Text(c, name).FontSize(11.5).TextColor(p.text).SingleLine().Ellipsis("…").Shrink(1).MinWidth(0)
-	})
-	b.ContextMenu(func(m *ui.Menu) {
-		a.historyFileContextMenu(m, hv.commit, f)
-	})
-	if b.Clicked() {
-		if hv.fileSel != i && hv.sel != "" {
-			hv.fileSel = i
-			hv.diff.Load(a.session, "history-diff", commitFileDiffRequest(hv.commit, f))
-		}
-	}
 }
 
 func historyStatusColor(p palette, s byte) ui.Color {

@@ -24,6 +24,10 @@ type historyCompareState struct {
 	loading bool
 	err     error
 	fileSel int
+	// fileList is the scroll state of the comparison's changed-file list;
+	// it resets wherever fileSel does, so a new or swapped comparison's
+	// list starts at its first row.
+	fileList ui.ListState
 }
 
 // syncHistorySelection reconciles the History detail pane with the rows
@@ -159,6 +163,7 @@ func (a *app) startHistoryCompareLoad() {
 	hv.compare.err = nil
 	hv.compare.files = nil
 	hv.compare.fileSel = -1
+	hv.compare.fileList = ui.ListState{}
 	hv.diff.Clear(a.session, "history-diff")
 	started := sessionRead(a.session, "history-compare", func(repo *git.Repo) ([]git.FileChange, error) {
 		return repo.RangeFiles(baseHash, targetHash)
@@ -171,15 +176,18 @@ func (a *app) startHistoryCompareLoad() {
 			hv.compare.err = err
 			hv.compare.files = nil
 			hv.compare.fileSel = -1
+			hv.compare.fileList = ui.ListState{}
 			return
 		}
 		hv.compare.files = files
 		hv.compare.err = nil
 		if len(files) == 0 {
 			hv.compare.fileSel = -1
+			hv.compare.fileList = ui.ListState{}
 			return
 		}
 		hv.compare.fileSel = 0
+		hv.compare.fileList = ui.ListState{}
 		hv.diff.Load(a.session, "history-diff", rangeFileDiffRequest(hv.compare.base, hv.compare.target, files[0]))
 	})
 	if !started {
@@ -287,56 +295,16 @@ func (a *app) historyCompareFileList(c *ui.Context, p palette) {
 				ui.Text(c, "No differences").FontSize(11.5).TextColor(p.faint).SingleLine()
 			})
 		default:
-			ui.Scroll(c.Key("compare-files-scroll")).Grow(1).FillWidth().MinHeight(0).Children(func() {
-				ui.Column(c).FillWidth().Padding(4, 0).Children(func() {
-					for i, f := range cmp.files {
-						a.historyCompareFileRow(c, p, i, f)
+			// Compare-mode file rows carry no context menu: the File
+			// History and Blame entries of the single-commit rows belong
+			// to one commit, not to a range.
+			changedFileList(c.Key("compare-files"), &cmp.fileList, cmp.files, p, &cmp.fileSel,
+				nil,
+				func(i int, f git.FileChange) {
+					if cmp.base.Hash != "" {
+						hv.diff.Load(a.session, "history-diff", rangeFileDiffRequest(cmp.base, cmp.target, f))
 					}
 				})
-			})
 		}
 	})
-}
-
-// historyCompareFileRow renders one file of the comparison. Compare-mode
-// file rows carry no context menu: the File History and Blame entries of the
-// single-commit rows belong to one commit, not to a range.
-func (a *app) historyCompareFileRow(c *ui.Context, p palette, i int, f git.FileChange) {
-	hv := &a.historyView
-	cmp := &hv.compare
-	selected := cmp.fileSel == i
-	b := ui.ButtonBase(c.Key("cmp-file-" + cmp.base.Hash + "-" + cmp.target.Hash + "-" + f.Path)).
-		Height(24).
-		FillWidth().
-		PaddingX(14).
-		Gap(7).
-		AlignItems(ui.Center).
-		Justify(ui.Start).
-		Role(ui.RoleListItem).
-		Label("File " + f.Path).
-		AccessSelected(selected).
-		FocusRing(false)
-	switch {
-	case selected:
-		b.Background(p.selected)
-	case b.Hovered():
-		b.Background(p.hover)
-	}
-	b.Children(func() {
-		col := historyStatusColor(p, f.Status)
-		ui.Box(c).Size(16, 16).Radius(4).Background(col.Alpha(0.18)).Center().Shrink(0).Children(func() {
-			ui.Text(c, string(f.Status)).FontSize(9.5).FontWeight(700).TextColor(col).SingleLine()
-		})
-		name := f.Path
-		if f.OrigPath != "" && f.OrigPath != f.Path {
-			name = f.OrigPath + " → " + f.Path
-		}
-		ui.Text(c, name).FontSize(11.5).TextColor(p.text).SingleLine().Ellipsis("…").Shrink(1).MinWidth(0)
-	})
-	if b.Clicked() {
-		if cmp.fileSel != i && cmp.base.Hash != "" {
-			cmp.fileSel = i
-			hv.diff.Load(a.session, "history-diff", rangeFileDiffRequest(cmp.base, cmp.target, f))
-		}
-	}
 }
