@@ -124,8 +124,9 @@ type DiffPrefs struct {
 	// git diff -U; ContextSaved marks it chosen, since 0 is a choice.
 	ContextLines int  `json:"contextLines,omitempty"`
 	ContextSaved bool `json:"contextSaved,omitempty"`
-	// FileListFlat lists changed files by path rather than in folders.
-	FileListFlat bool `json:"fileListFlat,omitempty"`
+	// FileListTree groups the changed files of Local Changes in folders.
+	// The zero value is the flat list.
+	FileListTree bool `json:"fileListTree,omitempty"`
 	// FileListCombined puts staged and unstaged changes in one list.
 	FileListCombined bool `json:"fileListCombined,omitempty"`
 	// FileListSort is "status" to sort files by their change, "" by path.
@@ -249,9 +250,22 @@ type Layout struct {
 	FileHistoryColumns map[string]float32 `json:"fileHistoryColumns,omitempty"`
 }
 
-// Executor returns what runs git in the repository.
+// Executor returns what runs git in the repository, with the default
+// toolchain settings: the git of PATH, no traces, no extra SSH keys.
 func (r Repo) Executor() git.Executor {
-	return r.ExecutorWith("", git.Trace{}, "")
+	return r.ExecutorFor(Settings{})
+}
+
+// ExecutorFor returns what runs git in the repository with the toolchain
+// the settings name: the custom git program, the trace switches, the PATH
+// choice, and the active SSH keys offered to every remote using SSH. An
+// SSH repository with its own identity key keeps it instead of the active
+// keys, as the executor already prefers it.
+func (r Repo) ExecutorFor(s Settings) git.Executor {
+	if r.Kind == SSH {
+		return &git.SSHExecutor{Host: r.Host, User: r.User, Port: r.Port, Identity: r.Identity, Dir: r.Path, Trace: s.Trace(), Path: git.PathMode(s.EnvPath), SSHKeys: slices.Clone(s.SSHKeys)}
+	}
+	return &git.LocalExecutor{Dir: r.Path, Git: s.GitPath, Trace: s.Trace(), Path: git.PathMode(s.EnvPath), SSHKeys: slices.Clone(s.SSHKeys)}
 }
 
 // ExecutorWith returns what runs git. gitPath replaces the git program of
@@ -366,6 +380,13 @@ type Store struct {
 	mu   sync.Mutex
 	path string
 	data file
+	// reposRev advances on every save, saves unrelated to the repository
+	// list and saves that roll back included, so a reader caching the
+	// sorted list can tell it went stale without comparing the
+	// repositories themselves. A revision spent on an unrelated or
+	// rolled-back save only costs the cache one extra copy. It is
+	// runtime-only: a store read back from disk starts at zero again.
+	reposRev uint64
 }
 
 type file struct {
@@ -563,11 +584,11 @@ type Settings struct {
 	// choices the settings offer. Anything else reads back as 0.
 	DiffTabWidth  int      `json:"diffTabWidth,omitempty"`
 	SourceFolders []string `json:"sourceFolders,omitempty"`
-	// SSHKeys are the private key files marked active in Configure SSH
 	// SSHKeyFiles are keys opened from outside ~/.ssh, kept in the list
 	// when they are not active.
 	SSHKeyFiles []string `json:"sshKeyFiles,omitempty"`
-	// Keys; git and ssh offer them in every repository.
+	// SSHKeys are the private key files marked active in the SSH Keys
+	// settings; git and ssh offer them in every repository.
 	SSHKeys         []string `json:"sshKeys,omitempty"`
 	GitHubAvatars   bool     `json:"githubAvatars,omitempty"`
 	CommitPrompt    string   `json:"commitPrompt,omitempty"`
@@ -837,12 +858,36 @@ func Open(path string) (*Store, error) {
 func (s *Store) Repos() []Repo {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.reposSortedLocked()
+}
+
+// reposSortedLocked copies the repositories sorted by the last opened
+// first. The caller holds s.mu.
+func (s *Store) reposSortedLocked() []Repo {
 	list := make([]Repo, len(s.data.Repos))
 	for i, r := range s.data.Repos {
 		list[i] = cloneRepo(r)
 	}
 	sort.SliceStable(list, func(i, j int) bool { return list[i].Opened.After(list[j].Opened) })
 	return list
+}
+
+// ReposWithRev returns the repositories as Repos does, with the revision
+// they were copied at in the same lock: a reader comparing a later
+// ReposRev against it knows whether the copy can still be used.
+func (s *Store) ReposWithRev() ([]Repo, uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.reposSortedLocked(), s.reposRev
+}
+
+// ReposRev returns the revision of the repository list, which every save
+// advances. Reading it copies and sorts nothing, so a view can ask every
+// frame and copy the list only when the revision moved.
+func (s *Store) ReposRev() uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.reposRev
 }
 
 // Get returns the repository with id.
@@ -1061,7 +1106,11 @@ func (s *Store) SetTabSession(ids []string, active string, set bool) error {
 	return nil
 }
 
+// save writes the store, advancing the revision of the repository list in
+// the same lock the caller made its edits in, so a failed write rolled back
+// still leaves the revision ahead of any copy a caching reader took.
 func (s *Store) save() error {
+	s.reposRev++
 	if s.path == "" {
 		return nil // in memory, as in tests
 	}

@@ -65,10 +65,12 @@ func init() {
 // a failed save reverts the control to — and its raw save error in errs,
 // shown under the control until one of its saves succeeds.
 type settingsState struct {
-	// page is the id of the page the window shows; empty resolves to the
-	// first page. opened is the page whose onOpen priming already ran for
-	// this activation of the window.
-	page   string
+	// tab is the index of the page the window shows among the registered
+	// pages; out of range resolves to the first page. It is the selection
+	// the tab list edits, so pointer and keyboard choices land in the same
+	// state. opened is the page whose onOpen priming already ran for this
+	// activation of the window.
+	tab    int
 	opened string
 	errs   map[string]string
 
@@ -175,13 +177,11 @@ func (a *app) applyStartupAppearance() {
 	a.applyAppearanceFn(mygo.ThemeSource(a.store.Appearance()))
 }
 
-// currentSettingsPage resolves the page the window shows: the chosen one, or
-// the first page before a choice and when the choice is unknown.
+// currentSettingsPage resolves the page the window shows: the one the tab
+// selection names, or the first page when the selection is out of range.
 func (a *app) currentSettingsPage(pages []settingsPageDef) settingsPageDef {
-	for _, def := range pages {
-		if def.id == a.settings.page {
-			return def
-		}
+	if a.settings.tab >= 0 && a.settings.tab < len(pages) {
+		return pages[a.settings.tab]
 	}
 	if len(pages) > 0 {
 		return pages[0]
@@ -208,8 +208,8 @@ func (a *app) settingsView(c *ui.Context) {
 	}
 
 	ui.Column(c).Fill().Padding(0, 0, 16, 0).Children(func() {
-		a.settingsTabRow(c, p, pages, cur)
-		ui.Box(c.Key("settings-page")).Grow(1).Padding(16, 20, 0, 20).Children(func() {
+		a.settingsTabRow(c, p, pages)
+		ui.Box(c.Key("settings-page")).Grow(1).Padding(16, 20, 0, 20).Role(ui.RoleTabPanel).Label(cur.title).Children(func() {
 			if cur.view != nil {
 				cur.view(a, c, p)
 			}
@@ -217,36 +217,32 @@ func (a *app) settingsView(c *ui.Context) {
 	})
 }
 
-// settingsTabRow builds the page tabs across the top of the window, one
-// button per page in their tab order.
-func (a *app) settingsTabRow(c *ui.Context, p palette, pages []settingsPageDef, cur settingsPageDef) {
+// settingsTabRow builds the page tabs across the top of the window as one
+// tab list: a click chooses a tab, and the arrows, Home and End choose and
+// focus one, while Tab reaches the list once and moves on into the page.
+func (a *app) settingsTabRow(c *ui.Context, p palette, pages []settingsPageDef) {
 	s := &a.settings
-	ui.Row(c.Key("settings-tabs")).Gap(4).Justify(ui.Start).Padding(12, 20, 0, 20).Children(func() {
-		for _, def := range pages {
-			selected := cur.id == def.id
-			b := ui.ButtonBase(c.Key("settings-tab-" + def.id)).
+	tabs := ui.TabsBase(c.Key("settings-tabs"), &s.tab, len(pages))
+	tabs.List.Gap(4).Justify(ui.Start).Padding(12, 20, 0, 20).Children(func() {
+		for i, def := range pages {
+			selected := s.tab == i
+			tab := tabs.Tab(i).
 				Height(28).
 				PaddingX(12).
 				Radius(6).
 				AlignItems(ui.Center).
 				Justify(ui.Start).
-				Role(ui.RoleTab).
-				Label(def.title).
-				AccessSelected(selected).
-				FocusRing(false)
+				Label(def.title)
 			fg := p.muted
 			if selected {
-				b.Background(p.selected)
+				tab.Background(p.selected)
 				fg = p.text
-			} else if b.Hovered() {
-				b.Background(p.hover)
+			} else if tab.Hovered() {
+				tab.Background(p.hover)
 			}
-			b.Children(func() {
+			tab.Children(func() {
 				ui.Text(c, def.title).FontSize(13).FontWeight(500).TextColor(fg).SingleLine()
 			})
-			if b.Clicked() {
-				s.page = def.id
-			}
 		}
 	})
 }

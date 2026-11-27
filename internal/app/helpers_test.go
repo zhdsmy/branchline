@@ -55,11 +55,23 @@ func newTestApp(t *testing.T, repos ...store.Repo) *testHarness {
 		t:     t,
 		app:   a,
 		store: s,
-		ui:    ui.NewTester(a.view, 1200, 800),
+		ui:    ui.NewTester(instantView(a.view), 1200, 800),
 		queue: q,
 	}
 	h.ui.Frame()
 	return h
+}
+
+// instantView wraps view so every frame shows animations at their targets at
+// once. The Tester's clock only moves under Advance, so an animation an input
+// starts would otherwise never finish: the Tester would keep rendering its
+// maximum of twenty frames after every input. The window's first frame is
+// exempt inside the toolkit, which is fine since animations start at rest.
+func instantView(view func(c *ui.Context)) func(c *ui.Context) {
+	return func(c *ui.Context) {
+		c.DisableAnimations()
+		view(c)
+	}
 }
 
 // openRepo opens r in the app and renders one frame without draining
@@ -81,6 +93,14 @@ func (h *testHarness) openRepo(r store.Repo) store.Repo {
 func (h *testHarness) drain() {
 	h.t.Helper()
 	h.queue.Drain(h.t)
+	h.ui.Frame()
+}
+
+// drainWithin is drain with a caller-chosen timeout for the one step of a
+// test whose background work is inherently longer than the shared ceiling.
+func (h *testHarness) drainWithin(timeout time.Duration) {
+	h.t.Helper()
+	h.queue.DrainWithin(h.t, timeout)
 	h.ui.Frame()
 }
 
@@ -234,8 +254,17 @@ func (q *uiQueue) RunNext(t *testing.T) {
 // work scheduled by those callbacks (such as a reload triggered by a write).
 func (q *uiQueue) Drain(t *testing.T) int {
 	t.Helper()
+	return q.DrainWithin(t, queueTimeout)
+}
+
+// DrainWithin behaves like Drain with a caller-chosen timeout in place of
+// queueTimeout, for steps whose background work is inherently longer than
+// the shared ceiling — for example a rebase replaying a thousand commits,
+// which is real git work that scales with the commit count, not a hang.
+func (q *uiQueue) DrainWithin(t *testing.T, timeout time.Duration) int {
+	t.Helper()
 	var timedOut bool
-	timer := time.AfterFunc(queueTimeout, func() {
+	timer := time.AfterFunc(timeout, func() {
 		q.mu.Lock()
 		timedOut = true
 		q.cond.Broadcast()

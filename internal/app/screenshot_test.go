@@ -107,6 +107,7 @@ type screenshotState struct {
 func screenshotStates() []screenshotState {
 	return []screenshotState{
 		{name: "changes-diff", setup: setupScreenshotChangesDiff},
+		{name: "changes-tree", setup: setupScreenshotChangesTree},
 		{name: "history-detail", setup: setupScreenshotHistoryDetail},
 		{name: "refs-sidebar", setup: setupScreenshotRefsSidebar},
 		{name: "repo-switcher", setup: setupScreenshotRepoSwitcher},
@@ -948,7 +949,11 @@ func setupScreenshotAskPassDialog(t *testing.T) *testHarness {
 	// real Fetch worker replace the opening failure with the password request
 	// and the busy badge. waitScreenshotAskPass consumes the intermediate UI
 	// callbacks until the modal is rendered.
-	mustSnapshotClick(t, h, "Fetch")
+	// Option+click keeps the direct fetch a plain click ran before the Fetch
+	// dialog, so the askpass flow this scenario drives is unchanged.
+	if err := h.ui.ClickWith(ui.Alt, "Fetch"); err != nil {
+		t.Fatalf("Option+click Fetch: %v", err)
+	}
 	h.ui.Frame()
 	waitScreenshotAskPass(t, h)
 	if !h.ui.HasText("The remote host requires password") || !h.ui.HasText("alice@git.example.test's password:") {
@@ -1028,8 +1033,8 @@ func TestScreenshotGoldenBudget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("glob screenshot baselines: %v", err)
 	}
-	if len(entries) != 38 {
-		t.Fatalf("screenshot baseline PNG count = %d, want 38", len(entries))
+	if len(entries) != 40 {
+		t.Fatalf("screenshot baseline PNG count = %d, want 40", len(entries))
 	}
 	var total int64
 	for _, path := range entries {

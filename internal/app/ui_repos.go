@@ -37,7 +37,10 @@ var pickLocalFolderFn = func(parent *mygo.Window) (string, error) {
 
 // reposUIState is the repository switcher's UI state of one app instance:
 // the popup flag, the Add SSH form draft with its connection-check generation,
-// the not-a-git-repository notice and the remove failure notice.
+// the not-a-git-repository notice and the remove failure notice. The popup's
+// repository rows are cached between frames: reposCacheRev is the store's
+// revision the copy in reposCache was taken at, advanced by one so that the
+// zero value can never match, and repoList keeps the virtual list's place.
 type reposUIState struct {
 	popupOpen bool
 
@@ -56,6 +59,25 @@ type reposUIState struct {
 	notGitDir  string
 
 	removeErr string
+
+	renOpen   bool
+	renID     string
+	renOrig   string
+	renName   string
+	renErr    string
+	renSelAll bool
+
+	repoClipboard    string
+	hasRepoClipboard bool
+
+	// showInFinder reveals a local repository in the file manager. nil
+	// means mygo's own shell; tests substitute a recorder so no real
+	// Finder window ever opens.
+	showInFinderFn func(path string)
+
+	reposCache    []store.Repo
+	reposCacheRev uint64
+	repoList      ui.ListState
 }
 
 // reposUI returns the app's repository switcher state, creating it on first
@@ -72,12 +94,31 @@ func (a *app) reposUI() *reposUIState {
 func (a *app) repoSwitcher(c *ui.Context) {
 	p := a.pal
 	st := a.reposUI()
-	repos := a.store.Repos()
+	// The popup reads the same rows every frame, so copying and sorting
+	// them again only matters when the store says the list changed: the
+	// revision asks cost nothing, the copy happens once per change.
+	rev := a.store.ReposRev()
+	if rev+1 != st.reposCacheRev {
+		st.reposCache, rev = a.store.ReposWithRev()
+		st.reposCacheRev = rev + 1
+	}
+	repos := st.reposCache
 	title := "No Repository"
 	iconName, fb := "folder", fallbackRepo
 	if a.session.HasRepo() {
 		meta := a.session.Meta()
 		title = meta.Name
+		// The session's copy of the name is taken when the repository
+		// opens and never moves again; a rename shows in the store the
+		// moment it saves. Read the current repository's name from the
+		// switcher's own copy of the list, the session's only when the
+		// list does not know it.
+		for _, r := range repos {
+			if r.ID == meta.ID {
+				title = r.Name
+				break
+			}
+		}
 		if meta.Kind == store.SSH {
 			iconName, fb = "server.rack", fallbackSSH
 		}
@@ -103,6 +144,12 @@ func (a *app) repoSwitcher(c *ui.Context) {
 	})
 	if trig.Clicked() {
 		st.popupOpen = !st.popupOpen
+		if st.popupOpen {
+			// The closed popup forgets its rows, so the list starts from
+			// the first row every time it opens, as the scroll container
+			// it replaced did.
+			st.repoList = ui.ListState{}
+		}
 	}
 
 	ui.PopoverBase(c, trig, &st.popupOpen, func(panel ui.Element) {
@@ -118,11 +165,17 @@ func (a *app) repoSwitcher(c *ui.Context) {
 			if len(repos) == 0 {
 				ui.Text(c, "No repositories saved").FontSize(12.5).TextColor(p.muted).Padding(6, 8)
 			} else {
-				ui.Scroll(c.Key("repo-switcher-scroll")).MaxHeight(300).Gap(2).Children(func() {
-					for _, r := range repos {
-						repoRow(c, a, r, st, p)
-					}
-				})
+				// The list builds only the rows in view plus its overscan
+				// rather than every saved repository: the click handling
+				// stays in each row's buttons, which a list that chooses
+				// no rows leaves alone. The repository ID keys its row, so
+				// rows coming and going around it keep its state.
+				st.repoList.Key = func(row int) any { return repos[row].ID }
+				ui.List(c.Key("repo-switcher-scroll"), &st.repoList, len(repos)).
+					MaxHeight(300).Gap(2).
+					Rows(func(row ui.ListRow) {
+						repoRow(row.Context, a, repos[row.Index], st, p)
+					})
 			}
 			ui.Box(c).Height(0.5).FillWidth().Background(p.hairline).Margin(4, 2)
 			a.switcherFootButton(c, st, "Add Local Repository…", p)
@@ -135,6 +188,7 @@ func (a *app) repoSwitcher(c *ui.Context) {
 	a.notGitModal(c, st)
 	a.removeErrorModal(c, st)
 	a.cloneModal(c)
+	a.repoRenameModal(c, st)
 }
 
 // repoRow is one repository of the switcher popup: a switch button labeled
@@ -190,6 +244,9 @@ func repoRow(c *ui.Context, a *app, r store.Repo, st *reposUIState, p palette) {
 			a.switchRepoByID(r.ID)
 			st.popupOpen = false
 		}
+		b.ContextMenu(func(m *ui.Menu) {
+			a.repoRowMenuItems(m, r, st)
+		})
 
 		rm := ui.ButtonBase(c.Key("repo-remove-"+r.ID)).
 			Size(24, 24).
@@ -263,7 +320,7 @@ func (a *app) addLocalRepo(st *reposUIState) {
 		if err != nil || dir == "" {
 			return
 		}
-		repo := git.New(store.Repo{Kind: store.Local, Path: dir}.ExecutorWith(prefs.GitPath, prefs.Trace(), prefs.EnvPath))
+		repo := git.New(store.Repo{Kind: store.Local, Path: dir}.ExecutorFor(prefs))
 		top, topErr := repo.TopLevel()
 		a.post(func() {
 			if isNotRepository(topErr) {
@@ -382,17 +439,20 @@ func (r *sshFormRequest) matches(st *reposUIState) bool {
 
 // showSSHForm opens the Add SSH dialog with a fresh draft, advancing the
 // generation so answers of earlier checks cannot publish into it. The
-// unrelated notices (not-a-git, remove failure) survive the reset.
+// unrelated notices (not-a-git, remove failure) survive the reset, as does
+// the injected file-manager function of the tests.
 func (st *reposUIState) showSSHForm() {
 	gen := st.sshGen + 1
 	notGitOpen, notGitDir := st.notGitOpen, st.notGitDir
 	removeErr := st.removeErr
+	showInFinderFn := st.showInFinderFn
 	*st = reposUIState{
-		sshOpen:    true,
-		sshGen:     gen,
-		notGitOpen: notGitOpen,
-		notGitDir:  notGitDir,
-		removeErr:  removeErr,
+		sshOpen:        true,
+		sshGen:         gen,
+		notGitOpen:     notGitOpen,
+		notGitDir:      notGitDir,
+		removeErr:      removeErr,
+		showInFinderFn: showInFinderFn,
 	}
 }
 
@@ -530,7 +590,7 @@ func (a *app) checkSSHForm(st *reposUIState, add bool) {
 	var repo *git.Repo
 	if a.openRepoFn == nil && a.store != nil {
 		prefs := a.store.Settings()
-		repo = git.New(r.ExecutorWith(prefs.GitPath, prefs.Trace(), prefs.EnvPath))
+		repo = git.New(r.ExecutorFor(prefs))
 	} else {
 		repo = a.buildGitRepo(r)
 	}

@@ -521,10 +521,14 @@ func TestDarkModeSidebarSelectionAndHoverContrast(t *testing.T) {
 		h := newTestApp(t)
 		h.openRepo(repo.StoreRepo())
 		h.drain()
-		// Switching without advancing the clock must snap cleanly to the dark
-		// selected fill rather than bleeding the light theme's dark alpha.
-		h.ui.SetDark(true)
-		checkDark(t, h.ui)
+		// Use a tester without DisableAnimations so this test exercises the
+		// real color animation path: switching without advancing the clock
+		// must snap cleanly to the dark selected fill rather than bleeding
+		// the light theme's dark alpha.
+		tt := ui.NewTester(h.app.view, 1200, 800)
+		tt.Frame()
+		tt.SetDark(true)
+		checkDark(t, tt)
 	})
 
 	t.Run("started directly in dark mode", func(t *testing.T) {

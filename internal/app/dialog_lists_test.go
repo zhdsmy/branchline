@@ -264,7 +264,14 @@ func TestDialogListRebaseThousandRowsMoveAndSquash(t *testing.T) {
 	if err := h.ui.Click("Rebase"); err != nil {
 		t.Fatalf("click Rebase: %v", err)
 	}
-	h.drain()
+	// The write behind this click replays the whole plan of a thousand
+	// commits in one git rebase: inherently slow work that scales with the
+	// commit count, measured at about 22–24 seconds of wall time when four
+	// race-detector test processes share the machine. The shared ceiling of
+	// ten seconds fits no possible replay of this size, so only this wait
+	// widens it — two and a half times the worst measurement, still finite
+	// enough to catch a genuinely stuck worker.
+	h.drainWithin(time.Minute)
 	if err := h.app.session.ActionErr(); err != nil {
 		t.Fatalf("rebase of the reordered plan failed: %v", err)
 	}

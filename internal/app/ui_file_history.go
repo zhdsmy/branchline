@@ -255,6 +255,7 @@ func (a *app) historyFileContextMenu(m *ui.Menu, commit git.Commit, f git.FileCh
 		}
 	}
 	path := f.Path
+	a.historyExternalDiffMenuItem(m, commit, f)
 	if m.Item("File History…").ID("file-history").Chosen() {
 		a.openFileInspector(pageHistory, inspectorModeHistory, path, blameRev)
 	}
@@ -275,6 +276,7 @@ func (a *app) changesFileContextMenu(m *ui.Menu, f git.FileChange) {
 	if f.Status == 'R' && f.OrigPath != "" {
 		path = f.OrigPath
 	}
+	a.changesExternalDiffMenuItem(m, f)
 	if m.Item("File History…").ID("file-history").Disabled(noHistory).Chosen() {
 		a.openFileInspector(pageChanges, inspectorModeHistory, path, "HEAD")
 	}
@@ -437,7 +439,6 @@ func (a *app) fileHistoryLoadMoreRow(c *ui.Context, p palette) {
 			Center().
 			Label("Load More File History").
 			Disabled(busy).
-			FocusRing(false).
 			Border(1, p.border)
 		switch {
 		case busy:

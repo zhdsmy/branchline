@@ -42,7 +42,10 @@ func (r *Repo) SubmoduleAdd(url, path string) error {
 		return fmt.Errorf("a submodule needs a URL and a path")
 	}
 	// A local path is cloned through the file transport. Git 2.38.1
-	// rejects it unless the command itself allows the transport.
+	// rejects it unless the command itself allows the transport. The
+	// override is only for the URL the user typed here; never move it
+	// onto commands that clone URLs read from another repository's
+	// .gitmodules, which its author controls (CVE-2022-39253).
 	_, err := r.run(slow, "-c", "protocol.file.allow=always", "submodule", "add", "--", url, path)
 	return err
 }

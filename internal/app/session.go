@@ -210,6 +210,29 @@ func (s *repoSession) Close() {
 	s.capsRetrying = false
 }
 
+// redactedError scrubs credentials out of an error's text while keeping the
+// error itself: Error reads redacted for every display of it, and Unwrap
+// returns the original error so errors.Is, errors.As and type checks keep
+// working on it. The redacted text is computed once, at construction.
+type redactedError struct {
+	err  error
+	text string
+}
+
+func (e *redactedError) Error() string { return e.text }
+func (e *redactedError) Unwrap() error { return e.err }
+
+// redactSessionError wraps err so that reading its text can never show a
+// credential a Git command or hook echoed into the output. Write results and
+// load failures can carry remote URLs with embedded passwords or tokens, and
+// the places that display them read the error text as-is.
+func redactSessionError(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &redactedError{err: err, text: git.RedactText(err.Error())}
+}
+
 // Reload starts an asynchronous repository.Load using options captured on the
 // UI thread. While a mutating write is in progress (s.busy), Reload is a no-op
 // because doThen unconditionally schedules a fresh Reload upon completion.
@@ -235,7 +258,7 @@ func (s *repoSession) Reload() {
 			}
 			s.loading = false
 			if err != nil {
-				s.loadErr = err
+				s.loadErr = redactSessionError(err)
 				return
 			}
 			s.snapshot = snap
@@ -311,7 +334,7 @@ func (s *repoSession) doThen(label string, fn func(*git.Repo) error, after func(
 			}
 			s.busy = false
 			s.busyLabel = ""
-			s.actionErr = err
+			s.actionErr = redactSessionError(err)
 			s.Reload()
 			if after != nil {
 				after(err)

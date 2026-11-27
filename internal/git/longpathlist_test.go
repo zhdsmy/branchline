@@ -68,14 +68,14 @@ func countLines(out string) int {
 // the operations under test never prove themselves. rewrite puts different
 // content into every bulk file, runGit runs the machine's or the server's
 // git in the working tree.
-func runLongPathListFlow(t *testing.T, repo *git.Repo, names []string, rewrite func(), runGit func(args ...string) string) {
+func runLongPathListFlow(t *testing.T, repo *git.Repo, names []string, rewrite func(*testing.T), runGit func(t *testing.T, args ...string) string) {
 	t.Helper()
 
 	t.Run("Stage", func(t *testing.T) {
 		if err := repo.Stage(names...); err != nil {
 			t.Fatalf("Stage of %d paths: %v", len(names), err)
 		}
-		if got := countLines(runGit("ls-files", "--", "bulk")); got != len(names) {
+		if got := countLines(runGit(t, "ls-files", "--", "bulk")); got != len(names) {
 			t.Fatalf("bulk files in the index = %d, want %d", got, len(names))
 		}
 	})
@@ -84,7 +84,7 @@ func runLongPathListFlow(t *testing.T, repo *git.Repo, names []string, rewrite f
 		if err := repo.Unstage(names...); err != nil {
 			t.Fatalf("Unstage of %d paths: %v", len(names), err)
 		}
-		if got := countLines(runGit("ls-files", "--", "bulk")); got != 0 {
+		if got := countLines(runGit(t, "ls-files", "--", "bulk")); got != 0 {
 			t.Fatalf("bulk files in the index = %d, want 0", got)
 		}
 	})
@@ -92,10 +92,10 @@ func runLongPathListFlow(t *testing.T, repo *git.Repo, names []string, rewrite f
 	t.Run("DiscardModified", func(t *testing.T) {
 		// Commit the files and rewrite them with different content: the
 		// discard must restore every one through the checkout batches.
-		runGit("add", "-A", "--", "bulk")
-		runGit("commit", "-q", "-m", "bulk")
-		rewrite()
-		if status := runGit("status", "--porcelain"); strings.TrimSpace(status) == "" {
+		runGit(t, "add", "-A", "--", "bulk")
+		runGit(t, "commit", "-q", "-m", "bulk")
+		rewrite(t)
+		if status := runGit(t, "status", "--porcelain"); strings.TrimSpace(status) == "" {
 			t.Fatal("rewriting the bulk files changed nothing")
 		}
 		tracked := make([]git.FileChange, len(names))
@@ -105,15 +105,17 @@ func runLongPathListFlow(t *testing.T, repo *git.Repo, names []string, rewrite f
 		if err := repo.Discard(tracked...); err != nil {
 			t.Fatalf("Discard of %d modified paths: %v", len(tracked), err)
 		}
-		if status := runGit("status", "--porcelain"); status != "" {
+		if status := runGit(t, "status", "--porcelain"); status != "" {
 			t.Fatalf("status after Discard = %q, want clean", status)
 		}
 	})
 
 	t.Run("DiscardUntracked", func(t *testing.T) {
-		// rm --cached leaves the files untracked on disk, the state a
-		// Discard All of a fresh build output is.
-		runGit("rm", "-r", "-q", "--cached", "--", "bulk")
+		// Reset back to the initial commit with --mixed so the index drops
+		// bulk/ immediately while every file stays untracked on disk, matching
+		// a Discard All of a fresh build output without paying git rm --cached's
+		// slow per-entry removal across 20,000 paths.
+		runGit(t, "reset", "-q", "--mixed", "HEAD~1")
 		untracked := make([]git.FileChange, len(names))
 		for i, n := range names {
 			untracked[i] = git.FileChange{Path: n, Status: '?'}
@@ -121,7 +123,7 @@ func runLongPathListFlow(t *testing.T, repo *git.Repo, names []string, rewrite f
 		if err := repo.Discard(untracked...); err != nil {
 			t.Fatalf("Discard of %d untracked paths: %v", len(untracked), err)
 		}
-		if got := runGit("ls-files", "--others", "--exclude-standard"); got != "" {
+		if got := runGit(t, "ls-files", "--others", "--exclude-standard"); got != "" {
 			t.Fatalf("untracked files after Discard = %q, want none", got)
 		}
 	})
@@ -133,8 +135,8 @@ func TestLongPathListLocal(t *testing.T) {
 	writeLocalBulkFiles(t, dir, names, "x\n")
 	repo := localRepo(dir)
 	runLongPathListFlow(t, repo, names,
-		func() { writeLocalBulkFiles(t, dir, names, "y\n") },
-		func(args ...string) string { return localGit(t, dir, args...) },
+		func(t *testing.T) { writeLocalBulkFiles(t, dir, names, "y\n") },
+		func(t *testing.T, args ...string) string { return localGit(t, dir, args...) },
 	)
 }
 
@@ -160,8 +162,8 @@ func runLongPathListOverSSH(t *testing.T, srv *sshtest.Target) {
 
 	srv.RunShell(t, longPathScript(workDir, len(names), "x\\n"))
 	runLongPathListFlow(t, repo, names,
-		func() { srv.RunShell(t, longPathScript(workDir, len(names), "y\\n")) },
-		func(args ...string) string { return srv.RunGit(t, workDir, args...) },
+		func(t *testing.T) { srv.RunShell(t, longPathScript(workDir, len(names), "y\\n")) },
+		func(t *testing.T, args ...string) string { return srv.RunGit(t, workDir, args...) },
 	)
 }
 
