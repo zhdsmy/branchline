@@ -1228,3 +1228,68 @@ func TestAutoRefreshHintMarksDirtyWithoutRedraw(t *testing.T) {
 	}
 	checkStamped(t, rig, "the hint-driven check through the tick loop")
 }
+
+// Typing a multi-digit refresh interval one character at a time keeps an
+// intermediate out-of-range draft editable instead of reverting it on the
+// first keystroke; once the typed digits reach a valid value in 10–3600 the
+// setting saves and clears the error, and reopening Settings discards any
+// unsaved invalid draft.
+func TestAutoRefreshSettingsIntervalKeystrokeEditing(t *testing.T) {
+	repo := newGitRepo(t, "ar-interval-typing")
+	repo.CommitFile("a.txt", "one\n", "initial commit")
+
+	h := newTestApp(t)
+	rig := installAutoRefresh(t, h)
+	openAutoRefreshRepo(t, h, rig, repo.StoreRepo())
+
+	tt := openSettingsTester(t, h)
+	focusSettingsField(t, tt, "Refresh interval (seconds)")
+	tt.Command("selectAll")
+
+	// First digit of "30" is out of range: the draft must stay "3" with the
+	// validation error shown and the saved interval untouched.
+	tt.Type("3")
+	tt.Frame()
+	if got := h.app.settings.refreshInterval; got != "3" {
+		t.Fatalf("draft after typing first digit = %q, want %q", got, "3")
+	}
+	if !tt.HasText(errRefreshIntervalRange.Error()) {
+		t.Fatalf("range error missing after typing 3; texts=%q", tt.Texts())
+	}
+	if got := refreshIntervalSeconds(h.store.Settings()); got != 60 {
+		t.Fatalf("saved interval after typing 3 = %d, want 60", got)
+	}
+
+	// Second digit completes "30": it saves immediately and clears the error.
+	tt.Type("0")
+	tt.Frame()
+	if got := h.app.settings.refreshInterval; got != "30" {
+		t.Fatalf("draft after typing second digit = %q, want %q", got, "30")
+	}
+	if got := h.store.Settings().StatusUpdateSeconds; got != 30 {
+		t.Fatalf("saved interval after typing 30 = %d, want 30", got)
+	}
+	if tt.HasText(errRefreshIntervalRange.Error()) {
+		t.Fatalf("range error lingered after valid 30; texts=%q", tt.Texts())
+	}
+
+	// Clearing or backspacing back to an invalid draft keeps the draft until
+	// Settings closes and reopens, which restores the persisted value.
+	tt.Key(0, ui.KeyBackspace)
+	tt.Frame()
+	if got := h.app.settings.refreshInterval; got != "3" {
+		t.Fatalf("draft after backspace = %q, want %q", got, "3")
+	}
+	if got := h.store.Settings().StatusUpdateSeconds; got != 30 {
+		t.Fatalf("saved interval after backspace = %d, want 30", got)
+	}
+
+	h.app.closeSettingsWindow()
+	tt2 := openSettingsTester(t, h)
+	if got := h.app.settings.refreshInterval; got != "30" {
+		t.Fatalf("interval after reopening Settings = %q, want %q", got, "30")
+	}
+	if tt2.HasText(errRefreshIntervalRange.Error()) {
+		t.Fatalf("range error lingered after reopening Settings; texts=%q", tt2.Texts())
+	}
+}

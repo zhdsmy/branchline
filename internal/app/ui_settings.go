@@ -52,7 +52,7 @@ func init() {
 		id:     "general",
 		title:  "General",
 		order:  0,
-		onOpen: (*app).syncGeneralSettings,
+		onOpen: (*app).openGeneralSettings,
 		view:   (*app).settingsGeneralPage,
 	})
 }
@@ -76,11 +76,13 @@ type settingsState struct {
 	dateOrder, dateOrderApplied   bool
 	fetchTags, fetchTagsApplied   bool
 
-	// The automatic refresh controls follow the same triple as the other
-	// choices; the interval's values are the input's text, since a draft
-	// that fails validation must survive for editing instead of reverting.
+	// The automatic refresh controls live with the General choices; the
+	// interval keeps both its saved text and the last text validated, so a
+	// draft that fails validation survives for further editing instead of
+	// reverting on the first keystroke.
 	refreshAuto, refreshAutoApplied         bool
 	refreshInterval, refreshIntervalApplied string
+	refreshIntervalChecked                  string
 
 	fontSize, fontSizeApplied       float64
 	tabWidth, tabWidthApplied       int
@@ -249,6 +251,20 @@ func (a *app) settingsTabRow(c *ui.Context, p palette, pages []settingsPageDef, 
 	})
 }
 
+// openGeneralSettings primes the General page when the Settings window opens
+// or returns to the tab, discarding any unsaved interval draft so the field
+// shows the persisted value again.
+func (a *app) openGeneralSettings() {
+	s := &a.settings
+	s.refreshInterval = ""
+	s.refreshIntervalApplied = ""
+	s.refreshIntervalChecked = ""
+	if s.errs != nil {
+		delete(s.errs, "refreshInterval")
+	}
+	a.syncGeneralSettings()
+}
+
 // syncGeneralSettings refreshes the General page's controls from the live
 // values: the saved appearance, the history ordering and whether Fetch
 // brings every tag. Pending edits are left alone, as syncSettingsChoice
@@ -260,7 +276,12 @@ func (a *app) syncGeneralSettings() {
 	syncSettingsChoice(&s.dateOrder, &s.dateOrderApplied, prefs.DateOrder)
 	syncSettingsChoice(&s.fetchTags, &s.fetchTagsApplied, prefs.FetchTags)
 	syncSettingsChoice(&s.refreshAuto, &s.refreshAutoApplied, !prefs.DisableStatusUpdate)
-	syncSettingsChoice(&s.refreshInterval, &s.refreshIntervalApplied, refreshIntervalText(prefs))
+	if s.refreshInterval == s.refreshIntervalApplied {
+		live := refreshIntervalText(prefs)
+		s.refreshInterval = live
+		s.refreshIntervalApplied = live
+		s.refreshIntervalChecked = live
+	}
 }
 
 // refreshIntervalText is the interval input's text for a saved value: the
@@ -317,18 +338,28 @@ func (a *app) settingsGeneralPage(c *ui.Context, p palette) {
 		a.redraw()
 		return nil
 	})
-	saveSettingsChoice(s, "refreshInterval", &s.refreshInterval, &s.refreshIntervalApplied, func(text string) error {
-		n, err := parseSettingsInt(text)
+	if s.refreshInterval != s.refreshIntervalChecked {
+		s.refreshIntervalChecked = s.refreshInterval
+		n, err := parseSettingsInt(s.refreshInterval)
+		if err == nil && (n < 10 || n > 3600) {
+			err = errRefreshIntervalRange
+		}
 		if err != nil {
-			return err
+			s.errs["refreshInterval"] = err.Error()
+		} else {
+			cur := a.store.Settings()
+			if refreshIntervalSeconds(cur) != n {
+				cur.StatusUpdateSeconds = n
+				err = a.store.SetSettings(cur)
+			}
+			if err != nil {
+				s.errs["refreshInterval"] = err.Error()
+			} else {
+				s.refreshIntervalApplied = s.refreshInterval
+				s.errs["refreshInterval"] = ""
+			}
 		}
-		if n < 10 || n > 3600 {
-			return errRefreshIntervalRange
-		}
-		cur := a.store.Settings()
-		cur.StatusUpdateSeconds = n
-		return a.store.SetSettings(cur)
-	})
+	}
 
 	ui.Form(c, func() {
 		ui.Field(c, "Appearance", func() {
