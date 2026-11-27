@@ -435,3 +435,64 @@ func TestChangesFilterFilteredOutSectionHints(t *testing.T) {
 		t.Fatalf("the empty staged section lost its hint after the commit; texts=%q", h.ui.Texts())
 	}
 }
+
+func TestChangesFilterScrollSelectionAndRepoSwitchReset(t *testing.T) {
+	// Scrolling a large Local Changes list, filtering to a matching file and
+	// selecting it loads its diff; switching repositories clears both the
+	// filter text and the virtual list's scroll position.
+	repoA := newGitRepo(t, "changesfilter-scroll-a")
+	repoA.CommitFile("base.txt", "base\n", "initial")
+	for i := 0; i < 80; i++ {
+		repoA.WriteFile(fmt.Sprintf("item-%03d.txt", i), fmt.Sprintf("body %d\n", i))
+	}
+	repoB := newGitRepo(t, "changesfilter-scroll-b")
+	repoB.CommitFile("base.txt", "base\n", "initial")
+	for i := 0; i < 80; i++ {
+		repoB.WriteFile(fmt.Sprintf("other-%03d.txt", i), fmt.Sprintf("other %d\n", i))
+	}
+
+	h := newTestApp(t)
+	h.openRepo(repoA.StoreRepo())
+	h.drain()
+	if _, err := h.store.Add(repoB.StoreRepo()); err != nil {
+		t.Fatalf("add repo B: %v", err)
+	}
+
+	scrollChangesListToEnd(h)
+	if first, _ := h.app.changesView.list.Visible(); first == 0 {
+		t.Fatal("setup: changes list did not scroll away from its top")
+	}
+
+	typeChangesFilter(t, h, "item-005")
+	if !h.ui.HasText("Unstaged (1 of 80)") {
+		t.Fatalf("filtered count missing after filtering scrolled list; texts=%q", h.ui.Texts())
+	}
+	mustClick(t, h, "Unstaged item-005.txt")
+	h.drain()
+	if !h.app.changesView.selected || h.app.changesView.selectedPath != "item-005.txt" {
+		t.Fatalf("clicking filtered row did not select it: %+v", h.app.changesView)
+	}
+	if d := &h.app.changesView.diff; d.state == nil {
+		t.Fatalf("diff of filtered selection did not load: err=%v", d.err)
+	}
+
+	// Scroll repoA again without filter, then filter and switch repos.
+	mustClick(t, h, "Clear Filter")
+	h.ui.Frame()
+	scrollChangesListToEnd(h)
+	typeChangesFilter(t, h, "item-")
+	mustClick(t, h, "Repository Switcher")
+	h.ui.Frame()
+	mustClick(t, h, "changesfilter-scroll-b")
+	h.drain()
+
+	if got := h.app.changesView.filter; got != "" {
+		t.Fatalf("filter after switching repositories = %q, want empty", got)
+	}
+	if first, _ := h.app.changesView.list.Visible(); first != 0 {
+		t.Fatalf("list first visible row after repo switch = %d, want 0", first)
+	}
+	if !h.ui.HasText("Unstaged (80)") || !changeRowShown(h, "Unstaged other-000.txt") {
+		t.Fatalf("repo B did not open at top of unfiltered list; texts=%q", h.ui.Texts())
+	}
+}

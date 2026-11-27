@@ -240,4 +240,75 @@ func TestDraftPlanCacheConflictEditorDraftEdits(t *testing.T) {
 	if h.ui.HasText("All conflicts resolved") {
 		t.Fatalf("all-resolved progress survived the typed-back marker; texts=%q", h.ui.Texts())
 	}
+
+	// Resetting the draft clears the cached scan so stale markers cannot remain.
+	st.resetDraft()
+	if st.scan != (conflictScan{}) {
+		t.Fatalf("resetDraft left cached scan populated: %+v", st.scan)
+	}
+}
+
+// Leaving the interactive rebase message editor open across idle frames must
+// not advance the message version or bust the derived plan cache, whether the
+// editor shows the default composition or a custom draft.
+func TestDraftPlanCacheRebaseEditorOpenKeepsCachedResults(t *testing.T) {
+	repo, onto, hashes := irCacheFixture(t, "dpcache-editor-open")
+
+	h := newTestApp(t)
+	openHistoryPage(t, h, repo.StoreRepo())
+	openIRDialog(t, h, onto, "base commit")
+	drainIRPlan(t, h)
+
+	chooseIRAction(t, h, hashes[2], "Pick", "Reword")
+	drainIRMessages(t, h)
+
+	ms := irMessagesState(t, h)
+	if ms.editingHash != hashes[2] {
+		t.Fatalf("message editor did not open for Reword: editingHash=%q", ms.editingHash)
+	}
+	// Idle frames with the default message open must not advance ms.version
+	// or recompute the derived cache.
+	verBefore := ms.version
+	irRowOf(t, h, hashes[3]).action = "Drop"
+	for i := 0; i < 4; i++ {
+		h.ui.Frame()
+	}
+	if ms.version != verBefore {
+		t.Fatalf("idle frames with clean message editor advanced version: %d -> %d", verBefore, ms.version)
+	}
+	if h.ui.HasText("1 commit(s) will be dropped.") {
+		t.Fatal("idle frames with clean message editor recomputed the derived cache")
+	}
+
+	// Writing a custom draft advances ms.version once; subsequent idle frames
+	// with the custom draft open must hold steady again.
+	replaceIRMessage(t, h, "edited while open")
+	verAfterDraft := ms.version
+	if verAfterDraft == verBefore {
+		t.Fatal("saving a custom draft did not advance message version")
+	}
+	irRowOf(t, h, hashes[3]).action = "Pick"
+	for i := 0; i < 4; i++ {
+		h.ui.Frame()
+	}
+	if ms.version != verAfterDraft {
+		t.Fatalf("idle frames with custom draft open advanced version: %d -> %d", verAfterDraft, ms.version)
+	}
+	if !h.ui.HasText("1 commit(s) will be dropped.") {
+		t.Fatal("idle frames with custom draft open recomputed the derived cache")
+	}
+
+	// Closing the modal drops the derived cache and advances the message
+	// version so reopening starts fresh without stale cached rows.
+	if err := h.ui.Click("Cancel"); err != nil {
+		t.Fatalf("click Cancel: %v", err)
+	}
+	h.ui.Frame()
+	st := interactiveRebaseUI(h.app)
+	if st.derived.valid || st.derived.rows != nil {
+		t.Fatalf("closing interactive rebase left derived cache populated: valid=%v rows=%d", st.derived.valid, len(st.derived.rows))
+	}
+	if ms.version == verAfterDraft {
+		t.Fatal("closing interactive rebase did not advance message version")
+	}
 }

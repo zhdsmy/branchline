@@ -132,6 +132,7 @@ func (st *interactiveRebaseUIState) clearInteractiveRebaseDraft() {
 	st.submitClicked = false
 	st.list = ui.ListState{}
 	st.moves = nil
+	st.derived = irDerivedCache{}
 }
 
 // commitInteractiveRebaseMenuItems adds the interactive rebase item to the
@@ -172,6 +173,7 @@ func (a *app) openInteractiveRebaseModal(cm git.Commit) {
 	st.submitClicked = false
 	st.list = ui.ListState{}
 	st.moves = nil
+	st.derived = irDerivedCache{}
 	a.clearInteractiveRebaseMessages()
 	a.startInteractiveRebasePlanRead(st)
 	a.startInteractiveRebaseOptionsRead(st.onto, st.branch, st.expectedHead)
@@ -189,6 +191,7 @@ func (a *app) startInteractiveRebasePlanRead(st *interactiveRebaseUIState) {
 	st.readErr = nil
 	st.list = ui.ListState{}
 	st.moves = nil
+	st.derived = irDerivedCache{}
 	sessionRead(a.session, "ir-plan", func(repo *git.Repo) ([]git.RebaseTodo, error) {
 		return repo.RebaseRangePlan(onto)
 	}, func(plan []git.RebaseTodo, err error) {
@@ -214,6 +217,7 @@ func (a *app) startInteractiveRebasePlanRead(st *interactiveRebaseUIState) {
 		st.rows = rows
 		st.list = ui.ListState{}
 		st.moves = nil
+		st.derived = irDerivedCache{}
 	})
 }
 
@@ -280,6 +284,17 @@ func (a *app) interactiveRebaseModal(c *ui.Context) {
 		return
 	}
 
+	// Drain any deferred move queued by a late-built row during the previous
+	// layout pass before deriving plan state for this frame.
+	if !st.loading && st.readErr == nil && len(st.moves) > 0 {
+		for _, m := range st.moves {
+			if moveInteractiveRebaseRow(st.rows, m.hash, m.dir) {
+				st.planVersion++
+			}
+		}
+		st.moves = st.moves[:0]
+	}
+
 	ensureInteractiveRebaseMessages(a, st)
 	// Everything the form derives from the plan and the message state comes
 	// out of the one cache: an unchanged plan scans nothing frame after
@@ -315,14 +330,6 @@ func (a *app) interactiveRebaseModal(c *ui.Context) {
 					a.startInteractiveRebasePlanRead(st)
 				}
 			default:
-				// Drain any deferred move queued by a late-built row during
-				// the previous layout pass before this pass renders.
-				if len(st.moves) > 0 {
-					for _, m := range st.moves {
-						moveInteractiveRebaseRow(st.rows, m.hash, m.dir)
-					}
-					st.moves = st.moves[:0]
-				}
 				// The list draws only the rows in view; its order is the reverse
 				// of the execution order, the newest commit on top. A move
 				// button's click cannot swap rows while the rows build — the

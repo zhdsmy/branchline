@@ -108,6 +108,7 @@ func (st *conflictEditorState) resetDraft() {
 	st.draft = ""
 	st.draftSynced = ""
 	st.draftDirty = false
+	st.scan = conflictScan{}
 	st.activeHunk = 0
 	st.scrollHunk = false
 	st.hunkList = ui.ListState{}

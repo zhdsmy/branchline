@@ -162,6 +162,7 @@ func (ms *interactiveRebaseMessagesState) resetInteractiveRebaseMessages(gen uin
 	ms.reading = false
 	ms.readErr = nil
 	ms.drafts = map[string]string{}
+	ms.version++
 	ms.editingHash = ""
 	ms.editText = ""
 	ms.editDirty = false
@@ -533,24 +534,30 @@ func (a *app) interactiveRebaseMessagePanel(c *ui.Context, p palette, st *intera
 				if ms.drafts == nil {
 					ms.drafts = map[string]string{}
 				}
-				ms.drafts[ms.editingHash] = ms.editText
+				if prev, ok := ms.drafts[ms.editingHash]; !ok || prev != ms.editText {
+					ms.drafts[ms.editingHash] = ms.editText
+					ms.version++
+				}
 				ms.editDirty = true
-				ms.version++
 			} else {
 				// Typed back to the default, byte for byte: the chain holds no
 				// custom message anymore and follows the composition again.
-				delete(ms.drafts, ms.editingHash)
+				if _, ok := ms.drafts[ms.editingHash]; ok {
+					delete(ms.drafts, ms.editingHash)
+					ms.version++
+				}
 				ms.editDirty = false
-				ms.version++
 			}
 		}
 
 		ui.Row(c.Key("ir-msg-actions")).Gap(8).Justify(ui.End).Children(func() {
 			if ui.Button(c.Key("ir-msg-reset"), "Reset Message").Label("Reset Message").FontSize(11).Padding(2, 6).Clicked() {
-				delete(ms.drafts, ms.editingHash)
+				if _, ok := ms.drafts[ms.editingHash]; ok {
+					delete(ms.drafts, ms.editingHash)
+					ms.version++
+				}
 				ms.editText = defaultText
 				ms.editDirty = false
-				ms.version++
 			}
 			if ui.Button(c.Key("ir-msg-done"), "Done").Label("Done").FontSize(11).Padding(2, 6).Clicked() {
 				a.closeInteractiveRebaseMessageEditor()
