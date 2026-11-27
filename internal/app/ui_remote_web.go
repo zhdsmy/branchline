@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"sync"
 
 	"github.com/egoist/mygo/ui"
 
@@ -22,11 +21,10 @@ import (
 // remoteWebUIState is the per-app state of the hosted web entries: the URL
 // waiting to open, the Push and Create Pull Request draft with the branch,
 // hash, remote and URL captured when the dialog opened, and the repository
-// generation they belong to. It lives outside the shared app struct, keyed
-// by the app instance, exactly as the merge dialog state does. The opener is
-// the test seam: it survives repository switches so a test injecting it once
-// captures every open regardless of which repository is open, while the
-// production nil leaves opening to ui.Context.OpenURLThen.
+// generation they belong to. The opener is the test seam: it survives
+// repository switches so a test injecting it once captures every open
+// regardless of which repository is open, while the production nil leaves
+// opening to ui.Context.OpenURLThen.
 type remoteWebUIState struct {
 	repoGen uint64
 
@@ -49,24 +47,13 @@ type pushPRRemote struct {
 	url     string
 }
 
-var remoteWebUIStates = struct {
-	sync.Mutex
-	m map[*app]*remoteWebUIState
-}{m: map[*app]*remoteWebUIState{}}
-
 // remoteWebUI returns the app's hosted web state, creating it on first use
 // and discarding the pending URL and the dialog draft when the repository
 // generation moved past them: a switch or close must never open a page of
 // the repository that was open before, and the draft's captured branch and
 // URL are meaningless there.
 func remoteWebUI(a *app) *remoteWebUIState {
-	remoteWebUIStates.Lock()
-	defer remoteWebUIStates.Unlock()
-	st := remoteWebUIStates.m[a]
-	if st == nil {
-		st = &remoteWebUIState{}
-		remoteWebUIStates.m[a] = st
-	}
+	st := featureState(a, func() *remoteWebUIState { return &remoteWebUIState{} })
 	if gen := a.session.Generation(); st.repoGen != gen {
 		opener := st.opener
 		*st = remoteWebUIState{repoGen: gen, opener: opener}
@@ -78,14 +65,7 @@ func remoteWebUI(a *app) *remoteWebUIState {
 // production default of ui.Context.OpenURLThen. Tests inject a capture that
 // never touches a browser.
 func setRemoteWebOpener(a *app, fn func(string) error) {
-	remoteWebUIStates.Lock()
-	defer remoteWebUIStates.Unlock()
-	st := remoteWebUIStates.m[a]
-	if st == nil {
-		st = &remoteWebUIState{}
-		remoteWebUIStates.m[a] = st
-	}
-	st.opener = fn
+	featureState(a, func() *remoteWebUIState { return &remoteWebUIState{} }).opener = fn
 }
 
 // openRemoteWebURL starts opening target in the browser. With an injected
