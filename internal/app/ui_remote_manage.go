@@ -135,7 +135,8 @@ func (a *app) remoteRow(c *ui.Context, remote string) {
 		AlignItems(ui.Center).
 		Focusable().
 		Role(ui.RoleListItem).
-		Label(remote)
+		Label(remote).
+		AccessHidden(true)
 	if row.Hovered() {
 		row.Background(p.hover)
 	}

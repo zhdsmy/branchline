@@ -85,9 +85,12 @@ func sidebarPickKindOf(pick map[sidebarPickKey]bool, anchor sidebarPickKey) (sid
 //
 // orderedKeys builds the rows' keys in display order; it runs only for a
 // Shift-click with a live anchor, so painting never builds the list, and a
-// plain or Cmd-click never pays for it either.
+// plain or Cmd-click never pays for it either. Every path changes the
+// selection or the anchor, so the pick version steps once per click,
+// invalidating the sidebar's cached row list and pick counts.
 func (a *app) clickSidebarRef(key sidebarPickKey, mods ui.Modifiers, orderedKeys func() []sidebarPickKey) {
 	st := &a.refsView
+	defer func() { st.pickVersion++ }()
 	if st.pick == nil {
 		st.pick = map[sidebarPickKey]bool{}
 	}
@@ -198,6 +201,7 @@ func (a *app) clickSidebarTag(name string, mods ui.Modifiers, sorted []git.Tag) 
 // one.
 func (a *app) clearSidebarPick() {
 	a.refsView.pick = map[sidebarPickKey]bool{}
+	a.refsView.pickVersion++
 }
 
 // selectOnlySidebarBranch narrows the selection to the one branch a right
@@ -213,6 +217,7 @@ func (a *app) selectOnlySidebarBranch(name string) {
 func (a *app) selectOnlySidebarRef(key sidebarPickKey) {
 	a.refsView.pick = map[sidebarPickKey]bool{key: true}
 	a.refsView.pickAnchor = key
+	a.refsView.pickVersion++
 }
 
 // sidebarPickCount is how many keys of the selection still name branches of

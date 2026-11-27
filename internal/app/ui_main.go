@@ -1,7 +1,6 @@
 package app
 
 import (
-	"fmt"
 	"runtime"
 	"time"
 
@@ -114,21 +113,45 @@ func (a *app) sidebar(c *ui.Context) {
 	ui.Column(c).Fill().Padding(top, 12, 12, 12).Gap(6).DragWindow().Children(func() {
 		a.repoSwitcher(c)
 
-		ui.Scroll(c.Key("sidebar-scroll")).TrackScroll(&a.navScroll).Grow(1).Margin(0, -4).Padding(0, 4).Gap(4).Children(func() {
-			changesBadge := ""
-			if a.session.HasRepo() && a.session.Loaded() {
-				st := a.session.Snapshot().Status
-				if n := len(st.Unstaged) + len(st.Staged); n > 0 {
-					changesBadge = fmt.Sprint(n)
-				}
-			}
-			a.navRow(c, "Changes", "square.and.pencil", fallbackDiff, route{page: pageChanges}, changesBadge)
-			a.navRow(c, "History", "clock", fallbackHist, route{page: pageHistory}, "")
+		// The whole scroll area of the sidebar — the navigation rows, the
+		// section headers, the entry rows, and every reference and stash
+		// row — is one virtual list: it builds only the rows in view, and
+		// its row table rebuilds only when the data behind it changed. The
+		// rows keep their own buttons, menus and selection painting: the
+		// list never chooses anything itself — its selection is the mirror
+		// of what the rows mark, rebuilt with the table — so the row
+		// element it wraps every row in only repeats what the row inside
+		// tells assistive technology, and the theme copy keeps the fill
+		// and hover the list would paint for that invisible, the rows
+		// painting their own exactly as before. KeepOffset keeps the
+		// scrolled place in pixels as rows come and go, exactly as the
+		// plain scroll container did.
+		rows := a.sidebarRows()
+		rc := &a.refsView.sidebarRows
+		a.refsView.sidebarList.KeepOffset = true
+		a.refsView.sidebarList.Key = func(row int) any { return rows[row].key }
+	a.refsView.sidebarList.Label = func(row int) string { return rows[row].accessName }
+		a.refsView.sidebarList.Selection = &rc.mirror
+		a.refsView.sidebarList.MenuKeepsSelection = true
+		rowTheme := *c.Theme()
+		listTheme := rowTheme
+		listTheme.Accent = ui.Transparent
+		listTheme.SurfaceHover = ui.Transparent
+		ui.Themed(c.Key("sidebar-list-theme"), &listTheme).
+			Grow(1).Margin(0, -4).Background(ui.Transparent).
+			Children(func() {
+				ui.List(c.Key("sidebar-scroll"), &a.refsView.sidebarList, len(rows)).
+					TrackScroll(&a.navScroll).
+					Grow(1).FillWidth().
+					Padding(0, 4).
+					Gap(4).
+					Rows(func(r ui.ListRow) {
+						a.sidebarRowView(r.Context, rows[r.Index], &rowTheme)
+					})
+			})
 
-			ui.Box(c).Height(6)
-			a.refsSidebar(c)
-			a.stashSidebar(c)
-		})
+		a.refsSidebar(c)
+		a.stashSidebar(c)
 	})
 }
 

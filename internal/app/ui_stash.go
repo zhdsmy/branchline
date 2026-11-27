@@ -232,41 +232,14 @@ func stashSaveProblem(st git.Status, includeUntracked bool) string {
 	return ""
 }
 
-// stashSidebar is the collapsible Stashes section of the sidebar: a Save
-// Stash entry, one selectable row per stash newest first, an inline action
-// bar on the selected row, a context menu on every row, and the Save,
-// Apply and Drop dialogs.
+// stashSidebar mounts the Save, Apply and Drop dialogs of the collapsible
+// Stashes section. The section's rows — the Save Stash entry, one
+// selectable row per stash newest first, the inline action bar of the
+// selected row — are entries of the sidebar's virtual row list, drawn
+// there; the selection's pruning against the refreshed stash list runs in
+// the row list's rebuild, which the same inputs drive. The dialogs mount
+// outside the list, unchanged and in the order they always mounted.
 func (a *app) stashSidebar(c *ui.Context) {
-	p := a.pal
-	st := a.stashUI()
-	a.stashResetForRepoGen()
-	stashes := a.session.Snapshot().Stashes
-
-	if st.selectedKey != "" && a.session.Loaded() {
-		present := false
-		for i := range stashes {
-			if stashRowKey(stashes[i]) == st.selectedKey {
-				present = true
-				break
-			}
-		}
-		if !present {
-			st.selectedKey = ""
-		}
-	}
-
-	sidebarSectionHeader(c, "Stashes", len(stashes), &st.collapsed, p)
-	if !st.collapsed {
-		a.saveStashRow(c)
-		if len(stashes) == 0 {
-			a.refPlaceholderRow(c, "No stashes")
-		} else {
-			for i := range stashes {
-				a.stashRow(c, stashes[i])
-			}
-		}
-	}
-
 	a.saveStashDialog(c)
 	a.applyStashDialog(c)
 	a.dropStashDialog(c)
@@ -329,6 +302,7 @@ func (a *app) stashRow(c *ui.Context, s git.Stash) {
 		Role(ui.RoleListItem).
 		Label("Stash " + s.Name).
 		AccessSelected(selected).
+		AccessHidden(true).
 		FocusRing(false)
 	switch {
 	case selected:
@@ -358,10 +332,6 @@ func (a *app) stashRow(c *ui.Context, s git.Stash) {
 		} else {
 			st.selectedKey = key
 		}
-	}
-
-	if selected {
-		a.stashActionBar(c, s, busy)
 	}
 }
 

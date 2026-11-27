@@ -60,33 +60,10 @@ func (a *app) tagsUI() *tagsUIState {
 	return st
 }
 
-// tagsSidebarSection is the collapsible Tags section of the refs sidebar:
-// a New Tag entry while a repository is open, the tag rows with their
-// selection action bar, and the placeholder while there are none.
-func (a *app) tagsSidebarSection(c *ui.Context) {
-	refs := a.session.Snapshot().Refs
-	// The generation check runs even while the section is collapsed: the
-	// selection and dialog drafts of a switched-away repository never linger.
-	a.tagsUI()
-	sidebarSectionHeader(c, "Tags", len(refs.Tags), &a.tagsCollapsed, a.pal).ContextMenu(a.tagsSectionContextMenu)
-	if a.tagsCollapsed {
-		return
-	}
-	a.tagsSidebarHeaderActions(c)
-	if len(refs.Tags) == 0 {
-		a.refPlaceholderRow(c, "No tags")
-		return
-	}
-	sorted := a.sortedTags(refs.Tags)
-	pickedCount := sidebarTagPickCount(a.refsView.pick, sorted)
-	for _, tag := range sorted {
-		a.tagRow(c, tag, sorted, pickedCount)
-	}
-}
-
-// tagsSidebarHeaderActions renders the entries at the head of the Tags
-// section. Without a repository open there is nothing to tag, so the entry
-// is hidden entirely.
+// tagsSidebarHeaderActions renders the New Tag entry at the head of the
+// Tags section. Without a repository open there is nothing to tag, so the
+// entry is hidden entirely. The Push All Tags entry behind it is its own
+// row of the sidebar's virtual list, drawn where it always was.
 func (a *app) tagsSidebarHeaderActions(c *ui.Context) {
 	if !a.session.HasRepo() {
 		return
@@ -114,7 +91,6 @@ func (a *app) tagsSidebarHeaderActions(c *ui.Context) {
 	if b.Clicked() {
 		a.openNewTagDialog("")
 	}
-	a.pushAllTagsSidebarEntry(c)
 }
 
 // tagRow is one tag in the sidebar: the row joins the multi-selection the
@@ -140,7 +116,8 @@ func (a *app) tagRow(c *ui.Context, tag git.Tag, sorted []git.Tag, pickedCount i
 		Focusable().
 		Role(ui.RoleListItem).
 		Label(tag.Name).
-		AccessSelected(picked)
+		AccessSelected(picked).
+		AccessHidden(true)
 	switch {
 	case picked:
 		row.Background(p.selected)
@@ -176,9 +153,6 @@ func (a *app) tagRow(c *ui.Context, tag git.Tag, sorted []git.Tag, pickedCount i
 		} else {
 			a.clickSidebarTag(tag.Name, mods, sorted)
 		}
-	}
-	if pickedCount == 1 && picked {
-		a.tagRowActions(c, tag)
 	}
 }
 
