@@ -171,6 +171,13 @@ func TestCloneSSHSuccessOpensServerRepository(t *testing.T) {
 		t.Fatalf("stored name = %q, want srvclone", repos[0].Name)
 	}
 
+	// The clone went over SSH: multiplexing opened the control socket of the
+	// executor's identity. An executor that never connects leaves none.
+	controlPath := (&git.SSHExecutor{Host: srv.Host, Port: srv.Port, User: srv.User, Identity: srv.Identity}).ControlPath()
+	if _, err := os.Stat(controlPath); err != nil {
+		t.Fatalf("no SSH control socket after the clone: %v — the clone did not run over SSH", err)
+	}
+
 	// History shows the clone's commit.
 	mustClick(t, h, "History")
 	h.ui.Frame()
