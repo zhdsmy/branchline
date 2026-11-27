@@ -1127,3 +1127,35 @@ func TestDiffLinesLoopbackSSHDiscardAndUntrackedStage(t *testing.T) {
 		t.Fatalf("SSH index after staging two lines of an untracked file =\n%q", staged)
 	}
 }
+
+// Unstaging the whole hunk of a staged deletion through the action bar
+// restores the file in the index exactly as HEAD has it: nothing of the
+// deletion stays staged.
+func TestDiffLinesUnstageStagedDeletionHunk(t *testing.T) {
+	repo := newGitRepo(t, "dl-undel-hunk")
+	repo.CommitFile("gone.txt", linesText("one", "two", "three"), "initial")
+	if err := os.Remove(filepath.Join(repo.Path(), "gone.txt")); err != nil {
+		t.Fatal(err)
+	}
+	repo.Git("add", "--", "gone.txt")
+
+	h := openChangesHarness(t, repo)
+	mustClick(t, h, "Staged gone.txt")
+	h.drain()
+	mustClick(t, h, "Unified")
+	h.ui.Frame()
+
+	hoverDiffLine(t, h, ui.RoleDeletion, "one", false)
+	mustClick(t, h, "Unstage Hunk")
+	h.drain()
+
+	if err := h.app.session.ActionErr(); err != nil {
+		t.Fatalf("unstage hunk action error: %v", err)
+	}
+	if got := indexContent(t, repo, "gone.txt"); got != linesText("one", "two", "three") {
+		t.Fatalf("index after unstaging the deletion =\n%q", got)
+	}
+	if got := repo.Git("status", "--porcelain", "--", "gone.txt"); got != " D gone.txt\n" {
+		t.Fatalf("status after unstaging the deletion = %q, want only the unstaged deletion left", got)
+	}
+}
