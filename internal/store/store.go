@@ -366,6 +366,11 @@ type Store struct {
 	mu   sync.Mutex
 	path string
 	data file
+	// reposRev counts the changes to data.Repos, rollback edits included,
+	// so a reader caching the sorted list can tell it went stale without
+	// comparing the repositories themselves. It is runtime-only: a store
+	// read back from disk starts at zero again.
+	reposRev uint64
 }
 
 type file struct {
@@ -837,12 +842,43 @@ func Open(path string) (*Store, error) {
 func (s *Store) Repos() []Repo {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.reposSortedLocked()
+}
+
+// reposSortedLocked copies the repositories sorted by the last opened
+// first. The caller holds s.mu.
+func (s *Store) reposSortedLocked() []Repo {
 	list := make([]Repo, len(s.data.Repos))
 	for i, r := range s.data.Repos {
 		list[i] = cloneRepo(r)
 	}
 	sort.SliceStable(list, func(i, j int) bool { return list[i].Opened.After(list[j].Opened) })
 	return list
+}
+
+// ReposWithRev returns the repositories as Repos does, with the revision
+// they were copied at in the same lock: a reader comparing a later
+// ReposRev against it knows whether the copy can still be used.
+func (s *Store) ReposWithRev() ([]Repo, uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.reposSortedLocked(), s.reposRev
+}
+
+// ReposRev returns the revision of the repository list, which every change
+// to it advances. Reading it copies and sorts nothing, so a view can ask
+// every frame and copy the list only when the revision moved.
+func (s *Store) ReposRev() uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.reposRev
+}
+
+// reposChanged notes one change to data.Repos. Rollbacks call it too: a
+// revision spent on a change that never persisted only costs a cache one
+// extra copy. The caller holds s.mu.
+func (s *Store) reposChanged() {
+	s.reposRev++
 }
 
 // Get returns the repository with id.
@@ -876,8 +912,10 @@ func (s *Store) Add(r Repo) (Repo, error) {
 				r.Workspace = o.Workspace
 			}
 			s.data.Repos[i] = r
+			s.reposChanged()
 			if err := s.save(); err != nil {
 				s.data.Repos[i] = o
+				s.reposChanged()
 				return Repo{}, err
 			}
 			return cloneRepo(r), nil
@@ -886,8 +924,10 @@ func (s *Store) Add(r Repo) (Repo, error) {
 	r.ID = newID()
 	previous := s.data.Repos
 	s.data.Repos = append(s.data.Repos, r)
+	s.reposChanged()
 	if err := s.save(); err != nil {
 		s.data.Repos = previous
+		s.reposChanged()
 		return Repo{}, err
 	}
 	return cloneRepo(r), nil
@@ -901,8 +941,10 @@ func (s *Store) Touch(id string) error {
 		if s.data.Repos[i].ID == id {
 			previous := s.data.Repos[i].Opened
 			s.data.Repos[i].Opened = time.Now()
+			s.reposChanged()
 			if err := s.save(); err != nil {
 				s.data.Repos[i].Opened = previous
+				s.reposChanged()
 				return err
 			}
 			return nil
@@ -937,6 +979,7 @@ func (s *Store) removeLocked(id string, recordDeleted bool) error {
 		kept = append(kept, r)
 	}
 	s.data.Repos = kept
+	s.reposChanged()
 	var open []string
 	for _, o := range s.data.Open {
 		if o != id {
@@ -951,6 +994,7 @@ func (s *Store) removeLocked(id string, recordDeleted bool) error {
 		s.data.Repos, s.data.Open = previousRepos, previousOpen
 		s.data.Active, s.data.ActiveSet = previousActive, previousSet
 		s.data.Deleted = previousDeleted
+		s.reposChanged()
 		return err
 	}
 	return nil
@@ -965,8 +1009,10 @@ func (s *Store) SetWorkspace(id, workspace string) error {
 		if s.data.Repos[i].ID == id {
 			previous := s.data.Repos[i].Workspace
 			s.data.Repos[i].Workspace = workspace
+			s.reposChanged()
 			if err := s.save(); err != nil {
 				s.data.Repos[i].Workspace = previous
+				s.reposChanged()
 				return err
 			}
 			return nil
@@ -983,8 +1029,10 @@ func (s *Store) UpdateLocal(id string, local RepoSettings) error {
 		if s.data.Repos[i].ID == id {
 			previous := s.data.Repos[i].Local
 			s.data.Repos[i].Local = cloneRepoSettings(local)
+			s.reposChanged()
 			if err := s.save(); err != nil {
 				s.data.Repos[i].Local = previous
+				s.reposChanged()
 				return err
 			}
 			return nil
