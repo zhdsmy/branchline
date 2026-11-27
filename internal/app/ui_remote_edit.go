@@ -413,57 +413,49 @@ func (a *app) closeRemoteEditConflict() {
 	st.conflictPath = ""
 }
 
-// remoteEditMarker draws the small badge of a file whose server copy is
+// remoteEditBadge draws the small badge of a file whose server copy is
 // being edited locally: nothing at all for every other file, so the rows of
 // local repositories and of unedited files keep exactly their shape. The
 // badge carries the accessible name "Edited Locally". It reads the state
 // without counting as using remote editing, so the cache sweep waits for
 // the first real interaction.
-func (a *app) remoteEditMarker(c *ui.Context, f git.FileChange, staged bool) {
+func (a *app) remoteEditBadge(c *ui.Context, f git.FileChange) {
 	p := a.pal
 	st := featureState(a, func() *remoteEditState {
 		return &remoteEditState{entries: map[remoteEditKey]*remoteEditEntry{}}
 	})
 	key := remoteEditKey{repoID: a.session.Meta().ID, path: f.Path}
 	entry := st.entries[key]
-	if entry != nil && entry.hasCopy {
-		ui.Box(c).Width(20).Height(20).Shrink(0).Radius(5).Center().
-			Role(ui.RoleImage).
-			Label("Edited Locally").Tooltip("Edited Locally").
-			Background(p.accent.Alpha(0.16)).
-			Children(func() {
-				symbolIcon(c, "pencil", fallbackPencil, 10, p.accent)
-			})
-	}
-	a.remoteEditDialogs(c, st, f, staged)
-}
-
-// remoteEditDialogs renders the remote editing dialogs of the file row.
-// They mount into the window's overlay wherever they are invoked, but they
-// are invoked from a virtualized row, so each renders only on the row it
-// belongs to: the unstaged row owns the file's dialogs whenever one exists,
-// the staged row only while the file is not in the unstaged list. When the
-// file leaves the list entirely the dialog unmounts, as the file row the
-// user acted on is gone too.
-func (a *app) remoteEditDialogs(c *ui.Context, st *remoteEditState, f git.FileChange, staged bool) {
-	owner := !staged
-	if staged {
-		if _, unstaged := a.changesView.listCache.lookupUnstaged(f.Path); !unstaged {
-			owner = true
-		}
-	}
-	if !owner {
+	if entry == nil || !entry.hasCopy {
 		return
 	}
-	p := a.pal
-	key := remoteEditKey{repoID: a.session.Meta().ID, path: f.Path}
+	ui.Box(c).Width(20).Height(20).Shrink(0).Radius(5).Center().
+		Role(ui.RoleImage).
+		Label("Edited Locally").Tooltip("Edited Locally").
+		Background(p.accent.Alpha(0.16)).
+		Children(func() {
+			symbolIcon(c, "pencil", fallbackPencil, 10, p.accent)
+		})
+}
 
-	if st.confirmingDiscard && st.copyKey == key {
+// remoteEditDialogs renders the remote editing dialogs once, at the level
+// of the Local Changes page exactly like the page's own confirmations: they
+// belong to entries and paths of the state, not to any file row, so the
+// server-changed notice and the discard confirmation appear even while the
+// file's row is scrolled away, filtered out, or left in a list that no
+// longer renders it.
+func (a *app) remoteEditDialogs(c *ui.Context) {
+	p := a.pal
+	st := featureState(a, func() *remoteEditState {
+		return &remoteEditState{entries: map[remoteEditKey]*remoteEditEntry{}}
+	})
+
+	if st.confirmingDiscard {
 		open := true
 		if ui.Modal(c.Key("remote-edit-discard-modal"), &open, func() {
 			ui.Column(c.Key("remote-edit-discard-body")).Width(430).Padding(18, 18, 14, 18).Gap(10).Children(func() {
 				ui.Text(c, "Discard local copy?").FontSize(17).FontWeight(650).TextColor(p.text)
-				ui.Text(c, "The copy of "+f.Path+" has been edited. Discarding it permanently loses those edits; the file on the server is untouched.").FontSize(13).TextColor(p.muted).MaxWidth(390).Wrap()
+				ui.Text(c, "The copy of "+st.copyKey.path+" has been edited. Discarding it permanently loses those edits; the file on the server is untouched.").FontSize(13).TextColor(p.muted).MaxWidth(390).Wrap()
 				ui.Row(c.Key("remote-edit-discard-actions")).Gap(8).Justify(ui.End).Children(func() {
 					if ui.Button(c.Key("remote-edit-discard-cancel"), "Cancel").Label("Cancel").Clicked() {
 						a.cancelRemoteEditDiscard()
@@ -478,8 +470,9 @@ func (a *app) remoteEditDialogs(c *ui.Context, st *remoteEditState, f git.FileCh
 		}
 	}
 
-	if st.conflictOpen && st.conflictPath == f.Path {
+	if st.conflictOpen {
 		open := true
+		key := remoteEditKey{repoID: a.session.Meta().ID, path: st.conflictPath}
 		if ui.Modal(c.Key("remote-edit-conflict-modal"), &open, func() {
 			ui.Column(c.Key("remote-edit-conflict-body")).Width(430).Padding(18, 18, 14, 18).Gap(10).Children(func() {
 				ui.Text(c, "File changed on the server").FontSize(17).FontWeight(650).TextColor(p.text)

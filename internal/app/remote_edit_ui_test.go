@@ -728,3 +728,106 @@ func TestRemoteEditUIMenuOpensWithKeyboard(t *testing.T) {
 		t.Fatal("no copy after choosing Open for Editing from the keyboard menu")
 	}
 }
+
+// the server-changed notice is drawn at the level of the page, not inside
+// the file's virtualized row: filtering the row away while a save is in
+// flight does not swallow it — when the save fails with the server having
+// changed, the notice is there and Show Local Copy reveals the copy.
+func TestRemoteEditUIConflictNoticeSurvivesFilteredRow(t *testing.T) {
+	repo, srv := loopbackSSHRepo(t)
+	h, capture, _ := openRemoteEditHarness(t, repo, srv)
+	gated := installGatedShellExecutor(t, h)
+
+	chooseRemoteEditItem(t, h, "a.txt", "Open for Editing")
+	h.drain()
+	opened := capture.openedPaths()
+	if len(opened) != 1 {
+		t.Fatalf("opens = %q, want exactly one", opened)
+	}
+	local := opened[0]
+	if err := os.WriteFile(local, []byte("my edit\n"), 0o600); err != nil {
+		t.Fatalf("edit copy: %v", err)
+	}
+	srv.WriteFile(t, repo.Path, "a.txt", []byte("somebody else\n"))
+	h.drain()
+
+	// The save is in flight and held, and the file's row leaves the list.
+	gated.gateNext()
+	chooseRemoteEditItem(t, h, "a.txt", "Save to Server")
+	gated.gateArrived(t)
+	typeChangesFilter(t, h, "zzz-no-match")
+	if changeRowShown(h, "Unstaged a.txt") {
+		t.Fatal("the row must be filtered away for this test")
+	}
+
+	gated.releaseGate(t)
+	h.drain()
+	h.ui.Frame()
+
+	if !h.ui.HasText("The file on the server changed after it was opened for editing. Nothing was written; your edits are still in the local copy.") {
+		t.Fatalf("server-changed notice missing while the row is filtered away; texts=%q", h.ui.Texts())
+	}
+	mustClick(t, h, "Show Local Copy")
+	h.ui.Frame()
+	shown := capture.shownPaths()
+	if len(shown) != 1 || shown[0] != local {
+		t.Fatalf("reveals = %q, want exactly the copy %q", shown, local)
+	}
+	if got := string(srv.ReadFile(t, repo.Path, "a.txt")); got != "somebody else\n" {
+		t.Fatalf("server content = %q, want the other change — nothing may be written", got)
+	}
+}
+
+// the same notice survives leaving the page: switching to History while a
+// save is in flight and coming back shows it on Local Changes, where the
+// save's outcome belongs.
+func TestRemoteEditUIConflictNoticeSurvivesPageSwitch(t *testing.T) {
+	repo, srv := loopbackSSHRepo(t)
+	h, capture, _ := openRemoteEditHarness(t, repo, srv)
+	gated := installGatedShellExecutor(t, h)
+
+	chooseRemoteEditItem(t, h, "a.txt", "Open for Editing")
+	h.drain()
+	opened := capture.openedPaths()
+	if len(opened) != 1 {
+		t.Fatalf("opens = %q, want exactly one", opened)
+	}
+	local := opened[0]
+	if err := os.WriteFile(local, []byte("my edit\n"), 0o600); err != nil {
+		t.Fatalf("edit copy: %v", err)
+	}
+	srv.WriteFile(t, repo.Path, "a.txt", []byte("somebody else\n"))
+	h.drain()
+
+	gated.gateNext()
+	chooseRemoteEditItem(t, h, "a.txt", "Save to Server")
+	gated.gateArrived(t)
+
+	// Leave the page while the save is in flight; the result lands meanwhile.
+	mustClick(t, h, "History")
+	h.ui.Frame()
+	if h.app.route.page != pageHistory {
+		t.Fatalf("route page = %v, want pageHistory", h.app.route.page)
+	}
+	gated.releaseGate(t)
+	h.drain()
+	h.ui.Frame()
+	if h.ui.HasText("The file on the server changed after it was opened for editing. Nothing was written; your edits are still in the local copy.") {
+		t.Fatal("the notice of Local Changes must not render over the History page")
+	}
+
+	mustClick(t, h, "Changes")
+	h.ui.Frame()
+	if h.app.route.page != pageChanges {
+		t.Fatalf("route page = %v, want pageChanges", h.app.route.page)
+	}
+	if !h.ui.HasText("The file on the server changed after it was opened for editing. Nothing was written; your edits are still in the local copy.") {
+		t.Fatalf("server-changed notice missing after returning to Local Changes; texts=%q", h.ui.Texts())
+	}
+	mustClick(t, h, "Show Local Copy")
+	h.ui.Frame()
+	shown := capture.shownPaths()
+	if len(shown) != 1 || shown[0] != local {
+		t.Fatalf("reveals = %q, want exactly the copy %q", shown, local)
+	}
+}

@@ -489,6 +489,7 @@ func (a *app) changesPage(c *ui.Context) {
 		}
 
 		a.changesDiscardModal(c)
+		a.remoteEditDialogs(c)
 		a.commitReplayModals(c)
 		a.conflictResolveModal(c)
 	})
@@ -709,7 +710,7 @@ func (a *app) changesFileRow(c *ui.Context, f git.FileChange, staged bool) {
 		if b.Clicked() {
 			a.selectChange(f, staged)
 		}
-		a.remoteEditMarker(c, f, staged)
+		a.remoteEditBadge(c, f)
 
 		if !staged {
 			if ui.Button(c.Key("discard-"+f.Path), "Discard").Label("Discard "+f.Path).FontSize(11).Padding(2, 6).Disabled(a.session.Busy()).Clicked() {
