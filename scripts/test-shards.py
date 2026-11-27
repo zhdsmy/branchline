@@ -322,7 +322,7 @@ def main():
 
     log_dir = Path(tempfile.mkdtemp(prefix="branchline-test-shards-"))
     jobs = build_jobs(packages, split_packages, listed, arguments.shards, log_dir)
-    total = sum(len(job.names) for job in jobs)
+    total = sum(len(names) for names, error in listed.values() if not error)
     shards_note = ""
     if split_packages:
         shards_note = (f"; splitting {', '.join(sorted(split_packages))} "
@@ -338,9 +338,10 @@ def main():
         return 1
     wall = time.monotonic() - started
 
-    # Collect results: every test assigned to a process must have reported
-    # pass, fail or skip; anything else missing means its process crashed,
-    # timed out or was killed before reporting it.
+    # Collect results: every listed test of a package must have reported
+    # pass, fail or skip in one of that package's processes. Verification is
+    # against the listed names, not the shard assignment — a test dropped
+    # from the assignment must surface as missing, not pass silently.
     missing = []
     failed_names = []
     skipped_names = []
@@ -350,17 +351,25 @@ def main():
               f"exit {job.returncode}, {job.elapsed:.1f} s")
         if job.returncode != 0:
             process_failures += 1
-        try:
-            text = job.log_path.read_text(errors="replace")
-        except OSError:
-            text = ""
-        passed, failed, skipped, package_failed = parse_events(text)
-        reported = passed | failed | skipped
-        for name in job.names:
+    for package in sorted(packages):
+        names, error = listed[package]
+        if error:
+            continue
+        reported = set()
+        for job in jobs:
+            if job.package != package:
+                continue
+            try:
+                text = job.log_path.read_text(errors="replace")
+            except OSError:
+                text = ""
+            passed, failed, skipped, _ = parse_events(text)
+            reported |= passed | failed | skipped
+            failed_names.extend(f"{package}.{name}" for name in sorted(failed))
+            skipped_names.extend(f"{package}.{name}" for name in sorted(skipped))
+        for name in names:
             if name not in reported:
-                missing.append(f"{job.package}.{name}")
-        failed_names.extend(f"{job.package}.{name}" for name in sorted(failed))
-        skipped_names.extend(f"{job.package}.{name}" for name in sorted(skipped))
+                missing.append(f"{package}.{name}")
 
     if failed_names:
         print("--- FAIL tests:")
