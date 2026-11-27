@@ -144,12 +144,14 @@ func (a *app) repoSwitcher(c *ui.Context) {
 			ui.Box(c).Height(0.5).FillWidth().Background(p.hairline).Margin(4, 2)
 			a.switcherFootButton(c, st, "Add Local Repository…", p)
 			a.switcherFootButton(c, st, "Add SSH Repository…", p)
+			a.switcherFootButton(c, st, "Clone Repository…", p)
 		})
 	})
 
 	a.addSSHModal(c, st)
 	a.notGitModal(c, st)
 	a.removeErrorModal(c, st)
+	a.cloneModal(c)
 }
 
 // repoRow is one repository of the switcher popup: a switch button labeled
@@ -243,6 +245,8 @@ func (a *app) switcherFootButton(c *ui.Context, st *reposUIState, label string, 
 	iconName, fb := "folder.badge.plus", fallbackRepo
 	if strings.Contains(label, "SSH") {
 		iconName, fb = "server.rack", fallbackSSH
+	} else if strings.Contains(label, "Clone") {
+		iconName, fb = "tray.and.arrow.down", fallbackCloneIcon
 	}
 	b.Children(func() {
 		symbolIcon(c, iconName, fb, 13, p.accent)
@@ -252,6 +256,8 @@ func (a *app) switcherFootButton(c *ui.Context, st *reposUIState, label string, 
 		st.popupOpen = false
 		if strings.Contains(label, "SSH") {
 			st.showSSHForm()
+		} else if strings.Contains(label, "Clone") {
+			a.showCloneDialog()
 		} else {
 			a.addLocalRepo(st)
 		}
