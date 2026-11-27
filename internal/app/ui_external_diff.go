@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -34,11 +35,11 @@ func externalDiffUI(a *app) *externalDiffState {
 	return featureState(a, func() *externalDiffState {
 		st := &externalDiffState{}
 		a.post(func() {
+			parent := st.snapshotParent
+			if parent == "" {
+				parent = os.TempDir()
+			}
 			a.spawn(func() {
-				parent := st.snapshotParent
-				if parent == "" {
-					parent = os.TempDir()
-				}
 				_, _ = exttool.CleanStale(parent, 24*time.Hour)
 			})
 		})
@@ -117,7 +118,12 @@ func (a *app) openExternalDiff(base, changed string, paths ...string) {
 			Remote: remoteFile,
 			Merged: merged,
 		}); err != nil {
-			fail(err)
+			var exitErr *exttool.ExitError
+			if errors.As(err, &exitErr) {
+				fail(fmt.Errorf("%s: %w", tool.Name, err))
+			} else {
+				fail(err)
+			}
 		}
 	})
 }

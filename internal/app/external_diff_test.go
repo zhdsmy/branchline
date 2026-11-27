@@ -522,7 +522,7 @@ func TestExternalDiffSettingsToolChoicesPersist(t *testing.T) {
 	tt := openSettingsTester(t, h)
 	clickSettingsTab(t, tt, "Diff")
 
-	if tt.HasText("Choose Custom Diff Tool Path") {
+	if _, ok := tt.AccessByRole(ui.RoleTextField, "External Diff Tool Path"); ok {
 		t.Fatalf("the custom diff inputs show before Custom is chosen; texts=%q", tt.Texts())
 	}
 
@@ -693,5 +693,47 @@ func TestExternalDiffSettingsChooseButtonPicksPath(t *testing.T) {
 
 	if got := h.store.Settings().CustomDiff.Path; got != picked {
 		t.Fatalf("persisted CustomDiff.Path after the picker = %q, want %q", got, picked)
+	}
+}
+
+// A diff tool that exits with a failing status surfaces its tool name in the
+// error toast, and any embedded credentials in stderr are redacted.
+func TestExternalDiffRunFailureShowsToolNameAndRedacts(t *testing.T) {
+	repo := newGitRepo(t, "xd-run-fail")
+	repo.CommitFile("code.go", "package main\n\nvar v = 1\n", "create code")
+	repo.WriteFile("code.go", "package main\n\nvar v = 2\n")
+
+	h := openChangesHarness(t, repo)
+	dir := t.TempDir()
+	script := filepath.Join(dir, "fail-diff.sh")
+	body := "#!/bin/sh\necho 'fatal: https://alice:super-secret-token@example.com/repo.git' >&2\nexit 127\n"
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatalf("write failing diff tool: %v", err)
+	}
+	cur := h.store.Settings()
+	cur.DiffTool = "Custom"
+	cur.CustomDiff.Path = script
+	cur.CustomDiff.Args = `"$LOCAL" "$REMOTE"`
+	if err := h.store.SetSettings(cur); err != nil {
+		t.Fatalf("save failing tool settings: %v", err)
+	}
+	st := externalDiffUI(h.app)
+	st.snapshotParent = filepath.Join(dir, "snapshots")
+	if err := os.MkdirAll(st.snapshotParent, 0o755); err != nil {
+		t.Fatalf("mkdir snapshot parent: %v", err)
+	}
+
+	chooseFileMenuItem(t, h, "Unstaged code.go", "Open in External Diff Tool")
+	h.drain()
+
+	joined := strings.Join(h.ui.Texts(), "\n")
+	if !strings.Contains(joined, "Custom") {
+		t.Fatalf("the run-failure toast does not name the tool; texts=%q", joined)
+	}
+	if !strings.Contains(joined, "127") {
+		t.Fatalf("the run-failure toast does not carry the exit status; texts=%q", joined)
+	}
+	if strings.Contains(joined, "super-secret-token") {
+		t.Fatalf("the run-failure toast leaked a secret; texts=%q", joined)
 	}
 }

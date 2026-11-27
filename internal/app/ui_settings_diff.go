@@ -177,8 +177,9 @@ func saveDiffToolChoice[T comparable](st *diffToolSettingsState, key string, sho
 // failed write leaves the input showing its saved path again.
 func (a *app) chooseCustomToolPath(st *diffToolSettingsState, key string, shown, applied *string) {
 	win := a.settingsWin
+	pick := st.pickToolPathFn
 	a.spawn(func() {
-		dir, err := st.pickToolPathFn(win)
+		dir, err := pick(win)
 		if err != nil || dir == "" {
 			return
 		}
@@ -270,32 +271,34 @@ func (a *app) settingsDiffPage(c *ui.Context, p palette) {
 	saveDiffToolChoice(st, "customMergePath", &st.customMergePath, &st.customMergePathApplied, save)
 	saveDiffToolChoice(st, "customMergeArgs", &st.customMergeArgs, &st.customMergeArgsApplied, save)
 
-	ui.Form(c, func() {
-		ui.Field(c, "Font Size", func() {
-			ui.RadioGroup(c, func() {
-				for _, choice := range diffFontSizeChoices {
-					ui.Radio(c, &s.fontSize, choice.size, choice.name).Label("Diff Font " + choice.name)
-				}
-			}).Row()
-		}).Error(s.errs["diffFontSize"])
-		ui.Field(c, "Tab Width", func() {
-			ui.RadioGroup(c, func() {
-				for _, width := range diffTabWidthChoices {
-					ui.Radio(c, &s.tabWidth, width, strconv.Itoa(width)).Label("Diff Tab Width " + strconv.Itoa(width))
-				}
-			}).Row()
-		}).Error(s.errs["diffTabWidth"])
-		ui.Field(c, "Change Marks", func() {
-			ui.Checkbox(c, &s.changeMarks, "Show +/- change marks").Label("Show +/- change marks")
-		}).Error(s.errs["changeMarks"])
-		ui.Field(c, "Whitespace", func() {
-			ui.Checkbox(c, &s.ignoreSpace, "Ignore whitespace changes").Label("Ignore whitespace changes")
-		}).Error(s.errs["ignoreSpace"])
-		a.settingsDiffToolRows(c, "diffTool", "External Diff Tool", "diff-custom-path", "diff-custom-args", "customDiffPath", "customDiffArgs",
-			&st.diffTool, &st.customDiffPath, &st.customDiffPathApplied, &st.customDiffArgs,
-			`"$LOCAL" "$REMOTE"`)
-		a.settingsDiffToolRows(c, "mergeTool", "Merge Tool", "merge-custom-path", "merge-custom-args", "customMergePath", "customMergeArgs",
-			&st.mergeTool, &st.customMergePath, &st.customMergePathApplied, &st.customMergeArgs,
-			`"$BASE" "$LOCAL" "$REMOTE" "$MERGED"`)
+	ui.Scroll(c.Key("settings-diff-scroll")).Grow(1).FillWidth().MinHeight(0).Children(func() {
+		ui.Form(c, func() {
+			ui.Field(c, "Font Size", func() {
+				ui.RadioGroup(c, func() {
+					for _, choice := range diffFontSizeChoices {
+						ui.Radio(c, &s.fontSize, choice.size, choice.name).Label("Diff Font " + choice.name)
+					}
+				}).Row()
+			}).Error(s.errs["diffFontSize"])
+			ui.Field(c, "Tab Width", func() {
+				ui.RadioGroup(c, func() {
+					for _, width := range diffTabWidthChoices {
+						ui.Radio(c, &s.tabWidth, width, strconv.Itoa(width)).Label("Diff Tab Width " + strconv.Itoa(width))
+					}
+				}).Row()
+			}).Error(s.errs["diffTabWidth"])
+			ui.Field(c, "Change Marks", func() {
+				ui.Checkbox(c, &s.changeMarks, "Show +/- change marks").Label("Show +/- change marks")
+			}).Error(s.errs["changeMarks"])
+			ui.Field(c, "Whitespace", func() {
+				ui.Checkbox(c, &s.ignoreSpace, "Ignore whitespace changes").Label("Ignore whitespace changes")
+			}).Error(s.errs["ignoreSpace"])
+			a.settingsDiffToolRows(c, "diffTool", "External Diff Tool", "diff-custom-path", "diff-custom-args", "customDiffPath", "customDiffArgs",
+				&st.diffTool, &st.customDiffPath, &st.customDiffPathApplied, &st.customDiffArgs,
+				`"$LOCAL" "$REMOTE"`)
+			a.settingsDiffToolRows(c, "mergeTool", "Merge Tool", "merge-custom-path", "merge-custom-args", "customMergePath", "customMergeArgs",
+				&st.mergeTool, &st.customMergePath, &st.customMergePathApplied, &st.customMergeArgs,
+				`"$BASE" "$LOCAL" "$REMOTE" "$MERGED"`)
+		})
 	})
 }
