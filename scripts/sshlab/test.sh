@@ -136,7 +136,10 @@ _last_json=""
 _last_pkg_fail_json=""
 _tests_tsv="${SSHLAB_LOG_DIR}/configured-linux-${SSHLAB_ENV}-tests.tsv"
 jq -r '.tests[] | [.package, .test] | @tsv' "$MANIFEST_FILE" >"$_tests_tsv"
-while IFS="$(printf '\t')" read -r _pkg _test; do
+# Read the list on its own descriptor: a command in the body that reads
+# standard input (the diagnostics ssh, a test binary) must not eat the
+# remaining lines and silently skip the tests after a failure.
+while IFS="$(printf '\t')" read -r _pkg _test <&3; do
 	[ -n "$_pkg" ] || continue
 	_run_id=$((_run_id + 1))
 	_one_json="${SSHLAB_LOG_DIR}/configured-linux-${SSHLAB_ENV}-test-${_run_id}.json"
@@ -171,7 +174,7 @@ while IFS="$(printf '\t')" read -r _pkg _test; do
 		# while the container is still alive; never masks the failure itself.
 		sshlab_collect_diagnostics "$DIAG_LOG" "test=${_test} rc=${_test_rc}"
 	fi
-done <"$_tests_tsv"
+done 3<"$_tests_tsv"
 
 # The final per-test invocation (or failing run in the last package) supplies the package completion event.
 if [ -n "$_last_json" ]; then

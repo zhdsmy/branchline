@@ -39,7 +39,7 @@ func (r *Repo) RemoveBranches(list []RemoveBranchOptions) error {
 		return fmt.Errorf("deleting branches needs their names")
 	}
 	if len(names) > 0 {
-		if _, err := r.run(quick, append([]string{"branch", "-D", "--"}, names...)...); err != nil {
+		if err := r.runPathBatches([]string{"branch", "-D", "--"}, names); err != nil {
 			errs = append(errs, err)
 		}
 	}
