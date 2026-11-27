@@ -80,6 +80,7 @@ type Target struct {
 	controlPaths    map[string]struct{}
 	cmd             *exec.Cmd
 	exited          chan struct{}
+	pipeW           *os.File
 	closed          bool
 	closeOnce       sync.Once
 	closeErr        error
@@ -215,12 +216,15 @@ func (s *Target) close() error {
 			}
 		}
 
-		// 2. Terminate loopback sshd and its entire process group.
+		// 2. Terminate loopback sshd and its entire process group. Closing the
+		// watchdog pipe write end first lets the watchdog shut sshd down
+		// gracefully; the process group termination below covers the rest.
 		if s.cmd != nil && s.cmd.Process != nil {
-			pid := s.PID
-			if pid <= 0 {
-				pid = s.cmd.Process.Pid
+			if s.pipeW != nil {
+				_ = s.pipeW.Close()
+				s.pipeW = nil
 			}
+			pid := s.cmd.Process.Pid
 			terminateProcessGroup(pid, s.cmd.Process, s.exited)
 			if err := waitProcessGroupGone(pid, 3*time.Second); err != nil {
 				errs = append(errs, fmt.Sprintf("loopback sshd process group %d: %v", pid, err))
