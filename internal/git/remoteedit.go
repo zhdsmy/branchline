@@ -112,7 +112,7 @@ func remoteEditExecutor(ex Executor) (remoteEditShell, error) {
 
 // remoteEditComponents is the path split into its slash-separated segments.
 func remoteEditComponents(path string) []string {
-	return strings.Split(filepath.ToSlash(path), "/")
+	return strings.Split(path, "/")
 }
 
 // quoteRelComponent quotes one path segment for the server's shell.
@@ -120,22 +120,19 @@ func quoteRelComponent(c string) string {
 	return ShellQuote(c)
 }
 
-// remoteEditHelpers is the shared part of the server scripts: move into the
-// repository, refuse symbolic links on the root and on every path prefix,
-// and define a helper printing "size mode mtime sha256" of one file. GNU
-// tools (stat -c, sha256sum) are tried first, BSD ones (stat -f,
-// shasum -a 256) second; the hash always comes from standard input so its
-// output never has to be parsed apart from a file name.
-func remoteEditHelpers(root string, comps []string) string {
-	var b strings.Builder
-	b.WriteString("cd ")
-	b.WriteString(RemotePath(root))
-	b.WriteString(" || exit 3;")
-	b.WriteString("[ -L ")
-	b.WriteString(RemotePath(root))
-	b.WriteString(" ] && exit ")
-	b.WriteString(strconv.Itoa(remoteExitSymlink))
-	b.WriteString(";")
+// cleanRemoteRoot strips trailing slashes so `[ -L root ]` tests the root
+// entry itself rather than dereferencing a symlinked directory.
+func cleanRemoteRoot(root string) string {
+	trimmed := strings.TrimRight(root, "/")
+	if trimmed == "" && root != "" {
+		return "/"
+	}
+	return trimmed
+}
+
+// writeRemoteSymlinkChecks writes POSIX shell checks that exit with
+// remoteExitSymlink if any prefix component or the file itself is a symlink.
+func writeRemoteSymlinkChecks(b *strings.Builder, comps []string) {
 	prefix := "./"
 	for _, c := range comps {
 		prefix += quoteRelComponent(c)
@@ -146,6 +143,26 @@ func remoteEditHelpers(root string, comps []string) string {
 		b.WriteString(";")
 		prefix += "/"
 	}
+}
+
+// remoteEditHelpers is the shared part of the server scripts: refuse symbolic
+// links on the root and on every path prefix, move into the repository, and
+// define a helper printing "size mode mtime sha256" of one file. GNU tools
+// (stat -c, sha256sum) are tried first, BSD ones (stat -f, shasum -a 256)
+// second; the hash always comes from standard input so its output never has
+// to be parsed apart from a file name.
+func remoteEditHelpers(root string, comps []string) string {
+	var b strings.Builder
+	rq := RemotePath(cleanRemoteRoot(root))
+	b.WriteString("[ -L ")
+	b.WriteString(rq)
+	b.WriteString(" ] && exit ")
+	b.WriteString(strconv.Itoa(remoteExitSymlink))
+	b.WriteString(";")
+	b.WriteString("cd ")
+	b.WriteString(rq)
+	b.WriteString(" || exit 3;")
+	writeRemoteSymlinkChecks(&b, comps)
 	b.WriteString("__bl_stat(){ a=$(stat -c '%s %a %Y' \"$1\" 2>/dev/null) || a=$(stat -f '%z %Lp %m' \"$1\" 2>/dev/null) || return 1; printf '%s' \"$a\";};")
 	b.WriteString("__bl_hash(){ h=$(sha256sum < \"$1\" 2>/dev/null) || h=$(shasum -a 256 < \"$1\" 2>/dev/null) || return 1; printf '%s' \"${h%% *}\";};")
 	b.WriteString("__bl_meta(){ s=$(__bl_stat \"$1\") || return 1; hh=$(__bl_hash \"$1\") || return 1; printf '%s %s' \"$s\" \"$hh\";};")
@@ -237,6 +254,7 @@ func remoteEditSaveScript(root, path string, meta RemoteFileMeta, size int64, sh
 	b.WriteString("chmod ")
 	b.WriteString(ShellQuote(mode))
 	b.WriteString(" \"$tmp\" || exit 3;")
+	writeRemoteSymlinkChecks(&b, comps)
 	b.WriteString("cur=$(__bl_meta ")
 	b.WriteString(relq)
 	b.WriteString(") || cur=;")

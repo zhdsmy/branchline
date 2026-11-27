@@ -186,7 +186,7 @@ class Job:
             start_new_session=True)
 
     def terminate_group(self):
-        if self.process is not None and self.process.poll() is None:
+        if self.process is not None:
             try:
                 os.killpg(self.process.pid, signal.SIGKILL)
             except (ProcessLookupError, PermissionError):
@@ -275,8 +275,11 @@ def run_jobs(jobs, race, timeout):
                     job.elapsed = time.monotonic() - job.started
                     job.log_file.close()
                     pending.remove(job)
-        # Reap whatever is still running; after an interruption these are
-        # the processes whose groups were just terminated.
+        # Reap whatever is still running; after an interruption terminate
+        # every started group once more in case a signal landed mid-Popen.
+        if interrupted:
+            for job in jobs:
+                job.terminate_group()
         for job in jobs:
             if job.process is not None and job.returncode is None:
                 job.returncode = job.process.wait()

@@ -70,4 +70,22 @@ func TestRemoteEditLoopbackSSH(t *testing.T) {
 	if got := srv.ReadFile(t, dir, "src/edit me.txt"); string(got) != "someone else\n" {
 		t.Errorf("conflict overwritten: %q", got)
 	}
+
+	// A path carrying single quotes in both directory and file name must survive
+	// the login shell's quoting around `/bin/sh -c`.
+	quotedPath := "dir's/it's quoted.txt"
+	srv.WriteFile(t, dir, quotedPath, []byte("quoted before\n"))
+	qCopy, err := r.DownloadForEdit(context.Background(), quotedPath, cache)
+	if err != nil {
+		t.Fatalf("download %q: %v", quotedPath, err)
+	}
+	if err := os.WriteFile(qCopy.Local, []byte("quoted after\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.SaveEdited(context.Background(), qCopy); err != nil {
+		t.Fatalf("save %q: %v", quotedPath, err)
+	}
+	if got := srv.ReadFile(t, dir, quotedPath); string(got) != "quoted after\n" {
+		t.Errorf("quoted server content %q", got)
+	}
 }

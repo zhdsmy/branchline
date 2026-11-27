@@ -543,13 +543,15 @@ func TestRemoteEditSymlinks(t *testing.T) {
 		if err := os.Symlink(repoDir, linkRoot); err != nil {
 			t.Fatal(err)
 		}
-		ex.dir = linkRoot
-		repo := New(ex)
-		if _, err := repo.DownloadForEdit(context.Background(), "plain.txt", t.TempDir()); !errors.Is(err, ErrRemoteSymlink) {
-			t.Errorf("download with a linked root: %v", err)
-		}
-		if _, err := repo.SaveEdited(context.Background(), manualCopy(t, "plain.txt", []byte("x"))); !errors.Is(err, ErrRemoteSymlink) {
-			t.Errorf("save with a linked root: %v", err)
+		for _, dir := range []string{linkRoot, linkRoot + "/"} {
+			ex.dir = dir
+			repo := New(ex)
+			if _, err := repo.DownloadForEdit(context.Background(), "plain.txt", t.TempDir()); !errors.Is(err, ErrRemoteSymlink) {
+				t.Errorf("download with linked root %q: %v", dir, err)
+			}
+			if _, err := repo.SaveEdited(context.Background(), manualCopy(t, "plain.txt", []byte("x"))); !errors.Is(err, ErrRemoteSymlink) {
+				t.Errorf("save with linked root %q: %v", dir, err)
+			}
 		}
 		if got := readServerFile(t, repoDir, "plain.txt"); string(got) != "plain\n" {
 			t.Errorf("file behind the linked root written: %q", got)
