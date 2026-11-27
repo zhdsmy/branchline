@@ -44,6 +44,12 @@ type changesState struct {
 	amendErr  string
 
 	diff diffPanel
+
+	// list is the place of the virtual file list, and listCache the
+	// derivation of the current snapshot's status the list and the
+	// selection lookups share. Both are owned by the UI thread.
+	list      ui.ListState
+	listCache changesListCache
 }
 
 func (s *changesState) ensureDefaults() {
@@ -203,6 +209,7 @@ func (a *app) resetChangesForRepo() {
 	s.amendErr = ""
 	s.diff.Clear(a.session, changesDiffScope)
 	s.repoGen = a.session.Generation()
+	s.listCache.invalidate()
 }
 
 // syncChangesRepoState advances repository-generation state and derives the
@@ -218,7 +225,8 @@ func (a *app) syncChangesRepoState() {
 		return
 	}
 	st := a.session.Snapshot().Status
-	sig := changesStatusSignature(st)
+	cache := s.listCache.lookup(st)
+	sig := cache.signature
 	if s.statusSig == sig {
 		return
 	}
@@ -230,11 +238,12 @@ func (a *app) syncChangesRepoState() {
 	if !s.selected {
 		return
 	}
-	files := st.Unstaged
+	var ok bool
 	if s.selectedStaged {
-		files = st.Staged
+		_, ok = cache.lookupStaged(s.selectedPath)
+	} else {
+		_, ok = cache.lookupUnstaged(s.selectedPath)
 	}
-	_, ok := findChange(files, s.selectedPath)
 	if !ok {
 		s.selectedPath = ""
 		s.selectedStaged = false
@@ -408,11 +417,15 @@ func (a *app) changesPage(c *ui.Context) {
 	a.syncChangesRepoState()
 	if s.selected {
 		if st := a.session.Snapshot().Status; a.session.Loaded() && !a.session.Busy() {
-			files := st.Unstaged
+			cache := s.listCache.lookup(st)
+			var f git.FileChange
+			var ok bool
 			if s.selectedStaged {
-				files = st.Staged
+				f, ok = cache.lookupStaged(s.selectedPath)
+			} else {
+				f, ok = cache.lookupUnstaged(s.selectedPath)
 			}
-			if f, ok := findChange(files, s.selectedPath); ok {
+			if ok {
 				if !s.selectedStaged && f.Status == 'U' {
 					// A conflicted file has no readable diff: its combined diff
 					// is not a patch the panel can show, so the right pane shows
@@ -477,78 +490,71 @@ func (a *app) changesPage(c *ui.Context) {
 func (a *app) changesFilesPane(c *ui.Context) {
 	p := a.pal
 	st := a.session.Snapshot().Status
-	conflicted, unstaged := splitConflictedChanges(st.Unstaged)
+	cache := a.changesView.listCache.lookup(st)
 
 	ui.Column(c.Key("changes-files")).Fill().MinWidth(0).FillHeight().Background(p.bg).Children(func() {
-		ui.Scroll(c.Key("changes-lists-scroll")).Grow(1).FillWidth().MinHeight(0).Padding(0, 12, 10, 12).Gap(10).Children(func() {
-			if len(conflicted) > 0 {
-				a.changesConflictSection(c, conflicted)
-				ui.Box(c).Height(1).FillWidth().Background(p.hairline)
-			}
-			a.changesFileSection(c, false, unstaged)
-			ui.Box(c).Height(1).FillWidth().Background(p.hairline)
-			a.changesFileSection(c, true, st.Staged)
-		})
+		a.changesFilesList(c, cache)
 		ui.Box(c).Height(1).FillWidth().Background(p.hairline)
 		a.commitBox(c, st)
 	})
 }
 
-func (a *app) changesFileSection(c *ui.Context, staged bool, files []git.FileChange) {
+// changesFileSectionHeader renders the title row of the Unstaged or Staged
+// section: its file count and the bulk action buttons of the section.
+func (a *app) changesFileSectionHeader(c *ui.Context, staged bool, files []git.FileChange) {
 	p := a.pal
 	title := "Unstaged"
 	if staged {
 		title = "Staged"
 	}
 
-	ui.Column(c.Key("changes-section-" + title)).FillWidth().Gap(4).Children(func() {
-		ui.Row(c.Key("changes-section-header-"+title)).Height(30).FillWidth().Padding(0, 2).Gap(6).AlignItems(ui.Center).Children(func() {
-			ui.Text(c, fmt.Sprintf("%s (%d)", title, len(files))).FontSize(12).FontWeight(650).TextColor(p.muted).SingleLine()
-			ui.Spacer(c)
-			if staged {
-				if ui.Button(c.Key("unstage-all"), "Unstage All").Label("Unstage All").FontSize(11).Padding(2, 6).Disabled(a.session.Busy() || len(files) == 0).Clicked() {
-					a.unstageChanges(nil, true)
-				}
-			} else {
-				if ui.Button(c.Key("discard-all"), "Discard All…").Label("Discard All").FontSize(11).Padding(2, 6).Disabled(a.session.Busy() || len(files) == 0).Clicked() {
-					a.askDiscardChanges(files)
-				}
-				if ui.Button(c.Key("stage-all"), "Stage All").Label("Stage All").FontSize(11).Padding(2, 6).Disabled(a.session.Busy() || len(files) == 0).Clicked() {
-					if a.session.Snapshot().Status.Conflicted() {
-						// Conflicted files must never be swept into the index by
-						// a bulk stage: stage only the paths of this section,
-						// which holds the non-conflicted files.
-						paths := make([]string, 0, len(files))
-						for _, f := range files {
-							if f.Status != 'U' {
-								paths = append(paths, f.Path)
-							}
+	ui.Row(c.Key("changes-section-header-"+title)).Height(30).FillWidth().Padding(0, 2).Gap(6).AlignItems(ui.Center).Children(func() {
+		ui.Text(c, fmt.Sprintf("%s (%d)", title, len(files))).FontSize(12).FontWeight(650).TextColor(p.muted).SingleLine()
+		ui.Spacer(c)
+		if staged {
+			if ui.Button(c.Key("unstage-all"), "Unstage All").Label("Unstage All").FontSize(11).Padding(2, 6).Disabled(a.session.Busy() || len(files) == 0).Clicked() {
+				a.unstageChanges(nil, true)
+			}
+		} else {
+			if ui.Button(c.Key("discard-all"), "Discard All…").Label("Discard All").FontSize(11).Padding(2, 6).Disabled(a.session.Busy() || len(files) == 0).Clicked() {
+				a.askDiscardChanges(files)
+			}
+			if ui.Button(c.Key("stage-all"), "Stage All").Label("Stage All").FontSize(11).Padding(2, 6).Disabled(a.session.Busy() || len(files) == 0).Clicked() {
+				if a.session.Snapshot().Status.Conflicted() {
+					// Conflicted files must never be swept into the index by
+					// a bulk stage: stage only the paths of this section,
+					// which holds the non-conflicted files.
+					paths := make([]string, 0, len(files))
+					for _, f := range files {
+						if f.Status != 'U' {
+							paths = append(paths, f.Path)
 						}
-						a.stageChanges(paths, false)
-					} else {
-						a.stageChanges(nil, true)
 					}
+					a.stageChanges(paths, false)
+				} else {
+					a.stageChanges(nil, true)
 				}
 			}
-		})
-
-		if len(files) == 0 {
-			empty := "Working tree is clean"
-			if staged {
-				empty = "No staged changes"
-			} else if len(a.session.Snapshot().Status.Staged) > 0 || a.session.Snapshot().Status.Conflicted() {
-				empty = "No unstaged changes"
-			}
-			ui.Box(c.Key("changes-empty-"+title)).FillWidth().Padding(8, 8).Radius(8).Background(p.hover).Children(func() {
-				ui.Text(c, empty).FontSize(12).TextColor(p.faint).SingleLine()
-			})
-			return
 		}
+	})
+}
 
-		for _, f := range files {
-			f := f
-			a.changesFileRow(c, f, staged)
-		}
+// changesFileEmptyHint renders the rounded placeholder of an empty Unstaged
+// or Staged section.
+func (a *app) changesFileEmptyHint(c *ui.Context, staged bool) {
+	p := a.pal
+	title := "Unstaged"
+	if staged {
+		title = "Staged"
+	}
+	empty := "Working tree is clean"
+	if staged {
+		empty = "No staged changes"
+	} else if len(a.session.Snapshot().Status.Staged) > 0 || a.session.Snapshot().Status.Conflicted() {
+		empty = "No unstaged changes"
+	}
+	ui.Box(c.Key("changes-empty-"+title)).FillWidth().Padding(8, 8).Radius(8).Background(p.hover).Children(func() {
+		ui.Text(c, empty).FontSize(12).TextColor(p.faint).SingleLine()
 	})
 }
 
