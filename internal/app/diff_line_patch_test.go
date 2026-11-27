@@ -867,3 +867,138 @@ func TestDiffLinePatchEligibilityMatrix(t *testing.T) {
 		}
 	}
 }
+
+// Staging only the addition of a replacement at the end of a file without a
+// final newline must not glue the added line to the deletion that became
+// context: the "\ No newline at end of file" marker travels to the line
+// that truly ends each side.
+func TestDiffLinePatchNoNewlineStagePlusOfReplacement(t *testing.T) {
+	repo := newGitRepo(t, "lp-noeol-repl-plus")
+	repo.CommitFile("a.txt", "one\ntwo", "initial")
+	repo.WriteFile("a.txt", "one\nTWO")
+	r := linePatchRepo(repo)
+
+	fp := unstagedPatch(t, r, "a.txt", 3)
+	text := stageLinesChosen(t, r, fp, chooseLines(t, fp, "+TWO"))
+
+	if n := strings.Count(text, "\\ No newline"); n != 1 {
+		t.Fatalf("patch carries %d no-newline markers, want 1:\n%s", n, text)
+	}
+	if got, want := indexContent(t, repo, "a.txt"), "one\nTWO\ntwo"; got != want {
+		t.Fatalf("index after staging the addition = %q, want %q", got, want)
+	}
+}
+
+// Staging only the trailing addition after the file's last line gained a
+// newline must not glue the addition to the context line of the rewritten
+// deletion: the marker of the context line splits into the newline change
+// both sides of the file end differ in.
+func TestDiffLinePatchNoNewlineStageAppendOnly(t *testing.T) {
+	repo := newGitRepo(t, "lp-noeol-append-only")
+	repo.CommitFile("a.txt", "one\ntwo", "initial")
+	repo.WriteFile("a.txt", "one\ntwo\nthree")
+	r := linePatchRepo(repo)
+
+	fp := unstagedPatch(t, r, "a.txt", 3)
+	// The diff carries -two and +two for the newline the last line gained;
+	// only the real addition is chosen.
+	stageLinesChosen(t, r, fp, chooseLines(t, fp, "+three"))
+
+	if got, want := indexContent(t, repo, "a.txt"), "one\ntwo\nthree"; got != want {
+		t.Fatalf("index after staging the append = %q, want %q", got, want)
+	}
+}
+
+// Staging only the addition of a replacement that removes the file's final
+// newline keeps the context line of the unchosen deletion newline-terminated:
+// it is not the last line of the file once the addition precedes it.
+func TestDiffLinePatchNoNewlineStagePlusDropsFinalNewline(t *testing.T) {
+	repo := newGitRepo(t, "lp-noeol-drop-plus")
+	repo.CommitFile("a.txt", "one\ntwo\n", "initial")
+	repo.WriteFile("a.txt", "one\nTWO")
+	r := linePatchRepo(repo)
+
+	fp := unstagedPatch(t, r, "a.txt", 3)
+	stageLinesChosen(t, r, fp, chooseLines(t, fp, "+TWO"))
+
+	if got, want := indexContent(t, repo, "a.txt"), "one\nTWO\ntwo\n"; got != want {
+		t.Fatalf("index after staging the addition = %q, want %q", got, want)
+	}
+}
+
+// Unstaging only the deletion of a staged end-of-file replacement without
+// final newlines must not glue the restored deletion to the addition that
+// became context: the marker stays on the last line of each side.
+func TestDiffLinePatchNoNewlineUnstageMinusOfReplacement(t *testing.T) {
+	repo := newGitRepo(t, "lp-noeol-unstage-minus")
+	repo.CommitFile("a.txt", "one\ntwo", "initial")
+	repo.WriteFile("a.txt", "one\nTWO")
+	repo.Git("add", "--", "a.txt")
+	r := linePatchRepo(repo)
+
+	fp := stagedPatch(t, r, "a.txt", 3)
+	text := unstageLinesChosen(t, r, fp, chooseLines(t, fp, "-two"))
+
+	if n := strings.Count(text, "\\ No newline"); n > 2 {
+		t.Fatalf("patch carries %d no-newline markers, want at most 2:\n%s", n, text)
+	}
+	if got, want := indexContent(t, repo, "a.txt"), "one\ntwo\nTWO"; got != want {
+		t.Fatalf("index after unstaging the deletion = %q, want %q", got, want)
+	}
+}
+
+// Unstaging only the deletion of the line appended after the file's last
+// line must not glue it to the context line ahead of it: the reverse patch
+// consumes the addition of the same text in place of the context.
+func TestDiffLinePatchNoNewlineUnstageAppendedLine(t *testing.T) {
+	repo := newGitRepo(t, "lp-noeol-unstage-append")
+	repo.CommitFile("a.txt", "one\ntwo\nthree", "initial")
+	repo.WriteFile("a.txt", "one\ntwo")
+	repo.Git("add", "--", "a.txt")
+	r := linePatchRepo(repo)
+
+	fp := stagedPatch(t, r, "a.txt", 3)
+	unstageLinesChosen(t, r, fp, chooseLines(t, fp, "-three"))
+
+	if got, want := indexContent(t, repo, "a.txt"), "one\ntwo\nthree"; got != want {
+		t.Fatalf("index after unstaging the deletion = %q, want %q", got, want)
+	}
+}
+
+// A path holding a quote or a backslash quotes as one C string with the a/
+// and b/ prefixes inside, as git writes it: "a/x\"y", never a/"x\"y".
+func TestDiffLinePatchQuotedPath(t *testing.T) {
+	repo := newGitRepo(t, "lp-quoted")
+	repo.CommitFile(`a"b.txt`, "one\ntwo\nthree\n", "initial")
+	repo.WriteFile(`a"b.txt`, "one\nTWO\nthree\n")
+	r := linePatchRepo(repo)
+
+	fp := unstagedPatch(t, r, `a"b.txt`, 3)
+	text := stageLinesChosen(t, r, fp, chooseLines(t, fp, "-two", "+TWO"))
+
+	if !strings.Contains(text, `diff --git "a/a\"b.txt" "b/a\"b.txt"`) {
+		t.Fatalf("diff header not quoted with the prefixes inside:\n%s", text)
+	}
+	if !strings.Contains(text, `--- "a/a\"b.txt"`) || !strings.Contains(text, `+++ "b/a\"b.txt"`) {
+		t.Fatalf("file headers not quoted with the prefixes inside:\n%s", text)
+	}
+	if strings.Contains(text, `a/"a\"b.txt"`) || strings.Contains(text, `b/"a\"b.txt"`) {
+		t.Fatalf("prefix outside the quotes:\n%s", text)
+	}
+	if got, want := indexContent(t, repo, `a"b.txt`), "one\nTWO\nthree\n"; got != want {
+		t.Fatalf("index after staging through the quoted path = %q, want %q", got, want)
+	}
+
+	// A backslash quotes the same way, and unstaging reads the header back.
+	repo.Git("add", "--", `a"b.txt`)
+	repo.CommitFile(`b\c.txt`, "x\n", "backslash")
+	repo.WriteFile(`b\c.txt`, "y\n")
+	fp2 := unstagedPatch(t, r, `b\c.txt`, 3)
+	text2 := stageLinesChosen(t, r, fp2, chooseLines(t, fp2, "-x", "+y"))
+	if !strings.Contains(text2, `--- "a/b\\c.txt"`) {
+		t.Fatalf("backslash path not quoted with the prefix inside:\n%s", text2)
+	}
+	if got, want := indexContent(t, repo, `b\c.txt`), "y\n"; got != want {
+		t.Fatalf("index after staging through the backslash path = %q, want %q", got, want)
+	}
+}

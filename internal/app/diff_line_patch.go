@@ -286,6 +286,81 @@ func orderUnstagePieces(pieces []patchPiece) []patchPiece {
 	return out
 }
 
+// normalizePatchTails places the "\ No newline at end of file" markers of
+// the finished hunk. A marker qualifies the line before it as one without a
+// trailing newline, and it only holds at the end of the file — git writes
+// none mid-hunk, so a line carrying one is the hunk's last line of its side.
+// Rewriting and reordering the diff's lines can leave a marker on a line
+// the hunk continues past: git apply does not refuse it, it glues the line
+// to the next one, and the index gains a line the file never had.
+//
+// The marker of a line that is not the hunk's last of its side is dropped:
+// the side continues, so the line ends in a newline there. A context line
+// that is the last line of one side alone splits into the deletion and the
+// addition of the same text, the marker on the side that ends: the two
+// sides differ exactly in whether the line ends in a newline, and the
+// counts of either side do not change.
+func normalizePatchTails(pieces []patchPiece) []patchPiece {
+	kept := make([]patchPiece, 0, len(pieces))
+	for _, p := range pieces {
+		if !p.dropped {
+			kept = append(kept, p)
+		}
+	}
+	lastOld, lastNew := -1, -1
+	for i, p := range kept {
+		if p.kind != '+' {
+			lastOld = i
+		}
+		if p.kind != '-' {
+			lastNew = i
+		}
+	}
+	// The positions are those of the kept lines: a split context line takes
+	// the place of the one it was, so every line's standing against the
+	// ends of its sides is decided before any line is written.
+	out := make([]patchPiece, 0, len(kept))
+	for i, p := range kept {
+		if len(p.tail) == 0 {
+			out = append(out, p)
+			continue
+		}
+		switch p.kind {
+		case '-':
+			if i != lastOld {
+				p.tail = nil
+			}
+			out = append(out, p)
+		case '+':
+			if i != lastNew {
+				p.tail = nil
+			}
+			out = append(out, p)
+		default:
+			switch {
+			case i == lastOld && i == lastNew:
+				out = append(out, p)
+			case i == lastOld && i < lastNew:
+				// The old side ends here without a newline, the new side
+				// goes on: the line gains its newline in the new file.
+				out = append(out,
+					patchPiece{kind: '-', orig: ' ', line: "-" + p.line[1:], tail: p.tail},
+					patchPiece{kind: '+', orig: ' ', line: "+" + p.line[1:]})
+			case i < lastOld && i == lastNew:
+				// The new side ends here without a newline, the old side
+				// goes on: the line loses its newline in the new file.
+				out = append(out,
+					patchPiece{kind: '-', orig: ' ', line: "-" + p.line[1:]},
+					patchPiece{kind: '+', orig: ' ', line: "+" + p.line[1:], tail: p.tail})
+			default:
+				p.tail = nil
+				out = append(out, p)
+			}
+		}
+	}
+	return out
+}
+
 func buildLinesPatch(f editor.FilePatch, chosen [][]bool, reverse bool) (string, error) {
 	type outHunk struct {
 		pieces             []patchPiece
@@ -309,6 +384,7 @@ func buildLinesPatch(f editor.FilePatch, chosen [][]bool, reverse bool) (string,
 		} else {
 			pieces = orderStagePieces(pieces)
 		}
+		pieces = normalizePatchTails(pieces)
 		oh := outHunk{pieces: pieces, oldN: oldN, newN: newN, section: h.Section}
 		if !reverse {
 			// The old side is the index the patch applies to, unchanged by
@@ -358,24 +434,27 @@ func buildLinesPatch(f editor.FilePatch, chosen [][]bool, reverse bool) (string,
 	if name == "" {
 		name = f.OldName
 	}
-	quoted := quotePatchPath(name)
+	// The a/ and b/ prefixes quote with the name: git writes the path of a
+	// patch header as one C string, "a/x\"y", never a/"x\"y".
+	qa := quotePatchPath("a/" + name)
+	qb := quotePatchPath("b/" + name)
 	var b strings.Builder
-	b.WriteString("diff --git a/" + quoted + " b/" + quoted + "\n")
+	b.WriteString("diff --git " + qa + " " + qb + "\n")
 	switch {
 	case created:
 		// git apply reads the creation from the /dev/null line, not from
 		// the mode line alone, so a creation written with a plain old name
-		// does not apply at all.
+		// does not apply at all. /dev/null quotes nothing.
 		b.WriteString("new file mode " + patchFileMode(f.NewMode) + "\n")
 		b.WriteString("--- /dev/null\n")
-		b.WriteString("+++ b/" + quoted + "\n")
+		b.WriteString("+++ " + qb + "\n")
 	case deleted:
 		b.WriteString("deleted file mode " + patchFileMode(f.OldMode) + "\n")
-		b.WriteString("--- a/" + quoted + "\n")
+		b.WriteString("--- " + qa + "\n")
 		b.WriteString("+++ /dev/null\n")
 	default:
-		b.WriteString("--- a/" + quoted + "\n")
-		b.WriteString("+++ b/" + quoted + "\n")
+		b.WriteString("--- " + qa + "\n")
+		b.WriteString("+++ " + qb + "\n")
 	}
 	for _, oh := range hunks {
 		fmt.Fprintf(&b, "@@ -%d,%d +%d,%d @@", oh.oldStart, oh.oldN, oh.newStart, oh.newN)
@@ -384,9 +463,6 @@ func buildLinesPatch(f editor.FilePatch, chosen [][]bool, reverse bool) (string,
 		}
 		b.WriteByte('\n')
 		for _, p := range oh.pieces {
-			if p.dropped {
-				continue
-			}
 			b.WriteString(p.line)
 			b.WriteByte('\n')
 			for _, l := range p.tail {
