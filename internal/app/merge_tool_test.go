@@ -300,6 +300,200 @@ func TestMergeToolMarkersRemainRefused(t *testing.T) {
 	}
 }
 
+// A write back the safe write refuses — the resolution still carries conflict
+// markers — never loses the merge result: it stays kept, and the conflicted
+// row's menu offers Save Merge Result and Discard Merge Result for it instead
+// of silently returning to Open in Merge Tool.
+func TestMergeToolRefusedWriteKeepsResult(t *testing.T) {
+	repo := newGitRepo(t, "mt-refused-keeps")
+	uuMergeFixture(t, repo)
+
+	h := openConflictedMerge(t, repo)
+	marked := "resolved in part\n<<<<<<< leftover\n"
+	setupMergeTool(t, h, writeResultOpts(t, marked))
+	h.drain()
+
+	conflictBytes, err := os.ReadFile(filepath.Join(repo.Path(), "f.txt"))
+	if err != nil {
+		t.Fatalf("read conflicted f.txt: %v", err)
+	}
+
+	openMergeToolFor(t, h, "f.txt")
+	h.drain()
+
+	assertStillConflicted(t, repo, "f.txt", string(conflictBytes))
+	if err := h.app.session.ActionErr(); err == nil || !strings.Contains(err.Error(), "conflict markers") {
+		t.Fatalf("action error = %v, want the conflict markers refusal", err)
+	}
+	key := mergeToolKey(mergeToolRepoKey(h.app), "f.txt")
+	if _, ok := mergeToolUI(h.app).results[key]; !ok {
+		t.Fatal("the refused merge result was dropped instead of kept")
+	}
+	if err := h.ui.RightClick("Conflicted f.txt"); err != nil {
+		t.Fatalf("right-click conflict row: %v\ntexts=%q", err, h.ui.Texts())
+	}
+	menu := h.ui.Menu()
+	for _, item := range []string{"Save Merge Result", "Discard Merge Result"} {
+		if !slices.Contains(menu, item) {
+			t.Fatalf("menu %q missing %q for the result of the refused write", menu, item)
+		}
+	}
+	if slices.Contains(menu, "Open in Merge Tool") {
+		t.Fatalf("menu %q still offers Open in Merge Tool next to the kept result", menu)
+	}
+	h.ui.CloseMenu()
+	h.ui.Frame()
+}
+
+// When the write back is already in flight while the user switches to another
+// repository, the write's completion is dropped with the generation change
+// and must not consume the merge result: the result stays kept for the
+// repository it belongs to, even though the write itself did land there.
+func TestMergeToolSwitchDuringWriteKeepsResult(t *testing.T) {
+	repo := newGitRepo(t, "mt-writeswitch-a")
+	uuMergeFixture(t, repo)
+	other := newGitRepo(t, "mt-writeswitch-b")
+	other.CommitFile("b.txt", "b\n", "commit in beta")
+
+	h := newTestApp(t)
+	savedA := h.openRepo(repo.StoreRepo())
+	h.drain()
+	if st := h.app.session.Snapshot().Status; !st.Conflicted() {
+		t.Fatalf("fixture: snapshot does not report the conflict: %+v", st)
+	}
+	gate := filepath.Join(t.TempDir(), "tool-gate")
+	recordDir, _ := setupMergeTool(t, h, fakeMergeToolOpts{
+		gate:        gate,
+		writeResult: true,
+		resultFile:  mergeToolResultFile(t, "resolved-by-tool\n"),
+	})
+	h.drain()
+
+	openMergeToolFor(t, h, "f.txt")
+	waitForToolRecord(t, recordDir)
+
+	// Hold the write back before it starts: the merge worker finishes behind
+	// the paused queue, its completion starts the safe write as a paused
+	// worker, and the session is busy with the write in flight.
+	h.queue.PauseWorkers()
+	if err := os.WriteFile(gate, []byte("go"), 0o644); err != nil {
+		t.Fatalf("release the tool gate: %v", err)
+	}
+	h.queue.RunNext(t)
+	if !h.app.session.Busy() {
+		h.queue.ResumeWorkers()
+		h.drain()
+		t.Fatal("session not busy after the merge completion started the write back")
+	}
+	key := mergeToolKey(mergeToolRepoKey(h.app), "f.txt")
+	if _, ok := mergeToolUI(h.app).results[key]; !ok {
+		h.queue.ResumeWorkers()
+		h.drain()
+		t.Fatal("the merge result was not stored before the write back started")
+	}
+	write := h.queue.WaitWorker(t)
+	h.queue.ResumeWorkers()
+
+	// Switch away while the write is in flight, then let it finish: it lands
+	// in the conflict's repository, but its completion belongs to the
+	// abandoned generation and never runs.
+	savedB, err := h.store.Add(other.StoreRepo())
+	if err != nil {
+		t.Fatalf("add second repository: %v", err)
+	}
+	h.app.openRepo(savedB)
+	h.ui.Frame()
+	h.queue.ReleaseWorker(write)
+	h.drain()
+
+	assertFileBytes(t, repo, "f.txt", "resolved-by-tool\n")
+	if out := gitOutTrim(t, repo.Path(), "ls-files", "-u", "--", "f.txt"); out != "" {
+		t.Fatalf("the write back did not land in its own repository: %q", out)
+	}
+	if _, ok := mergeToolUI(h.app).results[key]; !ok {
+		t.Fatal("the merge result was consumed by a completion the generation switch had dropped")
+	}
+
+	// Switching back still finds the result kept.
+	h.app.openRepo(savedA)
+	h.drain()
+	if _, ok := mergeToolUI(h.app).results[key]; !ok {
+		t.Fatal("the merge result did not survive the round trip back to its repository")
+	}
+}
+
+// When the user switches away and back to the same repository before the tool
+// exits, the session is at a new generation: the resolution is not written
+// directly but kept, and the row offers Save Merge Result, which resolves the
+// conflict through the same safe write.
+func TestMergeToolReopenedRepoKeepsResult(t *testing.T) {
+	repo := newGitRepo(t, "mt-reopen-a")
+	uuMergeFixture(t, repo)
+	other := newGitRepo(t, "mt-reopen-b")
+	other.CommitFile("b.txt", "b\n", "commit in beta")
+
+	h := newTestApp(t)
+	savedA := h.openRepo(repo.StoreRepo())
+	h.drain()
+	gate := filepath.Join(t.TempDir(), "tool-gate")
+	recordDir, _ := setupMergeTool(t, h, fakeMergeToolOpts{
+		gate:        gate,
+		writeResult: true,
+		resultFile:  mergeToolResultFile(t, "resolved-by-tool\n"),
+	})
+	h.drain()
+
+	openMergeToolFor(t, h, "f.txt")
+	waitForToolRecord(t, recordDir)
+
+	conflictBytes, err := os.ReadFile(filepath.Join(repo.Path(), "f.txt"))
+	if err != nil {
+		t.Fatalf("read conflicted f.txt: %v", err)
+	}
+
+	// Switch away and back while the tool is open: the repository key is the
+	// same when the tool exits, but the generation has moved on.
+	savedB, err := h.store.Add(other.StoreRepo())
+	if err != nil {
+		t.Fatalf("add second repository: %v", err)
+	}
+	h.app.openRepo(savedB)
+	h.ui.Frame()
+	h.app.openRepo(savedA)
+	h.ui.Frame()
+
+	if err := os.WriteFile(gate, []byte("go"), 0o644); err != nil {
+		t.Fatalf("release the tool gate: %v", err)
+	}
+	h.drain()
+
+	assertStillConflicted(t, repo, "f.txt", string(conflictBytes))
+	key := mergeToolKey(mergeToolRepoKey(h.app), "f.txt")
+	if _, ok := mergeToolUI(h.app).results[key]; !ok {
+		t.Fatal("the merge result was written directly or dropped across the generation change")
+	}
+	if err := h.ui.RightClick("Conflicted f.txt"); err != nil {
+		t.Fatalf("right-click conflict row: %v\ntexts=%q", err, h.ui.Texts())
+	}
+	menu := h.ui.Menu()
+	if !slices.Contains(menu, "Save Merge Result") {
+		t.Fatalf("menu %q missing Save Merge Result after the generation change", menu)
+	}
+	h.ui.CloseMenu()
+	h.ui.Frame()
+
+	chooseConflictMenuItem(t, h, "f.txt", "Save Merge Result")
+	h.drain()
+
+	if err := h.app.session.ActionErr(); err != nil {
+		t.Fatalf("saving the result kept across the generation change failed: %v", err)
+	}
+	assertFileBytes(t, repo, "f.txt", "resolved-by-tool\n")
+	if out := gitOutTrim(t, repo.Path(), "ls-files", "-u", "--", "f.txt"); out != "" {
+		t.Fatalf("unmerged entries survived saving the kept result: %q", out)
+	}
+}
+
 // A both-added conflict has no merge base: the tool receives an empty BASE
 // file, and its resolution lands exactly as for a both-modified conflict.
 func TestMergeToolBothAddedHasEmptyBase(t *testing.T) {

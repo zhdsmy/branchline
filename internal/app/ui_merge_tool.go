@@ -18,13 +18,15 @@ import (
 // back, so the merge of a very large file belongs in the terminal instead.
 const maxMergeToolBytes = 16 << 20
 
-// mergeToolResult is a conflict resolution the merge tool produced that could
-// not be written back the moment the tool exited — another write was in
-// progress, or the user had switched repositories. It survives in full: the
-// content, and the exact conflict identity the inspection was read against,
-// so the write back re-verifies the conflict the same way a direct write
-// does. The identity is the one the Save write needs, never refreshed: a
-// conflict that moved on reports the change instead of being overwritten.
+// mergeToolResult is a conflict resolution the merge tool produced that is
+// still owed its write back: either the write could not start the moment the
+// tool exited — another write in progress, or the user had switched
+// repositories — or it started but never consumed the result, because only a
+// successful write may. It survives in full: the content, and the exact
+// conflict identity the inspection was read against, so the write back
+// re-verifies the conflict the same way a direct write does. The identity is
+// the one the Save write needs, never refreshed: a conflict that moved on
+// reports the change instead of being overwritten.
 type mergeToolResult struct {
 	repoKey  string
 	repoGen  uint64
@@ -251,24 +253,32 @@ func mergeToolError(toolName string, err error) error {
 
 // finishMergeTool decides what becomes of the resolution the tool left in the
 // merged snapshot file, on the UI thread. An unchanged file was never merged
-// in the tool and nothing happens. A resolution written while the session is
-// still on the same repository and no write is in progress goes straight into
-// the ordinary safe write; otherwise it is kept whole for the row's Save
-// Merge Result, so a busy write or a repository switch never loses it.
+// in the tool and nothing happens. A changed resolution is kept first, before
+// anything tries to write it: the write is asynchronous and its completion is
+// dropped entirely when the repository generation moved on, so keeping only
+// after the fact would lose the result to a refused write or a repository
+// switch. A direct write goes ahead when the session is still on the same
+// repository, at the same generation the tool opened in — switching away and
+// back reopens the same repository at a new generation — and no write is in
+// progress; it consumes the result only when it succeeds. Anything else stays
+// kept whole for the row's Save Merge Result, and the user is told once.
 func (a *app) finishMergeTool(result mergeToolResult, toolName, original string) {
 	if result.content == original {
 		a.toast = fmt.Sprintf("%s was not changed in %s; the conflict is still unresolved.", result.path, toolName)
 		return
 	}
+	mergeToolUI(a).results[mergeToolKey(result.repoKey, result.path)] = result
 	// The direct write needs the session still open on the repository the
 	// tool merged for — the active key of no repository never equals a real
-	// one — and no write in progress to queue behind.
-	if result.repoKey == mergeToolRepoKey(a) && !a.session.Busy() {
-		if a.writeMergeToolResult(result) {
-			return
-		}
+	// one — at the generation the tool opened in, and no write in progress
+	// to queue behind.
+	direct := result.repoKey == mergeToolRepoKey(a) &&
+		result.repoGen == a.session.Generation() && !a.session.Busy()
+	if direct && a.writeMergeToolResult(result) {
+		// The write is in flight: its success deletes the kept result, its
+		// refusal shows as the session's action error with the result kept.
+		return
 	}
-	mergeToolUI(a).results[mergeToolKey(result.repoKey, result.path)] = result
 	a.toast = fmt.Sprintf("The merge result of %s was kept; save it from the conflicted file's context menu.", result.path)
 }
 
@@ -279,7 +289,11 @@ func (a *app) finishMergeTool(result mergeToolResult, toolName, original string)
 // markers remain; the refusal is the session's action error, displayed in the
 // page exactly as the conflict editor's own save errors are. It reports
 // whether the write started: a false answer — the session busy or without a
-// repository — leaves the result to the caller for keeping.
+// repository — leaves the result to the caller for keeping. The completion
+// runs only while the session is still at the write's generation; when a
+// repository switch drops it, the kept result — stored before the write
+// started — survives untouched, and only a successful completion may consume
+// it.
 func (a *app) writeMergeToolResult(result mergeToolResult) bool {
 	path := result.path
 	repoGen := result.repoGen
@@ -290,6 +304,8 @@ func (a *app) writeMergeToolResult(result mergeToolResult) bool {
 		return repo.SafeWriteResolvedConflict(path, content, identity)
 	}, func(err error) {
 		if err != nil {
+			// A refused write keeps the result: it was stored before the
+			// write started, and the refusal alone never consumes it.
 			return
 		}
 		// A successful write consumes the result, wherever it came from: the
