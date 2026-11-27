@@ -377,6 +377,218 @@ func TestUntrustedFilterWorktreeConfigNeverRuns(t *testing.T) {
 	}
 }
 
+// The rebase stop probe hashes files inside .git/rebase-merge, and git
+// applies the working tree's attributes even to those paths: a repository
+// stopped at an edit must not run its own filter when the app asks why the
+// rebase paused. The probe still reports the stop.
+func TestUntrustedFilterRebaseStopNeverRuns(t *testing.T) {
+	f := newFilterFixture(t, "rebase-stop")
+	f.git(t, "init", "-q", "-b", "main")
+	f.git(t, "config", "user.name", "Branchline Test")
+	f.git(t, "config", "user.email", "test@branchline.invalid")
+	f.git(t, "config", "filter.x.clean", "sh "+f.cleanSh)
+	if err := os.WriteFile(filepath.Join(f.repoDir, ".gitattributes"), []byte("* filter=x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(f.repoDir, "f.txt"), []byte("one\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.git(t, "add", ".gitattributes", "f.txt")
+	f.git(t, "commit", "-q", "-m", "one")
+	if err := os.WriteFile(filepath.Join(f.repoDir, "f.txt"), []byte("two\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.git(t, "add", "f.txt")
+	f.git(t, "commit", "-q", "-m", "two")
+
+	// A real interactive rebase stopped at its first commit for editing: the
+	// sequence editor rewrites the first pick, and the stop leaves
+	// .git/rebase-merge/stopped-sha, which the probe hashes.
+	editor := filepath.Join(f.dir, "sequence-editor.sh")
+	script := "#!/bin/sh\nawk 'NR==1{sub(/^pick/,\"edit\")} {print}' \"$1\" > \"$1.tmp\" && mv \"$1.tmp\" \"$1\"\n"
+	if err := os.WriteFile(editor, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("git", "rebase", "-i", "--root")
+	cmd.Dir = f.repoDir
+	cmd.Env = append(os.Environ(),
+		"GIT_CONFIG_GLOBAL=/dev/null",
+		"GIT_CONFIG_NOSYSTEM=1",
+		"GIT_CONFIG_SYSTEM=/dev/null",
+		"GIT_TERMINAL_PROMPT=0",
+		"GIT_SEQUENCE_EDITOR=sh "+editor,
+	)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("rebase -i --root: %v\n%s", err, out)
+	}
+	if _, err := os.Stat(filepath.Join(f.repoDir, ".git", "rebase-merge", "stopped-sha")); err != nil {
+		t.Fatalf("rebase did not stop for editing: %v", err)
+	}
+	f.resetMarks(t)
+
+	st, err := f.repo().StatusOpts(false)
+	if err != nil {
+		t.Fatalf("status read: %v", err)
+	}
+	if f.marked(t, f.cleanLog) {
+		t.Fatal("the repository's own filter ran while the app probed the rebase stop")
+	}
+	if st.State != "rebase" || st.Stopped != "edit" {
+		t.Fatalf("stop probe = state %q stopped %q, want rebase/edit", st.State, st.Stopped)
+	}
+
+	// The control: the same hash-object the probe runs, without the guard,
+	// executes the filter.
+	f.git(t, "hash-object", "--", ".git/rebase-merge/stopped-sha")
+	if !f.marked(t, f.cleanLog) {
+		t.Fatal("control: plain git hash-object did not run the filter, the fixture is broken")
+	}
+	f.git(t, "rebase", "--abort")
+}
+
+// A submodule keeps its own configuration, which no listing of the parent's
+// can ever see: the parent app's passive status must not descend into the
+// submodule's dirty check, where the submodule's own filter would run.
+func TestUntrustedFilterSubmoduleNeverRuns(t *testing.T) {
+	f := newFilterFixture(t, "submodule")
+	f.git(t, "init", "-q", "-b", "main")
+	f.git(t, "config", "user.name", "Branchline Test")
+	f.git(t, "config", "user.email", "test@branchline.invalid")
+	if err := os.WriteFile(filepath.Join(f.repoDir, "f.txt"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.git(t, "add", "f.txt")
+	f.git(t, "commit", "-q", "-m", "initial")
+
+	// The submodule is another repository of the fixture, with the filter in
+	// its own configuration and a file whose stat information misses its index.
+	subDir := filepath.Join(f.dir, "subsrc")
+	if err := os.MkdirAll(subDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sub := &filterFixture{dir: f.dir, repoDir: subDir}
+	sub.git(t, "init", "-q", "-b", "main")
+	sub.git(t, "config", "user.name", "Branchline Test")
+	sub.git(t, "config", "user.email", "test@branchline.invalid")
+	sub.git(t, "config", "filter.x.clean", "sh "+f.cleanSh)
+	if err := os.WriteFile(filepath.Join(subDir, ".gitattributes"), []byte("*.txt filter=x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(subDir, "s.txt"), []byte("sub\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sub.git(t, "add", ".gitattributes", "s.txt")
+	sub.git(t, "commit", "-q", "-m", "sub initial")
+
+	f.git(t, "-c", "protocol.file.allow=always", "submodule", "add", "-q", subDir, "sub")
+	f.git(t, "commit", "-q", "-m", "add submodule")
+	// The clone the superproject checks out gets its own configuration: the
+	// filter travels with the repository, as it would for a copied checkout.
+	subInSuper := filepath.Join(f.repoDir, "sub")
+	cfg := exec.Command("git", "config", "filter.x.clean", "sh "+f.cleanSh)
+	cfg.Dir = subInSuper
+	cfg.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
+	if out, err := cfg.CombinedOutput(); err != nil {
+		t.Fatalf("submodule config: %v\n%s", err, out)
+	}
+	f.resetMarks(t)
+	old := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	if err := os.Chtimes(filepath.Join(subInSuper, "s.txt"), old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := f.repo().StatusOpts(false); err != nil {
+		t.Fatalf("status read: %v", err)
+	}
+	if f.marked(t, f.cleanLog) {
+		t.Fatal("the submodule's own filter ran on the parent's passive status read")
+	}
+
+	// The control: the same status inside the submodule, run directly,
+	// executes its filter.
+	cmd := exec.Command("git", "status", "--porcelain=v2", "-z")
+	cmd.Dir = subInSuper
+	cmd.Env = append(os.Environ(),
+		"GIT_CONFIG_GLOBAL=/dev/null",
+		"GIT_CONFIG_NOSYSTEM=1",
+		"GIT_TERMINAL_PROMPT=0",
+		"GIT_OPTIONAL_LOCKS=0",
+	)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("control submodule status: %v\n%s", err, out)
+	}
+	if !f.marked(t, f.cleanLog) {
+		t.Fatal("control: plain git status in the submodule did not run the filter, the fixture is broken")
+	}
+}
+
+// Skipping the submodule's dirty check must not hide what the user cares
+// about: the moment the commit a submodule points at moves, the superproject
+// still lists it as modified.
+func TestUntrustedFilterSubmoduleMovedCommitStillShows(t *testing.T) {
+	f := newFilterFixture(t, "submodule-moved")
+	f.git(t, "init", "-q", "-b", "main")
+	f.git(t, "config", "user.name", "Branchline Test")
+	f.git(t, "config", "user.email", "test@branchline.invalid")
+	if err := os.WriteFile(filepath.Join(f.repoDir, "f.txt"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.git(t, "add", "f.txt")
+	f.git(t, "commit", "-q", "-m", "initial")
+
+	subDir := filepath.Join(f.dir, "subsrc")
+	if err := os.MkdirAll(subDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sub := &filterFixture{dir: f.dir, repoDir: subDir}
+	sub.git(t, "init", "-q", "-b", "main")
+	sub.git(t, "config", "user.name", "Branchline Test")
+	sub.git(t, "config", "user.email", "test@branchline.invalid")
+	if err := os.WriteFile(filepath.Join(subDir, "s.txt"), []byte("sub\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sub.git(t, "add", "s.txt")
+	sub.git(t, "commit", "-q", "-m", "sub initial")
+
+	f.git(t, "-c", "protocol.file.allow=always", "submodule", "add", "-q", subDir, "sub")
+	f.git(t, "commit", "-q", "-m", "add submodule")
+
+	st, err := f.repo().StatusOpts(false)
+	if err != nil {
+		t.Fatalf("status read: %v", err)
+	}
+	if unstagedHas(st, "sub") {
+		t.Fatalf("untouched submodule reported modified: %+v", st.Unstaged)
+	}
+
+	// A new commit inside the submodule moves the commit it points at.
+	subInSuper := filepath.Join(f.repoDir, "sub")
+	if err := os.WriteFile(filepath.Join(subInSuper, "s.txt"), []byte("sub more\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("git", "commit", "-q", "-am", "sub second")
+	cmd.Dir = subInSuper
+	cmd.Env = append(os.Environ(),
+		"GIT_CONFIG_GLOBAL=/dev/null",
+		"GIT_CONFIG_NOSYSTEM=1",
+		"GIT_AUTHOR_NAME=Branchline Test",
+		"GIT_AUTHOR_EMAIL=test@branchline.invalid",
+		"GIT_COMMITTER_NAME=Branchline Test",
+		"GIT_COMMITTER_EMAIL=test@branchline.invalid",
+	)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("submodule commit: %v\n%s", err, out)
+	}
+
+	st, err = f.repo().StatusOpts(false)
+	if err != nil {
+		t.Fatalf("status read: %v", err)
+	}
+	if !unstagedHas(st, "sub") {
+		t.Fatalf("moved submodule missing from the status: %+v", st.Unstaged)
+	}
+}
+
 // Staging a file is the user's own action and runs the repository's filters
 // exactly as git on the command line does.
 func TestUntrustedFilterUserStageStillRunsFilter(t *testing.T) {
