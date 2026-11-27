@@ -213,14 +213,24 @@ func TestRemoteBranchPullIntoRebase(t *testing.T) {
 }
 
 // Ticking Stash and reapply local changes carries uncommitted edits across
-// the pull: the pull succeeds, the edits are back in the working tree, and no
-// stash entry lingers afterwards.
+// the pull even when they touch a file the pull updates: the remote branch
+// and the working tree edit different lines of the same file, git would
+// refuse the pull over the local changes without the stash, and after the
+// pull both sides are in the file with no stash entry lingering.
 func TestRemoteBranchPullIntoStash(t *testing.T) {
-	repo, _ := remotePullFixture(t, "rbpull-stash")
-	// The remote feature is strictly ahead, so the pull fast-forwards; the
-	// uncommitted edit touches a file the pull does not, so reapplying it is
-	// conflict-free.
-	localEdit := "local uncommitted edit\n"
+	// The remote feature edits line 1 of a.txt and the uncommitted local edit
+	// touches line 6: git refuses to merge over any local change to a file
+	// the pull updates, however disjoint the lines, so without the stash the
+	// pull fails before it starts.
+	repo := newGitRepo(t, "rbpull-stash")
+	repo.CommitFile("a.txt", "1\n2\n3\n4\n5\n6\n", "initial commit")
+	repo.AddBareRemote("origin")
+	repo.CheckoutNewBranch("feature")
+	repo.CommitFile("a.txt", "feature-1\n2\n3\n4\n5\n6\n", "feature edits line one")
+	repo.Checkout("main")
+	repo.Git("push", "-q", "origin", "feature")
+	repo.Git("branch", "-D", "feature")
+	localEdit := "1\n2\n3\n4\n5\nlocal-6\n"
 	repo.WriteFile("a.txt", localEdit)
 
 	h := newTestApp(t)
@@ -242,8 +252,8 @@ func TestRemoteBranchPullIntoStash(t *testing.T) {
 	if got := gitOutTrim(t, repo.Path(), "rev-parse", "HEAD"); got != tip {
 		t.Fatalf("HEAD after stash pull = %q, want the fast-forwarded feature tip %q", got, tip)
 	}
-	assertFileBytes(t, repo, "a.txt", localEdit)
-	assertFileBytes(t, repo, "feature.txt", "feature\n")
+	// Line 1 came from the remote branch, line 6 survived from the stash.
+	assertFileBytes(t, repo, "a.txt", "feature-1\n2\n3\n4\n5\nlocal-6\n")
 	if out := strings.TrimSpace(repo.Git("stash", "list")); out != "" {
 		t.Fatalf("stash list after the pull = %q, want empty — the reapply must not linger", out)
 	}
@@ -560,5 +570,100 @@ func TestRemoteBranchPullIntoLoopbackSSH(t *testing.T) {
 	}
 	if got := strings.TrimSpace(srv.RunGit(t, repoDir, "rev-parse", "--abbrev-ref", "HEAD")); got != "main" {
 		t.Fatalf("server checked-out branch after the pull = %q, want main", got)
+	}
+}
+
+// When a merge conflict starts externally after the pull dialog opened, HEAD
+// has not moved and the branch is unchanged, but the guard still refuses the
+// pull because an operation is in progress.
+func TestRemoteBranchPullIntoGuardOperationInProgress(t *testing.T) {
+	repo := newGitRepo(t, "rbpull-guard-op")
+	repo.CommitFile("a.txt", "line\n", "base commit")
+	repo.AddBareRemote("origin")
+	repo.CheckoutNewBranch("feature")
+	repo.CommitFile("a.txt", "theirs\n", "feature edits")
+	repo.Checkout("main")
+	repo.Git("push", "-q", "origin", "feature")
+	repo.Git("branch", "-D", "feature")
+	repo.CommitFile("a.txt", "ours\n", "main edits")
+
+	h := newTestApp(t)
+	closeSync(t, h)
+	h.openRepo(repo.StoreRepo())
+	h.drain()
+
+	chooseRemotePullInto(t, h, "origin/feature", "main")
+	assertPullDialog(t, h, "origin/feature", "main")
+
+	// Start a conflicting merge externally while the dialog is open: the
+	// feature branch edits the same line main already diverged on, so the
+	// merge stops in the conflicted state with HEAD and the branch exactly
+	// where the dialog captured them.
+	headBefore := gitOutTrim(t, repo.Path(), "rev-parse", "HEAD")
+	if out, err := tryGitCommand(repo.Path(), "merge", "--no-edit", "origin/feature"); err == nil {
+		t.Fatalf("conflicting merge unexpectedly succeeded: %s", out)
+	}
+	if got := gitOutTrim(t, repo.Path(), "rev-parse", "HEAD"); got != headBefore {
+		t.Fatalf("fixture broken: the conflicting merge moved HEAD to %q", got)
+	}
+
+	confirmRemotePull(t, h)
+
+	assertRepoErrorShown(t, h, "merge is in progress")
+	if got := currentBranch(t, repo); got != "main" {
+		t.Fatalf("current branch after the refused pull = %q, want main", got)
+	}
+	if got := gitOutTrim(t, repo.Path(), "rev-parse", "HEAD"); got != headBefore {
+		t.Fatalf("HEAD after the refused pull = %q, want %q", got, headBefore)
+	}
+	// The pull never ran: the only merge in progress is the external one, so
+	// the conflicted file carries the external merge's markers and nothing
+	// was pulled on top of it — proof enough is that the merge the external
+	// command started is still the unresolved one of origin/feature.
+	if data := repo.Git("diff", "--name-only", "--diff-filter=U"); !strings.Contains(data, "a.txt") {
+		t.Fatalf("unmerged files after the refused pull = %q, want the external merge's a.txt", data)
+	}
+}
+
+// A failed pull of a credentialed remote never leaks the credentials: not
+// into the session error and not into any text the interface renders.
+func TestRemoteBranchPullIntoErrorRedactsCredentials(t *testing.T) {
+	repo, _ := remotePullFixture(t, "rbpull-redact")
+	// Re-point origin to an unreachable HTTPS URL with embedded credentials
+	// while keeping the existing refs/remotes/origin/feature tracking ref.
+	// The password rides in the userinfo — which git itself anonymizes in
+	// its error output — and in a token query parameter, which it echoes
+	// verbatim: only the application's own redaction can scrub the second,
+	// so removing it makes this test fail.
+	repo.Git("remote", "set-url", "origin", "https://pulluser:pullsecretpw@127.0.0.1:9/repo.git?token=pullsecretpw")
+
+	h := newTestApp(t)
+	closeSync(t, h)
+	h.openRepo(repo.StoreRepo())
+	h.drain()
+	// Also open Changes view so both the toolbar and Changes error displays
+	// render ActionErr.
+	if err := h.ui.Click("Changes"); err != nil {
+		t.Fatalf("click Changes: %v", err)
+	}
+	h.ui.Frame()
+
+	chooseRemotePullInto(t, h, "origin/feature", "main")
+	confirmRemotePull(t, h)
+
+	err := h.app.session.ActionErr()
+	if err == nil {
+		t.Fatal("expected ActionErr after pull against unreachable remote")
+	}
+	if strings.Contains(err.Error(), "pullsecretpw") {
+		t.Fatalf("ActionErr leaks URL credential: %q", err)
+	}
+	if _, ok := h.ui.AccessByRole(ui.RoleStatus, "Repository Error"); !ok {
+		t.Fatalf("no Repository Error after failed pull; texts=%q", h.ui.Texts())
+	}
+	for _, text := range h.ui.Texts() {
+		if strings.Contains(text, "pullsecretpw") {
+			t.Fatalf("UI error leaks URL credential: %q", text)
+		}
 	}
 }
