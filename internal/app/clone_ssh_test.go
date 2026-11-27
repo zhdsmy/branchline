@@ -44,18 +44,22 @@ func resetCloneSSHMemory(t *testing.T) {
 	t.Cleanup(func() { lastCloneSSHFolder, lastCloneSSHIdentity = prevFolder, prevIdentity })
 }
 
-// logicalPathForm rewrites a path below /private/var into its /var spelling.
-// Both resolve to the same directory on the server — /var is a symlink — but
-// git answers --show-toplevel with the physical path, so a clone asked into
-// the logical spelling proves the app saves what the server reports rather
-// than what it typed.
-func logicalPathForm(t *testing.T, physical string) string {
+// logicalPathForm returns a symlinked path that resolves to dir below
+// srv.RootDir without depending on TMPDIR living under /private/var/. Git
+// answers --show-toplevel with the physical path, so a clone asked into the
+// symlinked spelling proves the app saves what the server reports rather
+// than what the user typed.
+func logicalPathForm(t *testing.T, srv *sshtest.Target, dir string) string {
 	t.Helper()
-	const canonical = "/private/var/"
-	if !strings.HasPrefix(physical, canonical) {
-		t.Fatalf("test server path %q is not below %s: this probe needs the symlinked /var form", physical, canonical)
+	rel, err := filepath.Rel(srv.RootDir, dir)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		t.Fatalf("test server path %q is not below %q (rel=%q err=%v)", dir, srv.RootDir, rel, err)
 	}
-	return "/var/" + strings.TrimPrefix(physical, canonical)
+	linkRoot := filepath.Join(t.TempDir(), "via-link")
+	if err := os.Symlink(srv.RootDir, linkRoot); err != nil {
+		t.Fatalf("symlink %s -> %s: %v", linkRoot, srv.RootDir, err)
+	}
+	return filepath.Join(linkRoot, rel)
 }
 
 // selectSSHServerLocation opens the Clone dialog and chooses the SSH Server
@@ -91,11 +95,11 @@ func cloneSSHInto(t *testing.T, h *testHarness, url, folder, identity, name stri
 }
 
 // sshServerFolderAddress is the ssh:// address of dir on srv for the Server
-// Folder field, rewritten into the logical /var spelling so the stored path
-// can only be canonical when the app reads it back from the server.
+// Folder field, reached through a test symlink so the stored path can only
+// be canonical when the app reads it back from the server.
 func sshServerFolderAddress(t *testing.T, srv *sshtest.Target, dir string) string {
 	t.Helper()
-	return srv.Address(logicalPathForm(t, dir))
+	return srv.Address(logicalPathForm(t, srv, dir))
 }
 
 // remoteFileExists checks on the server whether path exists, using POSIX sh.
