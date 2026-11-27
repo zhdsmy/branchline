@@ -627,3 +627,136 @@ func TestRemoteFetchLoopbackSSH(t *testing.T) {
 		t.Fatalf("server refs/remotes/origin/stale not pruned: %q", out)
 	}
 }
+
+// The Tags section header opens the New Tag dialog from its context menu in
+// both the expanded and the collapsed state, and the dialog creates the tag
+// on the default target exactly as clicking the New Tag sidebar row does.
+func TestSidebarHeaderTagsNewTag(t *testing.T) {
+	repo := setupSidebarRepo(t, "sec-menu-tags")
+
+	h := newTestApp(t)
+	h.openRepo(repo.StoreRepo())
+	h.drain()
+
+	createViaHeader := func(tag string) {
+		t.Helper()
+		if err := h.ui.RightClick("Tags"); err != nil {
+			t.Fatalf("right-click Tags header: %v", err)
+		}
+		h.ui.Frame()
+		if menu := h.ui.Menu(); len(menu) != 1 || menu[0] != "New Tag…" {
+			t.Fatalf("Tags header menu = %q, want exactly [New Tag…]", menu)
+		}
+		if err := h.ui.ChooseMenuItem("New Tag…"); err != nil {
+			t.Fatalf("choose New Tag…: %v", err)
+		}
+		h.ui.Frame()
+		if !h.ui.HasText("Tag name") {
+			t.Fatalf("New Tag dialog did not open; texts=%q", h.ui.Texts())
+		}
+		h.ui.Type(tag)
+		h.ui.Frame()
+		clickDialogButton(t, h, "Create Tag")
+		h.drain()
+		if err := h.app.session.ActionErr(); err != nil {
+			t.Fatalf("unexpected create error for %s: %v", tag, err)
+		}
+		assertTagPresent(t, repo, tag)
+		head := gitOutTrim(t, repo.Path(), "rev-parse", "HEAD")
+		if got := gitOutTrim(t, repo.Path(), "rev-parse", "refs/tags/"+tag); got != head {
+			t.Fatalf("tag %s = %q, want the default target HEAD %q", tag, got, head)
+		}
+	}
+
+	// Collapsed first: the rows are hidden and the header menu still opens the
+	// dialog and creates the tag.
+	if err := h.ui.Click("Tags"); err != nil {
+		t.Fatalf("collapse Tags: %v", err)
+	}
+	h.ui.Frame()
+	if _, ok := h.ui.Find("v1.0"); ok {
+		t.Fatal("tag row v1.0 stayed visible after collapsing Tags")
+	}
+	createViaHeader("sec-tags-collapsed")
+
+	// Expanded: the same menu entry opens the dialog and creates the tag.
+	if err := h.ui.Click("Tags"); err != nil {
+		t.Fatalf("re-expand Tags: %v", err)
+	}
+	h.ui.Frame()
+	createViaHeader("sec-tags-expanded")
+	if _, ok := h.ui.Find("sec-tags-expanded"); !ok {
+		t.Fatal("sec-tags-expanded missing from the sidebar after create")
+	}
+}
+
+// With no repository open the Tags header menu item is disabled and choosing
+// it opens nothing; while a write is in flight it is disabled the same way
+// and works again once the write completes.
+func TestSidebarHeaderTagsNewTagDisabledStates(t *testing.T) {
+	// Without a repository.
+	h := newTestApp(t)
+	h.ui.Frame()
+	if err := h.ui.RightClick("Tags"); err != nil {
+		t.Fatalf("right-click Tags header without repo: %v", err)
+	}
+	h.ui.Frame()
+	err := h.ui.ChooseMenuItem("New Tag…")
+	if err == nil || !strings.Contains(err.Error(), "disabled") {
+		t.Fatalf("New Tag… without repo: err=%v, want a disabled refusal", err)
+	}
+	dismissMenu(t, h)
+	if h.ui.HasText("Tag name") {
+		t.Fatal("New Tag dialog opened without a repository")
+	}
+
+	// While a write is in flight: hold a real checkout behind the worker gate
+	// so the busy state is deterministic.
+	repo := setupSidebarRepo(t, "sec-menu-tags-busy")
+	h.openRepo(repo.StoreRepo())
+	h.drain()
+
+	h.queue.PauseWorkers()
+	doubleClick(t, h.ui, "feature")
+	write := h.queue.WaitWorker(t)
+	h.ui.Frame()
+	if !h.app.session.Busy() {
+		t.Fatal("session not busy while the checkout worker is held")
+	}
+	if err := h.ui.RightClick("Tags"); err != nil {
+		t.Fatalf("right-click Tags header while busy: %v", err)
+	}
+	h.ui.Frame()
+	err = h.ui.ChooseMenuItem("New Tag…")
+	if err == nil || !strings.Contains(err.Error(), "disabled") {
+		t.Fatalf("New Tag… while busy: err=%v, want a disabled refusal", err)
+	}
+	dismissMenu(t, h)
+	if h.ui.HasText("Tag name") {
+		t.Fatal("New Tag dialog opened while a write was in flight")
+	}
+
+	h.queue.ReleaseWorker(write)
+	h.queue.ResumeWorkers()
+	h.drain()
+	if err := h.app.session.ActionErr(); err != nil {
+		t.Fatalf("unexpected checkout error: %v", err)
+	}
+
+	// The write finished: the menu entry works again.
+	if err := h.ui.RightClick("Tags"); err != nil {
+		t.Fatalf("right-click Tags header after the write: %v", err)
+	}
+	h.ui.Frame()
+	if err := h.ui.ChooseMenuItem("New Tag…"); err != nil {
+		t.Fatalf("choose New Tag… after the write: %v", err)
+	}
+	h.ui.Frame()
+	if !h.ui.HasText("Tag name") {
+		t.Fatalf("New Tag dialog did not open after the write finished; texts=%q", h.ui.Texts())
+	}
+	if err := h.ui.Click("Cancel"); err != nil {
+		t.Fatalf("cancel New Tag: %v", err)
+	}
+	h.ui.Frame()
+}

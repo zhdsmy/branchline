@@ -67,7 +67,7 @@ func (a *app) tagsSidebarSection(c *ui.Context) {
 	// The generation check runs even while the section is collapsed: the
 	// selection and dialog drafts of a switched-away repository never linger.
 	a.tagsUI()
-	sidebarSectionHeader(c, "Tags", len(refs.Tags), &a.tagsCollapsed, a.pal)
+	sidebarSectionHeader(c, "Tags", len(refs.Tags), &a.tagsCollapsed, a.pal).ContextMenu(a.tagsSectionContextMenu)
 	if a.tagsCollapsed {
 		return
 	}
