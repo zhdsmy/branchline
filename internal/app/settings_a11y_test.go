@@ -130,6 +130,15 @@ func TestSettingsA11yArrowKeysSwitchPages(t *testing.T) {
 		t.Fatalf("the %q tab does not read as selected after Right: %+v (found=%v)", second, tab, ok)
 	}
 
+	tt.Key(0, ui.KeyLeft)
+	tt.Frame()
+	if name, on := a11yFocusedTab(tt); !on || name != first {
+		t.Fatalf("after Left the focused tab = %q (focused=%v), want %q", name, on, first)
+	}
+	if _, ok := tt.AccessByRole(ui.RoleTabPanel, first); !ok {
+		t.Fatalf("no tab panel named %q after Left; texts=%q", first, tt.Texts())
+	}
+
 	tt.Key(0, ui.KeyEnd)
 	tt.Frame()
 	if name, on := a11yFocusedTab(tt); !on || name != last {

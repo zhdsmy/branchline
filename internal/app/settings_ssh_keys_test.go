@@ -5,14 +5,17 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 
 	"github.com/zhdsmy/branchline/internal/git"
 	"github.com/zhdsmy/branchline/internal/sshkey"
+	"github.com/zhdsmy/branchline/internal/sshtest"
 	"github.com/zhdsmy/branchline/internal/store"
 )
 
@@ -325,6 +328,9 @@ func TestSettingsSSHKeysUseCheckboxReachesSSHExecutor(t *testing.T) {
 	t.Setenv("PATH", filepath.Join(probeDir, "bin")+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	h := newTestApp(t)
+	if err := h.app.saveGitToolchainSettings("", "parent", git.Trace{}); err != nil {
+		t.Fatalf("save toolchain settings: %v", err)
+	}
 	repo := store.Repo{Kind: store.SSH, Host: "127.0.0.1", User: "tester", Port: 22, Path: "/srv/repo", Name: "sshkeys-probe"}
 	h.openRepo(repo)
 	h.drain()
@@ -723,4 +729,294 @@ func TestSettingsSSHKeysAccessibility(t *testing.T) {
 	a11yFocusTab(t, tt, ui.RoleButton, "Show in Finder")
 	a11yFocusTab(t, tt, ui.RoleButton, "New SSH Key")
 	a11yFocusTab(t, tt, ui.RoleButton, "Open Existing Key")
+}
+
+// defaultSSHKeyName returns the base name instead of looping forever when
+// the SSH folder cannot be queried (for example when a regular file sits at
+// the folder path).
+func TestSettingsSSHKeysDefaultNameOnUnreadableDir(t *testing.T) {
+	home := isolateSSHKeysTest(t)
+	notADir := filepath.Join(home, ".ssh")
+	if err := os.WriteFile(notADir, []byte("not a folder"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := defaultSSHKeyName(notADir); got != "id_ed25519" {
+		t.Fatalf("defaultSSHKeyName on non-directory = %q, want id_ed25519", got)
+	}
+}
+
+// recordingSSHArgvShim writes a fake ssh that records each argv element on
+// its own line (prefixed with "ARG:") and exits with status 1 without ever
+// attempting a network connection.
+func recordingSSHArgvShim(t *testing.T, binDir, log string) {
+	t.Helper()
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("mkdir ssh argv shim dir: %v", err)
+	}
+	script := "#!/bin/sh\n" +
+		"lock=" + git.ShellQuote(log+".lock") + "\n" +
+		"while ! mkdir \"$lock\" 2>/dev/null; do :; done\n" +
+		"trap 'rmdir \"$lock\" 2>/dev/null' EXIT\n" +
+		"printf 'CALL\\n' >> " + git.ShellQuote(log) + "\n" +
+		"for a in \"$@\"; do printf 'ARG:%s\\n' \"$a\" >> " + git.ShellQuote(log) + "; done\n" +
+		"rmdir \"$lock\"\n" +
+		"trap - EXIT\n" +
+		"exit 1\n"
+	if err := os.WriteFile(filepath.Join(binDir, "ssh"), []byte(script), 0o755); err != nil {
+		t.Fatalf("write ssh argv shim: %v", err)
+	}
+	if err := os.WriteFile(log, nil, 0o644); err != nil {
+		t.Fatalf("create ssh argv shim log: %v", err)
+	}
+}
+
+func assertSSHArgvHasIdentity(t *testing.T, logPath, wantKey, forbidKey string) {
+	t.Helper()
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read argv log %s: %v", logPath, err)
+	}
+	lines := strings.Split(string(data), "\n")
+	foundWant := false
+	for i := 0; i+1 < len(lines); i++ {
+		if lines[i] == "ARG:-i" && lines[i+1] == "ARG:"+wantKey {
+			foundWant = true
+		}
+	}
+	if !foundWant {
+		t.Fatalf("fake ssh argv never received intact pair [-i, %q]; log:\n%s", wantKey, data)
+	}
+	if strings.Contains(string(data), forbidKey) {
+		t.Fatalf("fake ssh argv received unchecked key %q; log:\n%s", forbidKey, data)
+	}
+}
+
+// Active key paths containing spaces, single quotes, and double quotes
+// reach both local git's GIT_SSH_COMMAND (evaluated by /bin/sh) and
+// SSHExecutor's argv as one intact -i argument, while unchecked keys in
+// ~/.ssh are not offered.
+func TestSettingsSSHKeysQuotedPathAndOnlyCheckedActive(t *testing.T) {
+	home := isolateSSHKeysTest(t)
+	t.Setenv("GIT_SSH_COMMAND", "")
+
+	quotedDir := filepath.Join(t.TempDir(), "my 'quoted' dir")
+	checked := makeSSHKeyPair(t, quotedDir, `work "key" 1`)
+	unchecked := makeSSHKeyPair(t, filepath.Join(home, ".ssh"), "unchecked_key")
+
+	probeDir := t.TempDir()
+	sshLog := filepath.Join(probeDir, "ssh-argv.log")
+	recordingSSHArgvShim(t, filepath.Join(probeDir, "bin"), sshLog)
+	t.Setenv("PATH", filepath.Join(probeDir, "bin")+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	h := newTestApp(t)
+	if err := h.app.saveGitToolchainSettings("", "parent", git.Trace{}); err != nil {
+		t.Fatalf("save toolchain settings: %v", err)
+	}
+	seedSSHKeySettings(t, h, []string{checked.Path}, nil)
+
+	tt := openSSHKeysPage(t, h)
+	if err := tt.Click("Use " + checked.Name); err != nil {
+		t.Fatalf("check Use %q: %v; texts=%q", checked.Name, err, tt.Texts())
+	}
+	tt.Frame()
+
+	// Local git fetch over an SSH URL invokes /bin/sh on GIT_SSH_COMMAND,
+	// which executes the fake ssh shim (never connecting).
+	localRepo := newGitRepo(t, "sk-quoted-local")
+	localRepo.CommitFile("a.txt", "alpha\n", "init")
+	localRepo.Git("remote", "add", "origin", "ssh://tester@example.invalid/repo.git")
+	h.openRepo(localRepo.StoreRepo())
+	h.drain()
+	if err := os.Truncate(sshLog, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.ui.Click("Fetch"); err != nil {
+		t.Fatalf("click Fetch: %v; texts=%q", err, h.ui.Texts())
+	}
+	h.drain()
+	assertSSHArgvHasIdentity(t, sshLog, checked.Path, unchecked.Path)
+
+	// SSHExecutor passes the key path directly through argv to the fake ssh.
+	if err := os.Truncate(sshLog, 0); err != nil {
+		t.Fatal(err)
+	}
+	sshRepo := store.Repo{Kind: store.SSH, Host: "example.invalid", User: "tester", Port: 22, Path: "/srv/repo", Name: "sk-quoted-ssh"}
+	h.openRepo(sshRepo)
+	h.drain()
+	assertSSHArgvHasIdentity(t, sshLog, checked.Path, unchecked.Path)
+}
+
+// Checking an SSH key in Settings lets both SSH repositories and local git
+// fetches over SSH authenticate against the real Linux SSH server using
+// only that test-generated key (no ssh-agent and no default sshlab key),
+// even when the key file name contains spaces and single quotes.
+func TestConfiguredLinuxSettingsSSHKeysAuthenticate(t *testing.T) {
+	srv := sshtest.ConfiguredLinux(t)
+	origSSH, err := exec.LookPath("ssh")
+	if err != nil {
+		t.Fatalf("find sshlab ssh wrapper: %v", err)
+	}
+
+	// Read port, user, and known_hosts from sshlab's ssh config via ssh -G.
+	cfgOut, err := exec.Command(origSSH, "-G", srv.Host).CombinedOutput()
+	if err != nil {
+		t.Fatalf("ssh -G %s: %v\n%s", srv.Host, err, cfgOut)
+	}
+	var remoteUser, knownHosts string
+	var port int
+	for _, line := range strings.Split(string(cfgOut), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		switch fields[0] {
+		case "user":
+			if remoteUser == "" {
+				remoteUser = fields[1]
+			}
+		case "port":
+			if port == 0 {
+				port, _ = strconv.Atoi(fields[1])
+			}
+		case "userknownhostsfile":
+			if knownHosts == "" {
+				knownHosts = fields[1]
+			}
+		}
+	}
+	if remoteUser == "" || port <= 0 || knownHosts == "" {
+		t.Fatalf("incomplete ssh -G %s output: user=%q port=%d knownHosts=%q", srv.Host, remoteUser, port, knownHosts)
+	}
+
+	home := isolateSSHKeysTest(t)
+	t.Setenv("GIT_SSH_COMMAND", "")
+	sshDir := filepath.Join(home, ".ssh")
+	checkedKey := makeSSHKeyPair(t, sshDir, "my 'checked' key")
+	uncheckedKey := makeSSHKeyPair(t, sshDir, "unchecked_key")
+
+	remoteDir := srv.InitRepo(t, "sshkeys-live")
+	wantHead := srv.RunGit(t, remoteDir, "rev-parse", "HEAD")
+
+	// Authorize only checkedKey on the disposable Linux container, keeping
+	// sshlab's existing key so oracle helpers keep working, and restore on exit.
+	origAuth := srv.RunShell(t, "cat /root/.ssh/authorized_keys")
+	t.Cleanup(func() {
+		srv.RunShellInput(t, "cat > /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys", []byte(origAuth))
+	})
+	updatedAuth := strings.TrimRight(origAuth, "\n") + "\n" + checkedKey.Public + "\n"
+	srv.RunShellInput(t, "cat > /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys", []byte(updatedAuth))
+
+	// Wrap ssh so connections to 127.0.0.1 use known_hosts only — no default
+	// sshlab IdentityFile and no agent — while srv.Host delegates to origSSH.
+	binDir := filepath.Join(t.TempDir(), "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	wrapper := "#!/bin/sh\n" +
+		"for _arg in \"$@\"; do\n" +
+		"  case \"$_arg\" in\n" +
+		"    127.0.0.1|*@127.0.0.1)\n" +
+		"      exec /usr/bin/ssh -F /dev/null" +
+		" -o UserKnownHostsFile=" + git.ShellQuote(knownHosts) +
+		" -o HostKeyAlias=" + git.ShellQuote(srv.Host) +
+		" -o CheckHostIP=no" +
+		" -o IdentityAgent=none" +
+		" -o IdentitiesOnly=yes" +
+		" -o PasswordAuthentication=no" +
+		" -o KbdInteractiveAuthentication=no \"$@\"\n" +
+		"      ;;\n" +
+		"  esac\n" +
+		"done\n" +
+		"exec " + git.ShellQuote(origSSH) + " \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(binDir, "ssh"), []byte(wrapper), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	// Ensure every ControlMaster socket our test opens is shut down cleanly.
+	closeMaster := func(keys []string) {
+		ex := &git.SSHExecutor{Host: "127.0.0.1", User: remoteUser, Port: port, Dir: remoteDir, SSHKeys: keys}
+		cp := ex.ControlPath()
+		if _, err := os.Stat(cp); err != nil {
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = exec.CommandContext(ctx, "/usr/bin/ssh", "-F", "/dev/null", "-O", "exit", "-o", "ControlPath="+cp, remoteUser+"@127.0.0.1").Run()
+		_ = os.Remove(cp)
+	}
+	t.Cleanup(func() {
+		closeMaster(nil)
+		closeMaster([]string{uncheckedKey.Path})
+		closeMaster([]string{checkedKey.Path})
+		closeMaster([]string{uncheckedKey.Path, checkedKey.Path})
+		closeMaster([]string{checkedKey.Path, uncheckedKey.Path})
+	})
+
+	h := newTestApp(t)
+	if err := h.app.saveGitToolchainSettings("", "parent", git.Trace{}); err != nil {
+		t.Fatalf("save toolchain settings: %v", err)
+	}
+
+	sshRepo := store.Repo{
+		Kind: store.SSH,
+		Host: "127.0.0.1",
+		User: remoteUser,
+		Port: port,
+		Path: remoteDir,
+		Name: "sshkeys-live",
+	}
+
+	// Without any active key, authentication to the container must fail.
+	h.openRepo(sshRepo)
+	h.drain()
+	if h.app.session.Loaded() || h.app.session.LoadErr() == nil {
+		t.Fatalf("SSH repo loaded without any active key (loaded=%v err=%v)", h.app.session.Loaded(), h.app.session.LoadErr())
+	}
+
+	// Activating only the unauthorized key still fails.
+	tt := openSSHKeysPage(t, h)
+	if err := tt.Click("Use " + uncheckedKey.Name); err != nil {
+		t.Fatalf("check Use %s: %v; texts=%q", uncheckedKey.Name, err, tt.Texts())
+	}
+	tt.Frame()
+	h.drain()
+	if h.app.session.Loaded() || h.app.session.LoadErr() == nil {
+		t.Fatalf("SSH repo loaded with only an unauthorized key (loaded=%v err=%v)", h.app.session.Loaded(), h.app.session.LoadErr())
+	}
+
+	// Switching to the authorized key rebuilds the executor and loads the repo.
+	if err := tt.Click("Use " + uncheckedKey.Name); err != nil {
+		t.Fatalf("uncheck Use %s: %v", uncheckedKey.Name, err)
+	}
+	tt.Frame()
+	h.drain()
+	if err := tt.Click("Use " + checkedKey.Name); err != nil {
+		t.Fatalf("check Use %s: %v; texts=%q", checkedKey.Name, err, tt.Texts())
+	}
+	tt.Frame()
+	h.drain()
+
+	if err := h.app.session.LoadErr(); err != nil {
+		t.Fatalf("SSH repo load failed with checked key: %v", err)
+	}
+	if !h.app.session.Loaded() {
+		t.Fatal("SSH repo not marked loaded after activating authorized key")
+	}
+	if got := h.app.session.Snapshot().Status.Head; got != wantHead {
+		t.Fatalf("loaded HEAD = %q, want %q", got, wantHead)
+	}
+
+	// Local git fetch over SSH also authenticates using the checked quoted key.
+	localRepo := newGitRepo(t, "sshkeys-local-live")
+	localRepo.CommitFile("local.txt", "local\n", "local init")
+	remoteURL := "ssh://" + remoteUser + "@127.0.0.1:" + strconv.Itoa(port) + remoteDir
+	localRepo.Git("remote", "add", "origin", remoteURL)
+	localExec := store.Repo{Kind: store.Local, Path: localRepo.Path()}.ExecutorFor(h.store.Settings())
+	if err := git.New(localExec).Fetch(); err != nil {
+		t.Fatalf("local git fetch over SSH with checked key failed: %v", err)
+	}
+	if got := strings.TrimSpace(localRepo.Git("rev-parse", "refs/remotes/origin/main")); got != wantHead {
+		t.Fatalf("fetched origin/main = %q, want %q", got, wantHead)
+	}
 }

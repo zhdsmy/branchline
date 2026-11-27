@@ -405,8 +405,7 @@ func (a *app) sshKeyRowView(c *ui.Context, p palette, st *settingsSSHKeysState, 
 			MinWidth(0).
 			AlignItems(ui.Center).
 			Justify(ui.Start).
-			Label(k.Name).
-			FocusRing(false)
+			Label(k.Name)
 		if sameKeyPath(st.selected, k.Path) {
 			b.Background(p.selected)
 		} else if b.Hovered() {
@@ -482,7 +481,9 @@ func (a *app) removeSSHKeyFile(path string) {
 
 // defaultSSHKeyName is the file name the New SSH Key dialog starts with:
 // id_ed25519, numbered up while a file of that name — either half of the
-// pair — already sits in the SSH folder.
+// pair — already sits in the SSH folder. If dir cannot be queried (for
+// example due to permissions or a non-directory path), it stops and returns
+// the base name so generation surfaces the real filesystem error.
 func defaultSSHKeyName(dir string) string {
 	for i := 0; ; i++ {
 		name := "id_ed25519"
@@ -494,6 +495,9 @@ func defaultSSHKeyName(dir string) string {
 		_, errPub := os.Lstat(priv + ".pub")
 		if errors.Is(errPriv, fs.ErrNotExist) && errors.Is(errPub, fs.ErrNotExist) {
 			return name
+		}
+		if (errPriv != nil && !errors.Is(errPriv, fs.ErrNotExist)) || (errPub != nil && !errors.Is(errPub, fs.ErrNotExist)) {
+			return "id_ed25519"
 		}
 	}
 }
