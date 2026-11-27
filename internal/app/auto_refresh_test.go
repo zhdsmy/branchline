@@ -136,37 +136,159 @@ func (f *fakeWatchFactory) path(t *testing.T, i int) string {
 	return f.paths[i]
 }
 
+// mainHandoff is the test substitution for the refresh's run-on-main
+// handoff: like mygo.RunOnMain it blocks the calling goroutine until the
+// function ran — but the function runs on the test's own goroutine, which
+// services handoffs explicitly, so the refresh state only ever changes
+// there and no data race is possible. Closing the handoff drops every call
+// still waiting, as quitting the application drops them.
+type mainHandoff struct {
+	in        chan mainHandoffCall
+	shutdown  chan struct{}
+	closeOnce sync.Once
+}
+
+type mainHandoffCall struct {
+	fn   func()
+	done chan struct{}
+}
+
+func newMainHandoff() *mainHandoff {
+	return &mainHandoff{
+		in:       make(chan mainHandoffCall),
+		shutdown: make(chan struct{}),
+	}
+}
+
+// run hands fn to the test goroutine and waits for it to run there. A call
+// still waiting when the handoff closes — as one after the application
+// quits — is dropped instead.
+func (m *mainHandoff) run(fn func()) {
+	call := mainHandoffCall{fn: fn, done: make(chan struct{})}
+	select {
+	case m.in <- call:
+		select {
+		case <-call.done:
+		case <-m.shutdown:
+		}
+	case <-m.shutdown:
+	}
+}
+
+// serveOne runs one pending handoff on the calling goroutine, as the main
+// thread would, and releases its sender.
+func (m *mainHandoff) serveOne(t *testing.T) {
+	t.Helper()
+	select {
+	case call := <-m.in:
+		call.fn()
+		close(call.done)
+	case <-time.After(queueTimeout):
+		t.Fatal("timed out waiting for a main-thread handoff")
+	}
+}
+
+func (m *mainHandoff) close() {
+	m.closeOnce.Do(func() { close(m.shutdown) })
+}
+
+// testTickLoop drives the real autoRefreshTickLoop with channels the test
+// controls: beats are pumped one at a time through pumpTick, and closing
+// the stop channel ends the loop, which the done channel reports.
+type testTickLoop struct {
+	ticks    chan time.Time
+	stop     chan struct{}
+	done     chan struct{}
+	stopOnce sync.Once
+}
+
+func startTestTickLoop(t *testing.T, a *app, st *autoRefreshState) *testTickLoop {
+	t.Helper()
+	loop := &testTickLoop{
+		ticks: make(chan time.Time),
+		stop:  make(chan struct{}),
+		done:  make(chan struct{}),
+	}
+	go func() {
+		autoRefreshTickLoop(a, st, loop.ticks, loop.stop)
+		close(loop.done)
+	}()
+	t.Cleanup(func() {
+		loop.Close()
+		select {
+		case <-loop.done:
+		case <-time.After(queueTimeout):
+			t.Error("the tick loop did not return after its stop channel closed")
+		}
+	})
+	return loop
+}
+
+// Close asks the tick loop to return; it is idempotent so the test body and
+// the cleanup can both close the loop that a scenario already ended.
+func (l *testTickLoop) Close() {
+	l.stopOnce.Do(func() { close(l.stop) })
+}
+
+// pumpTick sends one beat into the tick loop and services exactly the
+// handoff it makes — synchronous in both directions, so when pumpTick
+// returns the loop is back in its select and the test goroutine is the only
+// one touching the refresh state.
+func pumpTick(t *testing.T, rig *autoRefreshRig, ticks chan<- time.Time) {
+	t.Helper()
+	ticks <- time.Now()
+	rig.main.serveOne(t)
+}
+
+// countPosts wraps the app's post hook with a counter. Every a.post is a
+// redrawn frame in production, so the counter measures how many frames a
+// window of the refresh's work cost.
+func countPosts(a *app) *atomic.Int32 {
+	posts := &atomic.Int32{}
+	inner := a.postFn
+	a.postFn = func(fn func()) {
+		posts.Add(1)
+		inner(fn)
+	}
+	return posts
+}
+
 // autoRefreshRig bundles the substitutions one test app runs the refresh
-// with: the hand-driven clock and the fake watch factory.
+// with: the hand-driven clock, the fake watch factory and the main-thread
+// handoff.
 type autoRefreshRig struct {
 	clock   *fakeClock
 	factory *fakeWatchFactory
+	main    *mainHandoff
 	state   *autoRefreshState
 }
 
-// installAutoRefresh replaces the app's refresh clock and watch factory and
-// registers the teardown that ends the test's watches. It runs first in the
-// cleanup order, so the watch loops have exited before the queue teardown
-// waits for workers.
+// installAutoRefresh replaces the app's refresh clock, watch factory and
+// run-on-main handoff and registers the teardown that ends the test's
+// watches. It runs first in the cleanup order, so the watch loops have
+// exited before the queue teardown waits for workers.
 func installAutoRefresh(t *testing.T, h *testHarness) *autoRefreshRig {
 	t.Helper()
 	rig := &autoRefreshRig{
 		clock:   &fakeClock{now: time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)},
 		factory: &fakeWatchFactory{},
+		main:    newMainHandoff(),
 	}
 	st := autoRefresh(h.app)
 	st.clock = rig.clock.time
 	st.watchFactory = rig.factory.make
+	st.runOnMain = rig.main.run
 	st.foreground = true
 	rig.state = st
 	t.Cleanup(func() {
 		closeAutoRefresh(h.app)
+		rig.main.close()
 	})
 	return rig
 }
 
 // tickAutoRefresh runs one refresh tick on the test goroutine, as the
-// production ticker posts it to the UI thread, and drains the check and
+// production ticker hands it to the main thread, and drains the check and
 // follow-up work it started.
 func tickAutoRefresh(t *testing.T, h *testHarness) {
 	t.Helper()
@@ -174,34 +296,16 @@ func tickAutoRefresh(t *testing.T, h *testHarness) {
 	h.drain()
 }
 
-// awaitHintPost consumes the UI callback the watch loop posts for a hint.
-// Unlike RunNext it does not expect a tracked worker: the watch loop is a
-// plain goroutine whose post is the only signal the test waits for.
-func awaitHintPost(t *testing.T, h *testHarness) {
+// awaitHint services the main-thread handoffs of the watch loop until the
+// hint batch reaches the dirty flag. Each handoff runs on the test
+// goroutine, exactly where the production main thread would run it; the
+// loop may first release a handoff left over from a watch that retired,
+// which sets nothing.
+func awaitHint(t *testing.T, rig *autoRefreshRig) {
 	t.Helper()
-	q := h.queue
-	var timedOut bool
-	timer := time.AfterFunc(queueTimeout, func() {
-		q.mu.Lock()
-		timedOut = true
-		q.cond.Broadcast()
-		q.mu.Unlock()
-	})
-	defer timer.Stop()
-
-	q.mu.Lock()
-	for len(q.pending) == 0 && !timedOut {
-		q.cond.Wait()
+	for !rig.state.dirty {
+		rig.main.serveOne(t)
 	}
-	if len(q.pending) == 0 {
-		q.mu.Unlock()
-		t.Fatal("timed out waiting for the watch hint to reach the UI thread")
-	}
-	fn := q.pending[0]
-	q.pending = q.pending[1:]
-	q.mu.Unlock()
-
-	fn()
 }
 
 // openAutoRefreshRepo opens a local repository in a rigged harness and runs
@@ -365,7 +469,7 @@ func TestAutoRefreshLocalFileHintChecks(t *testing.T) {
 	// tick checks at once, far inside the interval, and the file shows.
 	repo.WriteFile("edited.txt", "written in an editor\n")
 	watch.hint()
-	awaitHintPost(t, h) // the hint reaches the UI thread and marks the tree dirty
+	awaitHint(t, rig) // the hint reaches the main thread and marks the tree dirty
 	tickAutoRefresh(t, h)
 	checkStamped(t, rig, "the tick after a file hint")
 	if !h.ui.HasText("edited.txt") {
@@ -451,7 +555,7 @@ func TestAutoRefreshDisabledAndBackground(t *testing.T) {
 	// lands exactly as a real late hint would: buffered, never acted on.
 	counting.reads = 0
 	rig.factory.watch(t, 0).hint()
-	awaitHintPost(t, h)
+	awaitHint(t, rig)
 	tickAutoRefresh(t, h)
 	rig.clock.advance(61 * time.Second)
 	tickAutoRefresh(t, h)
@@ -476,7 +580,7 @@ func TestAutoRefreshDisabledAndBackground(t *testing.T) {
 	tickAutoRefresh(t, h) // recreates the watch, still in the background
 	counting.reads = 0
 	rig.factory.watch(t, 1).hint()
-	awaitHintPost(t, h)
+	awaitHint(t, rig)
 	rig.clock.advance(61 * time.Second)
 	tickAutoRefresh(t, h)
 	if counting.reads != 0 {
@@ -515,7 +619,7 @@ func TestAutoRefreshBusyWriteGatesChecks(t *testing.T) {
 	// ticks cannot drain: the write worker is what the drain would wait for.
 	autoRefreshTick(h.app)
 	rig.factory.watch(t, 0).hint()
-	awaitHintPost(t, h)
+	awaitHint(t, rig)
 	autoRefreshTick(h.app)
 	if rig.state.checking {
 		t.Fatal("a check started while a write was in flight")
@@ -608,7 +712,7 @@ func TestAutoRefreshDiffRefreshKeepsUnchangedState(t *testing.T) {
 	// nothing but the hint-triggered diff re-read can show it.
 	repo.WriteFile("a.txt", "one\nfirst edit\nsecond edit\n")
 	rig.factory.watch(t, 0).hint()
-	awaitHintPost(t, h)
+	awaitHint(t, rig)
 	tickAutoRefresh(t, h)
 	if ins := diffAccessLines(h.ui, ui.RoleInsertion); !containsString(ins, "second edit") {
 		t.Fatalf("diff did not pick up the second edit after the hint; insertions=%q", ins)
@@ -624,7 +728,7 @@ func TestAutoRefreshDiffRefreshKeepsUnchangedState(t *testing.T) {
 	// keeps everything, object identity included.
 	keptState := h.app.changesView.diff.state
 	rig.factory.watch(t, 0).hint()
-	awaitHintPost(t, h)
+	awaitHint(t, rig)
 	tickAutoRefresh(t, h)
 	if h.app.changesView.diff.state != keptState {
 		t.Fatal("an unchanged diff re-read replaced the state object; selection and scroll would be lost")
@@ -713,7 +817,7 @@ func TestAutoRefreshFailureBackoffSilent(t *testing.T) {
 	rig.clock.advance(30 * time.Second)
 	tickAutoRefresh(t, h)
 	rig.factory.watch(t, 0).hint()
-	awaitHintPost(t, h)
+	awaitHint(t, rig)
 	tickAutoRefresh(t, h)
 	if counting.reads != 0 {
 		t.Fatalf("checks inside the failure backoff ran %d git commands, want 0", counting.reads)
@@ -747,7 +851,7 @@ func TestAutoRefreshSwitchRepoClosesWatchDropsResult(t *testing.T) {
 	// to consume, then switch repositories before it finishes.
 	h.queue.PauseWorkers()
 	firstWatch.hint()
-	awaitHintPost(t, h)
+	awaitHint(t, rig)
 	rig.clock.advance(61 * time.Second)
 	autoRefreshTick(h.app)
 	pollA := h.queue.WaitWorker(t)
@@ -1021,4 +1125,106 @@ func TestAutoRefreshLoopbackSSHInterval(t *testing.T) {
 	if yes == 0 {
 		t.Fatalf("no promptless ssh invocation in the check window (BatchMode log: %q) — the poll must strip the credential prompts", strings.TrimSpace(string(data)))
 	}
+}
+
+// Ten beats of the real tick loop with a repository open and nothing
+// changing never post a frame and never run a git command — a beat in
+// production is a main-thread handoff that draws nothing — and ten more
+// beats in the background stay just as silent. Closing the loop's stop
+// channel returns it at once.
+func TestAutoRefreshTickLoopCostsNoFrames(t *testing.T) {
+	repo := newGitRepo(t, "ar-beats")
+	repo.CommitFile("a.txt", "one\n", "initial commit")
+
+	h := newTestApp(t)
+	rig := installAutoRefresh(t, h)
+	posts := countPosts(h.app)
+	openAutoRefreshRepo(t, h, rig, repo.StoreRepo())
+	counting := installCountingExecutor(t, h)
+	counting.reads = 0
+	posts.Store(0)
+	loop := startTestTickLoop(t, h.app, rig.state)
+
+	for i := 0; i < 10; i++ {
+		pumpTick(t, rig, loop.ticks)
+	}
+	if got := posts.Load(); got != 0 {
+		t.Fatalf("ten idle beats posted %d frames, want 0 — a beat must not redraw", got)
+	}
+	if counting.reads != 0 {
+		t.Fatalf("ten idle beats inside the interval ran %d git commands, want 0", counting.reads)
+	}
+
+	// In the background beats stay silent even with the interval long past.
+	autoRefreshForeground(h.app, false)
+	rig.clock.advance(2 * time.Hour)
+	for i := 0; i < 10; i++ {
+		pumpTick(t, rig, loop.ticks)
+	}
+	if got := posts.Load(); got != 0 {
+		t.Fatalf("ten background beats posted %d frames, want 0", got)
+	}
+	if counting.reads != 0 {
+		t.Fatalf("ten background beats ran %d git commands, want 0", counting.reads)
+	}
+
+	loop.Close()
+	select {
+	case <-loop.done:
+	case <-time.After(time.Second):
+		t.Fatal("the tick loop did not return within a second of its stop channel closing")
+	}
+}
+
+// A file hint reaches the main thread through the handoff — the dirty flag
+// is set and nothing is posted, no frame for a hint alone. The next beat of
+// the tick loop starts the check, which still posts nothing while it runs;
+// its completion is the first frame the refresh costs.
+func TestAutoRefreshHintMarksDirtyWithoutRedraw(t *testing.T) {
+	repo := newGitRepo(t, "ar-hint-frame")
+	repo.CommitFile("a.txt", "one\n", "initial commit")
+
+	h := newTestApp(t)
+	rig := installAutoRefresh(t, h)
+	posts := countPosts(h.app)
+	openAutoRefreshRepo(t, h, rig, repo.StoreRepo())
+	posts.Store(0)
+	loop := startTestTickLoop(t, h.app, rig.state)
+
+	// The hint arrives and is serviced: dirty is set, and not one frame was
+	// posted for it.
+	rig.factory.watch(t, 0).hint()
+	rig.main.serveOne(t)
+	if !rig.state.dirty {
+		t.Fatal("the hint handoff did not mark the working tree dirty")
+	}
+	if got := posts.Load(); got != 0 {
+		t.Fatalf("the file hint posted %d frames before the next beat, want 0", got)
+	}
+
+	// The next beat starts the hint's check; with its worker held nothing is
+	// posted yet — the check itself has nothing to show.
+	h.queue.PauseWorkers()
+	pumpTick(t, rig, loop.ticks)
+	if !rig.state.checking {
+		t.Fatal("the beat after the hint started no check")
+	}
+	if rig.state.dirty {
+		t.Fatal("the check did not consume the dirty flag")
+	}
+	if got := posts.Load(); got != 0 {
+		t.Fatalf("starting the check posted %d frames, want 0", got)
+	}
+
+	// The unchanged check's completion is the first frame the sequence
+	// costs: exactly one post. The diff re-read is a no-op with no diff
+	// open, so nothing posts after it.
+	poll := h.queue.WaitWorker(t)
+	h.queue.ResumeWorkers()
+	h.queue.ReleaseWorker(poll)
+	h.drain()
+	if got := posts.Load(); got != 1 {
+		t.Fatalf("the hint sequence posted %d frames, want exactly the check completion's 1", got)
+	}
+	checkStamped(t, rig, "the hint-driven check through the tick loop")
 }

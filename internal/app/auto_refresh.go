@@ -50,14 +50,15 @@ func watchIgnoreGitDir(rel string, isDir bool) bool {
 
 // autoRefreshState is the automatic repository refresh state of one app,
 // mounted through featureState. All fields are owned by the UI thread;
-// background work reaches it exclusively through posted callbacks. The
-// clock, the watch factory and the foreground flag live here so tests can
-// substitute them: production wires the mygo watch factory and a tick
-// goroutine in Run, tests drive autoRefreshTick and autoRefreshForeground
-// directly.
+// background work reaches it exclusively through callbacks it hands to
+// runOnMain or post. The clock, the watch factory, the run-on-main handoff
+// and the foreground flag live here so tests can substitute them: production
+// wires the mygo watch factory, mygo.RunOnMain and a tick goroutine in Run,
+// tests drive the pieces with their own channels and a synchronous handoff.
 type autoRefreshState struct {
 	clock        func() time.Time
 	watchFactory autoRefreshWatchFactory
+	runOnMain    func(func())
 	foreground   bool
 
 	checking    bool
@@ -294,8 +295,9 @@ func stopAutoRefreshWatch(st *autoRefreshState) {
 }
 
 // runAutoRefreshWatch reads hints of one watch on its own goroutine — it is
-// the only piece of the refresh that blocks — and reports every batch to the
-// UI thread through post. It never touches app state itself. The watch
+// the only piece of the refresh that blocks — and hands every batch to the
+// main thread through the state's run-on-main handoff, which only sets the
+// dirty flag and never redraws. It never touches app state itself. The watch
 // ending, in error, overflow or because its directory went away, is silent:
 // the interval and activation checks cover the repository regardless.
 func runAutoRefreshWatch(a *app, st *autoRefreshState, ctx context.Context, watcher autoRefreshWatcher) {
@@ -309,18 +311,21 @@ func runAutoRefreshWatch(a *app, st *autoRefreshState, ctx context.Context, watc
 		for {
 			events, err := watcher.Next(ctx)
 			if err != nil {
-				a.post(func() {
+				// Close before the handoff: the handoff waits for the main
+				// thread to run it, and nothing here may outlive the watch's
+				// resources because the handoff never ran.
+				_ = watcher.Close()
+				st.runOnMain(func() {
 					if st.watchGen == gen {
 						stopAutoRefreshWatch(st)
 					}
 				})
-				_ = watcher.Close()
 				return
 			}
 			if len(events) == 0 {
 				continue
 			}
-			a.post(func() {
+			st.runOnMain(func() {
 				if st.watchGen == gen && autoRefresh(a) == st {
 					st.dirty = true
 				}
@@ -338,26 +343,38 @@ func closeAutoRefresh(a *app) {
 	st.watchFactory = nil
 }
 
+// autoRefreshTickLoop is the refresh's tick goroutine body: one beat of the
+// ticker hands one tick to the main thread through the state's run-on-main
+// handoff, which waits for it to run and draws nothing — a tick that starts
+// no check must never cost a frame, in the background least of all. The
+// handoff is synchronous, so the loop runs at most one tick at a time, and
+// a handoff dropped after the application quits simply lets the loop go on.
+func autoRefreshTickLoop(a *app, st *autoRefreshState, ticks <-chan time.Time, stop <-chan struct{}) {
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ticks:
+			st.runOnMain(func() { autoRefreshTick(a) })
+		}
+	}
+}
+
 // startAutoRefresh wires the production refresh into a run of the
-// application: the real file watch factory, the once-a-second tick, the
-// activation and resignation callbacks, and the teardown. Tests build their
-// apps through newApp instead, where none of this starts — no real watch,
-// no tick goroutine — and drive the pieces directly.
+// application: the real file watch factory and run-on-main handoff, the
+// once-a-second tick, the activation and resignation callbacks, and the
+// teardown. Tests build their apps through newApp instead, where none of
+// this starts — no real watch, no tick goroutine — and drive the pieces
+// with their own channels.
 func startAutoRefresh(a *app) {
 	st := autoRefresh(a)
 	st.watchFactory = mygoWatchFactory
+	st.runOnMain = mygo.RunOnMain
 	done := make(chan struct{})
 	go func() {
 		ticker := time.NewTicker(time.Second)
 		defer ticker.Stop()
-		for {
-			select {
-			case <-done:
-				return
-			case <-ticker.C:
-				a.post(func() { autoRefreshTick(a) })
-			}
-		}
+		autoRefreshTickLoop(a, st, ticker.C, done)
 	}()
 	mygo.App.OnDidBecomeActive(func() { autoRefreshForeground(a, true) })
 	mygo.App.OnDidResignActive(func() { autoRefreshForeground(a, false) })
