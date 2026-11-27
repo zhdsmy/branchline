@@ -287,6 +287,14 @@ func (a *app) quickRebaseConfirmModal(c *ui.Context) {
 		confirm = "Drop"
 	}
 
+	// Drop discards the commit outright: its confirmation is the destructive
+	// one of the three — no autofocus, red, deaf to Enter — while Edit and
+	// Fixup only reshape the branch the rebase replays anyway.
+	primary := dialogAction{key: "quick-rebase-confirm-confirm", text: confirm, label: confirm, disabled: a.session.Busy(), autoFocus: true}
+	if st.action == "drop" {
+		primary = dialogAction{key: "quick-rebase-confirm-confirm", text: confirm, label: confirm, disabled: a.session.Busy(), destructive: true}
+	}
+
 	_, cancelled, confirmed := dialogFrame(c, p, "quick-rebase-confirm-modal", &st.open, title, 430, func() {
 		ui.Text(c, description).FontSize(13).TextColor(p.muted).MaxWidth(394)
 		if err := a.session.ActionErr(); st.submitClicked && err != nil {
@@ -294,7 +302,7 @@ func (a *app) quickRebaseConfirmModal(c *ui.Context) {
 		}
 	},
 		dialogAction{key: "quick-rebase-confirm-cancel", text: "Cancel", label: "Cancel", disabled: st.submitClicked && a.session.Busy()},
-		dialogAction{key: "quick-rebase-confirm-confirm", text: confirm, label: confirm, disabled: a.session.Busy()})
+		primary)
 	if cancelled {
 		a.closeQuickRebaseModal()
 	}

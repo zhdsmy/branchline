@@ -301,7 +301,7 @@ func (a *app) pushPRDialog(c *ui.Context) {
 		ui.Text(c, "This pushes the branch to the remote, sets it as the branch's upstream, and opens the new pull request page on "+service+" when the push succeeds.").FontSize(12).TextColor(p.muted).Wrap()
 	},
 		dialogAction{key: "push-pr-cancel", text: "Cancel", label: "Cancel"},
-		dialogAction{key: "push-pr-confirm", text: "Push and Create Pull Request", label: "Confirm Push and Create Pull Request", disabled: a.session.Busy()})
+		dialogAction{key: "push-pr-confirm", text: "Push and Create Pull Request", label: "Confirm Push and Create Pull Request", disabled: a.session.Busy(), autoFocus: true})
 	if cancelled {
 		clearPushPRDraft(st)
 	}

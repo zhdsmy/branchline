@@ -361,7 +361,7 @@ func (a *app) pushAllTagsDialog(c *ui.Context) {
 		}
 	},
 		dialogAction{key: "push-all-cancel", text: "Cancel", label: "Cancel"},
-		dialogAction{key: "push-all-confirm", text: "Push All Tags", label: "Confirm Push All Tags", disabled: len(remotes) == 0 || a.session.Busy()})
+		dialogAction{key: "push-all-confirm", text: "Push All Tags", label: "Confirm Push All Tags", disabled: len(remotes) == 0 || a.session.Busy(), autoFocus: true})
 	if cancelled {
 		a.closePushAllTagsDialog()
 	}

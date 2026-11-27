@@ -149,7 +149,7 @@ func (a *app) tagCheckoutDialog(c *ui.Context) {
 		ui.Text(c, "HEAD will be detached at "+shortTagHash(st.coCommit)).FontSize(12.5).TextColor(p.muted).SingleLine()
 	},
 		dialogAction{key: "tag-checkout-cancel", text: "Cancel", label: "Cancel"},
-		dialogAction{key: "tag-checkout-confirm", text: "Checkout", label: "Confirm Checkout Tag Commit", disabled: a.session.Busy()})
+		dialogAction{key: "tag-checkout-confirm", text: "Checkout", label: "Confirm Checkout Tag Commit", disabled: a.session.Busy(), autoFocus: true})
 	if cancelled {
 		a.closeTagCheckoutDialog()
 	}

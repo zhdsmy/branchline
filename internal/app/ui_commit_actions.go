@@ -177,7 +177,7 @@ func (a *app) resetModal(c *ui.Context) {
 		}
 	},
 		dialogAction{key: "reset-cancel", text: "Cancel", label: "Cancel"},
-		dialogAction{key: "reset-confirm", text: "Confirm Reset", label: "Confirm Reset", disabled: confirmDisabled})
+		dialogAction{key: "reset-confirm", text: "Confirm Reset", label: "Confirm Reset", disabled: confirmDisabled, destructive: true})
 	if cancelled {
 		a.closeResetModal()
 	}

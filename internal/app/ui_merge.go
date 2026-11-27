@@ -196,7 +196,7 @@ func (a *app) mergeDialog(c *ui.Context) {
 		}
 	},
 		dialogAction{key: "merge-cancel", text: "Cancel", label: "Cancel"},
-		dialogAction{key: "merge-confirm", text: "Confirm Merge", label: "Confirm Merge", disabled: a.session.Busy()})
+		dialogAction{key: "merge-confirm", text: "Confirm Merge", label: "Confirm Merge", disabled: a.session.Busy(), autoFocus: true})
 	if cancelled {
 		a.closeMergeDialog()
 	}
