@@ -1,6 +1,7 @@
 package store
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -15,8 +16,8 @@ func openRevStore(t *testing.T) *Store {
 	return s
 }
 
-// Every write to the repository list advances the revision a caching reader
-// watches, and the reads it uses to fill its cache leave it alone.
+// Every save of the store advances the revision a caching reader watches,
+// and the reads it uses to fill its cache leave it alone.
 func TestReposRevMutationsAndReads(t *testing.T) {
 	s := openRevStore(t)
 
@@ -123,5 +124,71 @@ func TestReposWithRevConsistentPair(t *testing.T) {
 	list, _ = s.ReposWithRev()
 	if list[0].Name != "alpha" {
 		t.Fatalf("after touching alpha the order is %q first, want alpha", list[0].Name)
+	}
+}
+
+// The writes outside the five repository operations the revision was made
+// for save through the same path, so each of them advances it too.
+func TestReposRevOtherMutations(t *testing.T) {
+	s := openRevStore(t)
+
+	check := func(name string, mutate func() error) {
+		t.Helper()
+		rev := s.ReposRev()
+		if err := mutate(); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if got := s.ReposRev(); got == rev {
+			t.Fatalf("%s did not advance the revision", name)
+		}
+	}
+
+	added, err := s.Add(Repo{Kind: Local, Path: "/nonexistent/alpha", Name: "alpha"})
+	if err != nil {
+		t.Fatalf("add alpha: %v", err)
+	}
+
+	check("Rename", func() error { return s.Rename(added.ID, "renamed") })
+	check("AddMany", func() error {
+		_, err := s.AddMany([]string{"/nonexistent/beta"})
+		return err
+	})
+	check("RenameWorkspace", func() error {
+		if err := s.AddWorkspace("old"); err != nil {
+			return err
+		}
+		return s.RenameWorkspace("old", "new")
+	})
+	check("DeleteWorkspace", func() error { return s.DeleteWorkspace("new") })
+}
+
+// A save that fails advances the revision all the same: ReposWithRev then
+// hands a caching reader the rolled-back list, which is the state the store
+// stands in, and the revision tells the reader its copy went stale.
+func TestReposRevAdvancesOnFailedSave(t *testing.T) {
+	s := openRevStore(t)
+	added, err := s.Add(Repo{Kind: Local, Path: "/nonexistent/alpha", Name: "alpha"})
+	if err != nil {
+		t.Fatalf("add alpha: %v", err)
+	}
+
+	// A file where the store's parent directory must be fails every write.
+	blocker := filepath.Join(t.TempDir(), "blocker")
+	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+		t.Fatalf("write blocker: %v", err)
+	}
+	s.path = filepath.Join(blocker, "repositories.json")
+
+	rev := s.ReposRev()
+	if err := s.Remove(added.ID); err == nil {
+		t.Fatal("remove into an unwritable store succeeded, want an error")
+	}
+	if got := s.ReposRev(); got == rev {
+		t.Fatal("a failed save did not advance the revision")
+	}
+
+	list, _ := s.ReposWithRev()
+	if len(list) != 1 || list[0].ID != added.ID {
+		t.Fatalf("after the rolled-back remove ReposWithRev holds %d repositories, want alpha alone", len(list))
 	}
 }
