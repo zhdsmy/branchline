@@ -126,15 +126,22 @@ func (a *app) sidebar(c *ui.Context) {
 		rows := a.sidebarRows()
 		a.refsView.sidebarList.KeepOffset = true
 		a.refsView.sidebarList.Key = func(row int) any { return rows[row].key }
-		ui.List(c.Key("sidebar-scroll"), &a.refsView.sidebarList, len(rows)).
-			Label("Sidebar").
-			TrackScroll(&a.navScroll).
-			Grow(1).FillWidth().
-			Margin(0, -4).
-			Padding(0, 4).
-			Gap(4).
-			Rows(func(r ui.ListRow) {
-				a.sidebarRowView(r.Context, rows[r.Index])
+		rowTheme := *c.Theme()
+		listTheme := rowTheme
+		listTheme.Accent = ui.Transparent
+		listTheme.SurfaceHover = ui.Transparent
+		ui.Themed(c.Key("sidebar-list-theme"), &listTheme).
+			Grow(1).Margin(0, -4).Background(ui.Transparent).
+			Children(func() {
+				ui.List(c.Key("sidebar-scroll"), &a.refsView.sidebarList, len(rows)).
+					Label("Sidebar").
+					TrackScroll(&a.navScroll).
+					Grow(1).FillWidth().
+					Padding(0, 4).
+					Gap(4).
+					Rows(func(r ui.ListRow) {
+						a.sidebarRowView(r.Context, rows[r.Index])
+					})
 			})
 
 		a.refsSidebar(c)
