@@ -22,7 +22,10 @@ var originalTempDir string
 // their temporary files land inside it as well. The directory is removed
 // when the tests end.
 func TestMain(m *testing.M) {
-	os.Unsetenv("SSH_AUTH_SOCK")
+	if err := os.Unsetenv("SSH_AUTH_SOCK"); err != nil {
+		fmt.Fprintf(os.Stderr, "unset SSH_AUTH_SOCK: %v\n", err)
+		os.Exit(1)
+	}
 
 	originalTempDir = os.TempDir()
 	dir, err := os.MkdirTemp("", "branchline-apptest-")

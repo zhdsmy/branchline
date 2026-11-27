@@ -789,8 +789,8 @@ func TestTagsDialogsResetOnRepoSwitch(t *testing.T) {
 	if st.delOpen {
 		t.Fatal("delete dialog survived a repository switch")
 	}
-	if st.selectedTag != "" {
-		t.Fatalf("tag selection %q survived a repository switch", st.selectedTag)
+	if got := pickedTagNames(h); len(got) != 0 {
+		t.Fatalf("tag selection %q survived a repository switch", got)
 	}
 }
 
@@ -815,8 +815,8 @@ func TestTagsSelectionAndDeleteDialogResetOnRepoSwitch(t *testing.T) {
 	h.drain()
 
 	st := h.app.tagsUI()
-	if st.selectedTag != "" {
-		t.Fatalf("tag selection %q survived a repository switch", st.selectedTag)
+	if got := pickedTagNames(h); len(got) != 0 {
+		t.Fatalf("tag selection %q survived a repository switch", got)
 	}
 	if st.delOpen {
 		t.Fatal("delete dialog survived a repository switch")

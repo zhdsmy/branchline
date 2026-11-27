@@ -10,12 +10,13 @@ import (
 )
 
 // tagsUIState is the sidebar Tags state of one app instance: the repository
-// generation it belongs to, the selected tag, the New Tag dialog draft, and
-// the Delete Tag confirmation dialog with its asynchronous verification. It
-// lives in the app-keyed tagsUIStates table because app is a shared file.
+// generation it belongs to, the New Tag dialog draft, and the Delete Tag
+// confirmation dialog with its asynchronous verification. It lives in the
+// app-keyed tagsUIStates table because app is a shared file. The tag rows'
+// selection is not here: it belongs to the sidebar's multi-selection on
+// refsState, the single source of every reference row's selection.
 type tagsUIState struct {
-	repoGen     uint64
-	selectedTag string
+	repoGen uint64
 
 	newOpen        bool
 	newName        string
@@ -76,8 +77,10 @@ func (a *app) tagsSidebarSection(c *ui.Context) {
 		a.refPlaceholderRow(c, "No tags")
 		return
 	}
-	for _, tag := range a.sortedTags(refs.Tags) {
-		a.tagRow(c, tag)
+	sorted := a.sortedTags(refs.Tags)
+	pickedCount := sidebarTagPickCount(a.refsView.pick, sorted)
+	for _, tag := range sorted {
+		a.tagRow(c, tag, sorted, pickedCount)
 	}
 }
 
@@ -114,12 +117,20 @@ func (a *app) tagsSidebarHeaderActions(c *ui.Context) {
 	a.pushAllTagsSidebarEntry(c)
 }
 
-// tagRow is one tag in the sidebar: clicking selects it and unfolds a compact
-// action bar below the row, and the secondary button opens its context menu.
-func (a *app) tagRow(c *ui.Context, tag git.Tag) {
+// tagRow is one tag in the sidebar: the row joins the multi-selection the
+// references share — clicking selects it alone, Cmd-click toggles it, and a
+// Shift-click selects the range from the anchor along sorted, the tags in
+// the order the sidebar shows them. A lone selected tag looks exactly as a
+// selected tag always did: the selected wash, the unfolded action bar, and
+// a plain click on its own row takes the selection off again. With two or
+// more tags selected every selected row carries the wash and reads selected
+// to assistive technology, no action bar unfolds, and the row's right-click
+// menu becomes the batch menu of the selection. A right click on a row
+// outside the selection narrows the selection to it first.
+func (a *app) tagRow(c *ui.Context, tag git.Tag, sorted []git.Tag, pickedCount int) {
 	p := a.pal
-	st := a.tagsUI()
-	selected := st.selectedTag == tag.Name
+	key := tagPickKey(tag.Name)
+	picked := a.refsView.pick[key]
 	row := ui.Row(c.Key("tag-" + tag.Name)).
 		Height(26).
 		PaddingX(10).
@@ -129,9 +140,9 @@ func (a *app) tagRow(c *ui.Context, tag git.Tag) {
 		Focusable().
 		Role(ui.RoleListItem).
 		Label(tag.Name).
-		AccessSelected(selected)
+		AccessSelected(picked)
 	switch {
-	case selected:
+	case picked:
 		row.Background(p.selected)
 	case row.Hovered():
 		row.Background(p.hover)
@@ -141,16 +152,32 @@ func (a *app) tagRow(c *ui.Context, tag git.Tag) {
 		ui.Text(c, tag.Name).FontSize(12.5).FontWeight(400).TextColor(p.text).SingleLine().Shrink(1).MinWidth(0)
 	})
 	row.ContextMenu(func(m *ui.Menu) {
+		pick := a.refsView.pick
+		if !pick[key] {
+			// The right click landed outside the selection: the menu opens on
+			// this row alone, exactly as if the row had been clicked first.
+			a.selectOnlySidebarRef(key)
+			pick = a.refsView.pick
+		}
+		if pick[key] && sidebarTagPickCount(pick, sorted) >= 2 {
+			a.tagBatchMenuItems(m, pickedTags(pick, sorted))
+			return
+		}
 		a.tagRowContextMenu(m, tag)
 	})
 	if row.Clicked() {
-		if st.selectedTag == tag.Name {
-			st.selectedTag = ""
+		mods := row.ClickModifiers()
+		if mods == 0 && pickedCount == 1 && picked {
+			// A plain click on the lone selected tag takes the selection off
+			// again, exactly as the single-tag selection always behaved. The
+			// anchor stays, so a range click after the deselection still
+			// starts from this row, as it does after a Cmd-click toggle-out.
+			a.clearSidebarPick()
 		} else {
-			st.selectedTag = tag.Name
+			a.clickSidebarTag(tag.Name, mods, sorted)
 		}
 	}
-	if selected {
+	if pickedCount == 1 && picked {
 		a.tagRowActions(c, tag)
 	}
 }
