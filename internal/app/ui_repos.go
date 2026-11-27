@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"sync"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
@@ -59,20 +58,10 @@ type reposUIState struct {
 	removeErr string
 }
 
-var reposUIStates = struct {
-	sync.Mutex
-	m map[*app]*reposUIState
-}{m: map[*app]*reposUIState{}}
-
+// reposUI returns the app's repository switcher state, creating it on first
+// use. It runs on the UI thread.
 func (a *app) reposUI() *reposUIState {
-	reposUIStates.Lock()
-	defer reposUIStates.Unlock()
-	st := reposUIStates.m[a]
-	if st == nil {
-		st = &reposUIState{}
-		reposUIStates.m[a] = st
-	}
-	return st
+	return featureState(a, func() *reposUIState { return &reposUIState{} })
 }
 
 // repoSwitcher is the sidebar-top repository switcher: a trigger
