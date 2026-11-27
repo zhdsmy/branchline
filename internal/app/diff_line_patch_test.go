@@ -795,7 +795,7 @@ func TestDiffLinePatchUntrackedCRLF(t *testing.T) {
 	r := linePatchRepo(repo)
 
 	fp := unstagedPatchStatus(t, r, "new.txt", '?', 3)
-	text := stageLinesChosen(t, r, fp, chooseLines(t, fp, "+alpha\r", "+beta\r"))
+	stageLinesChosen(t, r, fp, chooseLines(t, fp, "+alpha\r", "+beta\r"))
 
 	if got := indexContent(t, repo, "new.txt"); got != "alpha\r\nbeta\r\n" {
 		t.Fatalf("index after staging two CRLF lines = %q", got)
@@ -803,11 +803,67 @@ func TestDiffLinePatchUntrackedCRLF(t *testing.T) {
 	repo.Git("reset", "-q")
 
 	fp = unstagedPatchStatus(t, r, "new.txt", '?', 3)
-	text = stageLinesChosen(t, r, fp, chooseLines(t, fp, "+alpha\r", "+beta\r", "+gamma\r"))
+	text := stageLinesChosen(t, r, fp, chooseLines(t, fp, "+alpha\r", "+beta\r", "+gamma\r"))
 	if strings.Contains(strings.ReplaceAll(text, "\r\n", ""), "\r") {
 		t.Fatalf("creation patch rewrote a line ending:\n%q", text)
 	}
 	if got := indexContent(t, repo, "new.txt"); got != "alpha\r\nbeta\r\ngamma\r\n" {
 		t.Fatalf("index after staging the CRLF file = %q", got)
+	}
+}
+
+// The eligibility of a file's diff follows its page and kind: modifications
+// on both pages, untracked files to stage, additions and deletions to
+// unstage or stage; never renames, mode changes, links, gitlinks, or diffs
+// read ignoring whitespace.
+func TestDiffLinePatchEligibilityMatrix(t *testing.T) {
+	// A modification of ordinary lines, both names the same.
+	mod := parseOnePatch(t, "diff --git a/f.txt b/f.txt\n--- a/f.txt\n+++ b/f.txt\n@@ -1 +1 @@\n-old\n+new\n")
+	// An addition, as an untracked or staged-new file reads.
+	add := parseOnePatch(t, "diff --git a/f.txt b/f.txt\nnew file mode 100644\n--- /dev/null\n+++ b/f.txt\n@@ -0,0 +1 @@\n+new\n")
+	// A deletion.
+	del := parseOnePatch(t, "diff --git a/f.txt b/f.txt\ndeleted file mode 100644\n--- a/f.txt\n+++ /dev/null\n@@ -1 +0,0 @@\n-old\n")
+	// A rename keeps both names, different.
+	ren := parseOnePatch(t, "diff --git a/f.txt b/g.txt\nsimilarity index 90%\nrename from f.txt\nrename to g.txt\n--- a/f.txt\n+++ b/g.txt\n@@ -1 +1 @@\n-old\n+new\n")
+	// A symlink target change: one line replaced, no newline anywhere.
+	link := parseOnePatch(t, "diff --git a/l b/l\nindex 8286e95..27fa349 120000\n--- a/l\n+++ b/l\n@@ -1 +1 @@\n-base\n\\ No newline at end of file\n+other\n\\ No newline at end of file\n")
+	// A moved submodule: the subproject commit line.
+	sub := parseOnePatch(t, "diff --git a/s b/s\nindex 06e7492..28a9ab7 160000\n--- a/s\n+++ b/s\n@@ -1 +1 @@\n-Subproject commit 06e749269a4091b6105ad23eb5fe84b9aac3c375\n+Subproject commit 28a9ab74f0a3d0a12a283fc55d489706cafb22f2\n")
+	// A mode change beside content.
+	mode := parseOnePatch(t, "diff --git a/f.txt b/f.txt\nold mode 100644\nnew mode 100755\n--- a/f.txt\n+++ b/f.txt\n@@ -1 +1 @@\n-old\n+new\n")
+
+	unstaged := func(status byte) diffRequest {
+		return diffRequest{Kind: diffUnstaged, File: git.FileChange{Path: "f.txt", Status: status}}
+	}
+	staged := func(status byte) diffRequest {
+		return diffRequest{Kind: diffStaged, File: git.FileChange{Path: "f.txt", Status: status, Staged: true}}
+	}
+	cases := []struct {
+		name  string
+		req   diffRequest
+		patch editor.FilePatch
+		want  bool
+	}{
+		{"modified unstaged", unstaged('M'), mod, true},
+		{"modified staged", staged('M'), mod, true},
+		{"untracked", unstaged('?'), add, true},
+		{"ignored", unstaged('!'), add, true},
+		{"deleted unstaged", unstaged('D'), del, true},
+		{"added staged", staged('A'), add, true},
+		{"deleted staged", staged('D'), del, true},
+		{"rename staged", diffRequest{Kind: diffStaged, File: git.FileChange{Path: "g.txt", OrigPath: "f.txt", Status: 'R', Staged: true}}, ren, false},
+		{"symlink modified", unstaged('M'), link, false},
+		{"submodule modified", unstaged('M'), sub, false},
+		{"mode change", unstaged('M'), mode, false},
+		{"untracked symlink", unstaged('?'), parseOnePatch(t, "diff --git a/l b/l\nnew file mode 120000\n--- /dev/null\n+++ b/l\n@@ -0,0 +1 @@\n+base\n\\ No newline at end of file\n"), false},
+		{"conflicted", unstaged('U'), mod, false},
+		{"ignore whitespace", diffRequest{Kind: diffUnstaged, File: git.FileChange{Path: "f.txt", Status: 'M'}, IgnoreSpace: true}, mod, false},
+		{"history kind", diffRequest{Kind: diffCommitFile, File: git.FileChange{Path: "f.txt", Status: 'M'}}, mod, false},
+		{"status disagrees with patch shape", unstaged('M'), add, false},
+	}
+	for _, tc := range cases {
+		if got := diffLineActionsEligible(tc.req, tc.patch); got != tc.want {
+			t.Errorf("%s: eligible = %v, want %v", tc.name, got, tc.want)
+		}
 	}
 }

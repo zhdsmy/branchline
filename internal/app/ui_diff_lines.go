@@ -25,14 +25,14 @@ func diffLineActionsEligible(req diffRequest, patch editor.FilePatch) bool {
 	if req.IgnoreSpace {
 		return false
 	}
-	switch {
-	case req.Kind == diffUnstaged:
+	switch req.Kind {
+	case diffUnstaged:
 		switch req.File.Status {
 		case 'M', '?', '!', 'D':
 		default:
 			return false
 		}
-	case req.Kind == diffStaged:
+	case diffStaged:
 		switch req.File.Status {
 		case 'M', 'A', 'D':
 		default:
@@ -192,7 +192,7 @@ func (d *diffPanel) renderLineActions(s *repoSession, scope string, p palette) f
 func (d *diffPanel) lineActionButton(c *ui.Context, s *repoSession, p palette, unit, verb string, act func()) {
 	label := verb + " " + unit
 	t := c.Theme()
-	btn := ui.ButtonBase(c).Key(unit + "-" + verb).
+	btn := ui.ButtonBase(c).Key(unit+"-"+verb).
 		Padding(0, t.Space(2)).
 		Height(18).
 		Radius(t.Radius-2).
