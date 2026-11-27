@@ -255,7 +255,7 @@ func readPNG(path string) (*image.RGBA, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	img, err := png.Decode(f)
 	if err != nil {
 		return nil, err

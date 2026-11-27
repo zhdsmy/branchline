@@ -36,12 +36,6 @@ var pickLocalFolderFn = func(parent *mygo.Window) (string, error) {
 	return paths[0], nil
 }
 
-// reposState is the repository switcher slot in the app state struct. It
-// stays empty: the app struct is shared with the other feature modules, so
-// the repository switcher keeps its mutable UI state in the app-keyed
-// reposUIStates table below instead.
-type reposState struct{}
-
 // reposUIState is the repository switcher's UI state of one app instance:
 // the popup flag, the Add SSH form draft with its connection-check generation,
 // the not-a-git-repository notice and the remove failure notice.

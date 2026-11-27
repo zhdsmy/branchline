@@ -15,9 +15,6 @@ import (
 // kept in this file so ui_kit.go stays limited to shared components.
 var fallbackXmark = mustSVG(`<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4l8 8M12 4l-8 8"/></svg>`)
 
-// syncState holds the toolbar sync and askpass dialog state on app.
-type syncState struct{}
-
 // syncUIState is the per-app sync state kept outside the shared app struct:
 // the askpass dialog queue, its in-memory AskPass, and pre-flight validation
 // errors that session.actionErr has no room for. Access is serialized through
