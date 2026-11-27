@@ -437,7 +437,6 @@ func (a *app) fileHistoryLoadMoreRow(c *ui.Context, p palette) {
 			Center().
 			Label("Load More File History").
 			Disabled(busy).
-			FocusRing(false).
 			Border(1, p.border)
 		switch {
 		case busy:
