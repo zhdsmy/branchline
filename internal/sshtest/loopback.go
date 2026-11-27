@@ -25,30 +25,45 @@ import (
 // background reader watches a pipe whose write end is held only by the test
 // process (passed as fd 3 through exec.Cmd.ExtraFiles; the write end never
 // enters any child). When the test process dies without running its cleanups
-// (SIGKILL, terminal closed), the pipe reaches EOF and the reader terminates
-// the whole process group. When sshd exits first, wait returns and the
-// watchdog exits after stopping the reader, leaving nothing behind. The
-// watchdog and sshd share one process group, so the normal cleanup path still
-// terminates both together.
+// (SIGKILL, terminal closed), the pipe reaches EOF; the reader then ignores
+// SIGTERM so signalling the whole process group does not kill the reader
+// itself before its SIGKILL fallback can run. When sshd exits first, wait
+// returns and the watchdog kills and reaps the reader, leaving nothing behind.
+// The watchdog and sshd share one process group, so the normal cleanup path
+// terminates all of them together while the pipe is still open.
 //
 // Arguments: $1 is the pid file the watchdog writes the sshd pid into, the
 // rest is the sshd command line.
 const loopbackWatchdogScript = `#!/bin/sh
 pidfile=$1
 shift
-"$@" &
+"$@" 3<&- &
 sshd_pid=$!
-printf '%s\n' "$sshd_pid" > "$pidfile" || exit 1
+if ! printf '%s\n' "$sshd_pid" > "$pidfile.tmp" || ! mv -f "$pidfile.tmp" "$pidfile"; then
+    kill -KILL "$sshd_pid" 2>/dev/null
+    exit 1
+fi
 (
     while read -r _ignored <&3; do :; done
+    trap '' TERM
     kill -TERM "$sshd_pid" 2>/dev/null
     kill -TERM -$$ 2>/dev/null
-    sleep 1
-    kill -KILL "$sshd_pid" 2>/dev/null
-) &
+    i=0
+    while [ "$i" -lt 10 ]; do
+        kill -0 "$sshd_pid" 2>/dev/null || break
+        sleep 0.1
+        i=$((i + 1))
+    done
+    if kill -0 "$sshd_pid" 2>/dev/null; then
+        kill -KILL "$sshd_pid" 2>/dev/null
+    fi
+    kill -KILL -$$ 2>/dev/null
+) >/dev/null 2>&1 &
 reader_pid=$!
+exec 3<&-
 wait "$sshd_pid"
-kill "$reader_pid" 2>/dev/null
+kill -KILL "$reader_pid" 2>/dev/null
+wait "$reader_pid" 2>/dev/null
 exit 0
 `
 
@@ -328,17 +343,17 @@ func startLoopback(t testing.TB, deps loopbackDeps) *Target {
 		}
 
 		if !ready {
-			_ = pipeW.Close()
 			terminateProcessGroup(cmd.Process.Pid, cmd.Process, exited)
+			_ = pipeW.Close()
 			lastErr = fmt.Sprintf("sshd did not accept TCP connections on 127.0.0.1:%d within 5s: %s", port, strings.TrimSpace(stderrBuf.String()))
 			continue
 		}
 
-		sshdPID, pidErr := readWatchdogPIDFile(watchdogPIDFile)
+		sshdPID, pidErr := readWatchdogPIDFile(watchdogPIDFile, exited)
 		if pidErr != nil {
-			_ = pipeW.Close()
 			terminateProcessGroup(cmd.Process.Pid, cmd.Process, exited)
-			lastErr = fmt.Sprintf("cannot determine loopback sshd pid: %v", pidErr)
+			_ = pipeW.Close()
+			lastErr = fmt.Sprintf("cannot determine loopback sshd pid: %v (stderr: %s)", pidErr, strings.TrimSpace(stderrBuf.String()))
 			continue
 		}
 
@@ -456,18 +471,34 @@ func (s *Target) GenerateKey(t testing.TB, name, passphrase string) string {
 
 // readWatchdogPIDFile polls for the sshd pid the watchdog script writes at
 // startup. The write happens before sshd binds its port, so a file missing or
-// unparsable after 2 seconds means the watchdog script itself is broken.
-func readWatchdogPIDFile(path string) (int, error) {
+// unparsable after 2 seconds (or after the watchdog has already exited) means
+// the watchdog script itself failed.
+func readWatchdogPIDFile(path string, exited <-chan struct{}) (int, error) {
 	deadline := time.Now().Add(2 * time.Second)
+	var lastErr error
 	for {
 		data, err := os.ReadFile(path)
-		if err == nil {
-			if pid, convErr := strconv.Atoi(strings.TrimSpace(string(data))); convErr == nil && pid > 0 {
+		if err != nil {
+			lastErr = err
+		} else {
+			text := strings.TrimSpace(string(data))
+			pid, convErr := strconv.Atoi(text)
+			if convErr == nil && pid > 0 {
 				return pid, nil
 			}
+			if convErr != nil {
+				lastErr = fmt.Errorf("invalid pid %q: %w", text, convErr)
+			} else {
+				lastErr = fmt.Errorf("non-positive pid %q", text)
+			}
+		}
+		select {
+		case <-exited:
+			return 0, fmt.Errorf("watchdog exited before writing valid pid to %s: %v", path, lastErr)
+		default:
 		}
 		if time.Now().After(deadline) {
-			return 0, fmt.Errorf("no valid pid in %s within 2s", path)
+			return 0, fmt.Errorf("no valid pid in %s within 2s: %v", path, lastErr)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}

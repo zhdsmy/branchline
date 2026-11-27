@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
@@ -70,6 +71,95 @@ func TestLoopbackOrphanSSHDExitsFirst(t *testing.T) {
 
 	waitProcessGone(t, "watchdog", watchdogPID, 5*time.Second)
 	waitGroupGone(t, watchdogPID, 5*time.Second)
+}
+
+// TestLoopbackOrphanWatchdogSIGKILLFallback verifies that when the supervised
+// child ignores SIGTERM, the watchdog reader survives its own process-group
+// SIGTERM and escalates to SIGKILL within 5 seconds once the pipe closes.
+func TestLoopbackOrphanWatchdogSIGKILLFallback(t *testing.T) {
+	shBin, err := defaultLoopbackDeps().findSH()
+	if err != nil {
+		t.Skipf("sh not available: %v", err)
+	}
+	dir := t.TempDir()
+	watchdogScript := filepath.Join(dir, "sshd-watchdog")
+	if err := os.WriteFile(watchdogScript, []byte(loopbackWatchdogScript), 0o755); err != nil {
+		t.Fatalf("write watchdog script: %v", err)
+	}
+	pidFile := filepath.Join(dir, "child.pid")
+	readyFile := filepath.Join(dir, "child.ready")
+	pipeR, pipeW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("create watchdog pipe: %v", err)
+	}
+	defer func() { _ = pipeW.Close() }()
+
+	// Supervised child ignores SIGTERM and signals readiness once the trap is armed.
+	cmd := exec.Command(shBin, watchdogScript, pidFile, shBin, "-c", `trap '' TERM; : > "$1"; while :; do sleep 1; done`, "_", readyFile)
+	cmd.ExtraFiles = []*os.File{pipeR}
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		_ = pipeR.Close()
+		t.Fatalf("start watchdog: %v", err)
+	}
+	_ = pipeR.Close()
+	watchdogPID := cmd.Process.Pid
+	exited := make(chan struct{})
+	go func() {
+		_ = cmd.Wait()
+		close(exited)
+	}()
+
+	var childPID int
+	t.Cleanup(func() {
+		if childPID > 0 {
+			_ = syscall.Kill(childPID, syscall.SIGKILL)
+		}
+		_ = syscall.Kill(-watchdogPID, syscall.SIGKILL)
+		<-exited
+	})
+
+	childPID, err = readWatchdogPIDFile(pidFile, exited)
+	if err != nil {
+		t.Fatalf("read child pid: %v", err)
+	}
+	readyDeadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, statErr := os.Stat(readyFile); statErr == nil {
+			break
+		}
+		if time.Now().After(readyDeadline) {
+			t.Fatal("TERM-ignoring child did not become ready within 2s")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if err := pipeW.Close(); err != nil {
+		t.Fatalf("close watchdog pipe: %v", err)
+	}
+
+	waitProcessGone(t, "term-ignoring child", childPID, 5*time.Second)
+	waitProcessGone(t, "watchdog", watchdogPID, 5*time.Second)
+	waitGroupGone(t, watchdogPID, 5*time.Second)
+}
+
+// TestReadWatchdogPIDFileExitsEarly verifies that readWatchdogPIDFile fails
+// promptly with diagnostic detail when the watchdog exits before writing a pid.
+func TestReadWatchdogPIDFileExitsEarly(t *testing.T) {
+	exited := make(chan struct{})
+	close(exited)
+	missing := filepath.Join(t.TempDir(), "missing.pid")
+	start := time.Now()
+	_, err := readWatchdogPIDFile(missing, exited)
+	if err == nil {
+		t.Fatal("expected error for missing pid file")
+	}
+	if time.Since(start) >= time.Second {
+		t.Fatalf("readWatchdogPIDFile took %s instead of failing promptly after watchdog exit", time.Since(start))
+	}
+	if !strings.Contains(err.Error(), "watchdog exited") {
+		t.Fatalf("expected early-exit diagnostic, got: %v", err)
+	}
 }
 
 // requireLoopbackSSHD skips (or fails under BRANCHLINE_REQUIRE_SSH=1) when no
