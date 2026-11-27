@@ -32,6 +32,10 @@ const (
 	diffUnstaged
 	// diffStaged compares one staged file in the index against HEAD.
 	diffStaged
+	// diffRangeFile compares one file between two arbitrary commits: Commit
+	// is the newer side of the range (the target of git diff <base> <target>)
+	// and Base the older one.
+	diffRangeFile
 )
 
 // diffRequest describes one file diff to load asynchronously via sessionRead.
@@ -41,6 +45,9 @@ type diffRequest struct {
 	Kind   diffKind
 	Commit git.Commit
 	File   git.FileChange
+	// Base is the hash of the older commit of a range comparison, read only
+	// for diffRangeFile: the patch runs git diff <Base> <Commit.Hash>.
+	Base string
 	// Revision optionally disambiguates reloads (for example, a status or
 	// snapshot version) so Load refreshes even when the same file path remains
 	// selected after a working-tree or index mutation.
@@ -85,12 +92,31 @@ func stagedDiffRequest(file git.FileChange, revision string) diffRequest {
 	}
 }
 
+// rangeFileDiffRequest asks for the diff of one file between the commits
+// base and target, as git diff <base> <target> -- <file>. Only the commits'
+// hashes are carried: range diffs never diff against the parents.
+func rangeFileDiffRequest(base, target git.Commit, file git.FileChange) diffRequest {
+	return diffRequest{
+		Kind:   diffRangeFile,
+		Commit: target,
+		Base:   base.Hash,
+		File:   file,
+	}
+}
+
 func (r diffRequest) valid() bool {
 	if r.Kind == diffNone || r.File.Path == "" {
 		return false
 	}
-	if r.Kind == diffCommitFile && r.Commit.Hash == "" {
-		return false
+	switch r.Kind {
+	case diffCommitFile:
+		if r.Commit.Hash == "" {
+			return false
+		}
+	case diffRangeFile:
+		if r.Commit.Hash == "" || r.Base == "" {
+			return false
+		}
 	}
 	return true
 }
@@ -103,6 +129,7 @@ func (r diffRequest) key() string {
 	return strconv.Itoa(int(r.Kind)) + "\x00" +
 		r.Commit.Hash + "\x00" +
 		parent + "\x00" +
+		r.Base + "\x00" +
 		r.File.Path + "\x00" +
 		r.File.OrigPath + "\x00" +
 		string([]byte{r.File.Status}) + "\x00" +
@@ -124,6 +151,8 @@ func (r diffRequest) badge() string {
 	switch r.Kind {
 	case diffCommitFile:
 		return r.Commit.Short()
+	case diffRangeFile:
+		return diffShortHash(r.Base) + "…" + r.Commit.Short()
 	case diffUnstaged:
 		return "Unstaged"
 	case diffStaged:
@@ -131,6 +160,15 @@ func (r diffRequest) badge() string {
 	default:
 		return ""
 	}
+}
+
+// diffShortHash shortens a full hash the way git.Commit.Short does, for the
+// base commit a range request carries as a plain string.
+func diffShortHash(h string) string {
+	if len(h) > 7 {
+		return h[:7]
+	}
+	return h
 }
 
 // diffLoadResult is the pure background-worker payload returned through
@@ -324,6 +362,8 @@ func readDiffPatch(repo *git.Repo, req diffRequest, limit int) (diffLoadResult, 
 			paths = append(paths, req.File.OrigPath)
 		}
 		raw, err = repo.StagedDiffOpts(paths, opts)
+	case diffRangeFile:
+		raw, err = repo.RangeFileDiffOpts(req.Base, req.Commit.Hash, req.File, opts)
 	default:
 		return diffLoadResult{}, fmt.Errorf("unsupported diff kind %d", req.Kind)
 	}
