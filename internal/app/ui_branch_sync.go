@@ -33,10 +33,14 @@ func splitBranchUpstream(upstream string, remotes []string) (remote, remoteBranc
 	return best, upstream[len(best)+1:], true
 }
 
-// branchSyncMenuItems adds Pull and Push to entries to a local branch's
-// context menu in the sidebar:
+// branchSyncMenuItems adds Pull, Checkout and… and Push to entries to a
+// local branch's context menu in the sidebar:
 //   - Pull '<upstream>' appears only on the current branch when it has a live
 //     upstream and disables while a write or Git operation is in progress;
+//   - Checkout and… appears on every non-current branch with a live upstream:
+//     a submenu of Fast-Forward…, Merge…, Rebase… and Reset…, each opening the
+//     dialog that switches to the branch and brings it level with its
+//     upstream, disabled while a write or Git operation is in progress;
 //   - Push to appears whenever the repository has at least one remote: a single
 //     item naming the upstream when tracked, a single item naming the lone
 //     remote when untracked with one remote, or a Push to submenu listing each
@@ -51,8 +55,9 @@ func (a *app) branchSyncMenuItems(m *ui.Menu, br git.Branch) {
 	}
 
 	showPull := br.Current && hasUpstream
+	showCheckoutAnd := !br.Current && hasUpstream
 	showPush := len(snap.Refs.Remotes) > 0
-	if !showPull && !showPush {
+	if !showPull && !showCheckoutAnd && !showPush {
 		return
 	}
 
@@ -62,6 +67,17 @@ func (a *app) branchSyncMenuItems(m *ui.Menu, br git.Branch) {
 		if m.Item("Pull '" + br.Upstream + "'").Disabled(pullDisabled).Chosen() {
 			a.branchSyncPull(br.Name, br.Hash, br.Upstream)
 		}
+	}
+	if showCheckoutAnd {
+		checkoutDisabled := busy || snap.Status.State != ""
+		m.Submenu("Checkout and…", func(sub *ui.Menu) {
+			for _, ch := range checkoutSyncChoices {
+				action := ch.action
+				if sub.Item(ch.title + "…").Disabled(checkoutDisabled).Chosen() {
+					a.openCheckoutSync(br, action)
+				}
+			}
+		})
 	}
 	if !showPush {
 		return
