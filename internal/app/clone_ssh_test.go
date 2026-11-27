@@ -676,3 +676,64 @@ func TestCloneSSHCancelClosesWithoutSaving(t *testing.T) {
 		time.Sleep(200 * time.Millisecond)
 	}
 }
+
+// A key activated on the SSH Keys settings page reaches ssh as -i when
+// cloning onto an SSH server with the per-clone identity field left blank:
+// the clone executor is built through ExecutorFor(prefs), so server clones
+// honor the same active keys as opened repositories.
+func TestCloneSSHUsesActiveSettingsKeys(t *testing.T) {
+	resetCloneSSHMemory(t)
+	home := isolateSSHKeysTest(t)
+	key := makeSSHKeyPair(t, filepath.Join(home, ".ssh"), "id_ed25519")
+
+	probeDir := t.TempDir()
+	sshLog := filepath.Join(probeDir, "ssh-log.txt")
+	recordingSSHShim(t, filepath.Join(probeDir, "bin"), sshLog)
+	t.Setenv("PATH", filepath.Join(probeDir, "bin")+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	h := newTestApp(t)
+	closeSync(t, h)
+	if err := h.app.saveGitToolchainSettings("", "parent", git.Trace{}); err != nil {
+		t.Fatalf("save toolchain settings: %v", err)
+	}
+
+	// Before activating the key, cloning onto a server invokes ssh without it.
+	openCloneDialogAtSSH(t, h)
+	cloneSSHInto(t, h, "https://example.com/owner/app.git", "tester@127.0.0.1:/srv/repos", "", "app")
+	before, err := os.ReadFile(sshLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(strings.TrimSpace(string(before))) == 0 {
+		t.Fatal("server clone never ran ssh before activating the key")
+	}
+	if strings.Contains(string(before), "-i "+key.Path) {
+		t.Fatalf("ssh ran with -i %s before the key was activated; log:\n%s", key.Path, before)
+	}
+	h.ui.Key(0, ui.KeyEscape)
+	h.ui.Frame()
+
+	// Activate the key from the SSH Keys settings page and clone again with
+	// the per-clone identity field left blank.
+	tt := openSSHKeysPage(t, h)
+	if err := tt.Click("Use id_ed25519"); err != nil {
+		t.Fatalf("check Use id_ed25519: %v; texts=%q", err, tt.Texts())
+	}
+	tt.Frame()
+	h.drain()
+
+	if err := os.WriteFile(sshLog, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	openCloneDialogAtSSH(t, h)
+	cloneSSHInto(t, h, "https://example.com/owner/app.git", "tester@127.0.0.1:/srv/repos", "", "app")
+	after, err := os.ReadFile(sshLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(after), "-i "+key.Path) {
+		t.Fatalf("server clone did not pass -i %s to ssh after activating the key; log:\n%s", key.Path, after)
+	}
+	h.ui.Key(0, ui.KeyEscape)
+	h.ui.Frame()
+}

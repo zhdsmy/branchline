@@ -440,7 +440,7 @@ func (a *app) runCloneSSH(st *cloneUIState) {
 // answers ~/ with the absolute home, and a path through a symlink with the
 // canonical one.
 func cloneIntoSSH(ctx context.Context, url string, remote store.Repo, name string, prefs store.Settings, ask *git.AskPass) (string, error) {
-	ex := remote.ExecutorWith(prefs.GitPath, prefs.Trace(), prefs.EnvPath)
+	ex := remote.ExecutorFor(prefs)
 	repo := repoWithAskPass(git.New(ex), ask)
 	if err := git.EnsureDir(repo.Exec); err != nil {
 		return "", err
@@ -450,7 +450,7 @@ func cloneIntoSSH(ctx context.Context, url string, remote store.Repo, name strin
 	}
 	child := remote
 	child.Path = path.Join(remote.Path, name)
-	topRepo := repoWithAskPass(git.New(child.ExecutorWith(prefs.GitPath, prefs.Trace(), prefs.EnvPath)), ask)
+	topRepo := repoWithAskPass(git.New(child.ExecutorFor(prefs)), ask)
 	top, err := topRepo.TopLevel()
 	if err != nil {
 		return "", err
