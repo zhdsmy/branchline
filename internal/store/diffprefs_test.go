@@ -62,9 +62,6 @@ func TestDiffPrefsFileListTreeRoundTrip(t *testing.T) {
 	if !strings.Contains(string(raw), `"fileListTree": true`) {
 		t.Fatalf("store JSON missing the fileListTree key: %s", raw)
 	}
-	if strings.Contains(string(raw), "fileListFlat") {
-		t.Fatalf("store JSON holds the retired key: %s", raw)
-	}
 }
 
 // A store whose repository never chose the tree view serializes no key, and

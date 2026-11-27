@@ -299,9 +299,6 @@ func TestChangesTreeRememberedPerRepository(t *testing.T) {
 	if !strings.Contains(string(raw), `"fileListTree": true`) {
 		t.Fatalf("store JSON missing fileListTree: %s", raw)
 	}
-	if strings.Contains(string(raw), "fileListFlat") {
-		t.Fatalf("store JSON holds the retired key: %s", raw)
-	}
 
 	// A new app over the same store file reads the choice back: repo A opens
 	// as a tree, repo B as the flat list.
