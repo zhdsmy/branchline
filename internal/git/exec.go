@@ -57,13 +57,19 @@ func ExitCode(err error) int {
 }
 
 // baseConfig is given to every git command, so that what it prints is the
-// same whatever the user's configuration says.
+// same whatever the user's configuration says. The last two entries keep a
+// repository's own configuration from running programs: core.fsmonitor
+// names a command every worktree scan would execute, which opening a
+// repository must never do, and the ext transport runs a command taken
+// from the remote's address, which nothing here uses.
 var baseConfig = []string{
 	"--literal-pathspecs",
 	"-c", "core.quotepath=false",
 	"-c", "color.ui=false",
 	"-c", "log.showSignature=false",
 	"-c", "core.pager=cat",
+	"-c", "core.fsmonitor=false",
+	"-c", "protocol.ext.allow=never",
 }
 
 // configFor returns the common Git options. Commands with an explicit glob
