@@ -201,12 +201,11 @@ func (l *LocalExecutor) Run(ctx context.Context, stdin []byte, args ...string) (
 		if env := SSHKeysEnv(l.SSHKeys, l.Trace); env != "" {
 			cmd.Env = append(cmd.Env, env)
 		}
-		configureGitCancel(cmd)
 		if l.AskPass != nil {
 			if env, err := l.AskPass.Env(); err == nil {
 				cmd.Env = append(cmd.Env, env...)
 				sess := l.AskPass.session(creds)
-				out, err := runAskContext(ctx, cmd, stdin, args, nil, func(pipe, prompt string, _ bool) error {
+				out, err := runAskContext(ctx, cmd, stdin, args, nil, configureGitCancel, func(pipe, prompt string, _ bool) error {
 					answer, ok := sess.ask(prompt)
 					return deliverPipe(pipe, replyLine(answer, ok))
 				})
@@ -214,7 +213,7 @@ func (l *LocalExecutor) Run(ctx context.Context, stdin []byte, args ...string) (
 				return out, err
 			}
 		}
-		return runContext(ctx, cmd, stdin, args, nil)
+		return runContext(ctx, cmd, stdin, args, nil, configureGitCancel)
 	})
 }
 
@@ -401,8 +400,8 @@ func (s *SSHExecutor) Run(ctx context.Context, stdin []byte, args ...string) ([]
 		cmd := exec.CommandContext(ctx, prog, s.SSHArgs(remote)...)
 		cmd.Env = s.env()
 		pw := newPgidWriter()
-		configureSSHCancel(cmd, s, pw)
-		out, err := s.runContext(ctx, cmd, stdin, args, s.credentials(args), pw)
+		cancel := func(c *exec.Cmd) { configureSSHCancel(c, s, pw) }
+		out, err := s.runContext(ctx, cmd, stdin, args, s.credentials(args), pw, cancel)
 		var ge *Error
 		if errors.As(err, &ge) && ge.ExitCode == 255 {
 			// ssh itself failed: say so, as git never exits with 255.
@@ -505,7 +504,10 @@ func RemotePath(p string) string {
 	return ShellQuote(p)
 }
 
-func runContext(ctx context.Context, cmd *exec.Cmd, stdin []byte, args []string, pw *pgidWriter) ([]byte, error) {
+func runContext(ctx context.Context, cmd *exec.Cmd, stdin []byte, args []string, pw *pgidWriter, cancel configureCancel) ([]byte, error) {
+	if cancel != nil {
+		cancel(cmd)
+	}
 	var stderr bytes.Buffer
 	var w io.Writer = &stderr
 	if pw != nil {
@@ -524,8 +526,11 @@ func runContext(ctx context.Context, cmd *exec.Cmd, stdin []byte, args []string,
 // answer cannot reach the pipe, the script keeps waiting on it and the
 // command would only end with its timeout, so the command is ended at
 // once, the way a cancellation ends it, and the error says why.
-func runAskContext(ctx context.Context, cmd *exec.Cmd, stdin []byte, args []string, pw *pgidWriter, answer func(pipe, prompt string, remote bool) error) ([]byte, error) {
+func runAskContext(ctx context.Context, cmd *exec.Cmd, stdin []byte, args []string, pw *pgidWriter, cancel configureCancel, answer func(pipe, prompt string, remote bool) error) ([]byte, error) {
 	configureShellCancel(cmd)
+	if cancel != nil {
+		cancel(cmd)
+	}
 	var mu sync.Mutex
 	var fail error
 	end := func(err error) {

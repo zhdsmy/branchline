@@ -174,6 +174,13 @@ func (s *SSHExecutor) stopRemoteGroup(pg int) {
 	}()
 }
 
+// configureCancel says how canceling a command stops it. An executor hands
+// it to the plumbing, which applies it after the default shell handling:
+// exec.CommandContext installs its own Cancel on every command, so setting
+// one early cannot be told apart from the default, and the shell handling
+// would either overwrite it or never run.
+type configureCancel func(cmd *exec.Cmd)
+
 // configureSSHCancel makes canceling the ssh command stop the local ssh at
 // once and, when the server already named its process group, that group
 // too; the wait for the pipes is bounded by cancelWait.

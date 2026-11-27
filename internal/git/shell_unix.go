@@ -9,11 +9,6 @@ import (
 )
 
 func configureShellCancel(cmd *exec.Cmd) {
-	if cmd.Cancel != nil {
-		// The executor already said how canceling stops the command: keep
-		// its way and its wait untouched.
-		return
-	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.WaitDelay = 2 * time.Second
 	cmd.Cancel = func() error {

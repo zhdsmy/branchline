@@ -8,9 +8,6 @@ import (
 )
 
 func configureShellCancel(cmd *exec.Cmd) {
-	if cmd.Cancel != nil {
-		return
-	}
 	cmd.WaitDelay = 2 * time.Second
 }
 
