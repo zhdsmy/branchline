@@ -192,12 +192,6 @@ func (a *app) historyCommitList(c *ui.Context, p palette) {
 		listTheme.Accent = p.listSelected
 		listTheme.AccentText = p.onAccent
 		a.applyPendingHistoryReveal(snap)
-		// A Show in History reveal sets sel without touching the selection
-		// set; adopt it as the chosen rows. Only an empty selection adopts:
-		// a non-empty one is the user's and never yields to sel.
-		if hv.sel != "" && hv.selection.Len() == 0 {
-			hv.selection.Add(hv.sel)
-		}
 		ui.Themed(c.Key("history-list-theme"), &listTheme).
 			Grow(1).FillWidth().MinHeight(0).Background(ui.Transparent).
 			Children(func() {
@@ -320,12 +314,19 @@ func (a *app) historyLoadMoreRow(c *ui.Context, p palette) {
 
 // selectHistoryCommit chooses a commit and starts the asynchronous detail
 // read. The commit is copied on the UI thread with its parents cloned so the
-// background worker reads no live UI state.
+// background worker reads no live UI state. Choosing one commit narrows a
+// wider selection to it, which is what a Show in History reveal needs to
+// leave a comparison behind; the user-driven narrowing already happened in
+// the list itself, so the writes below are no-ops then.
 func (a *app) selectHistoryCommit(cm git.Commit) {
 	hv := &a.historyView
 	hv.sel = cm.Hash
 	cm.Parents = append([]string(nil), cm.Parents...)
 	hv.commit = cm
+	if hv.selection.Len() != 1 || !hv.selection.Has(cm.Hash) {
+		hv.selection.Clear()
+		hv.selection.Add(cm.Hash)
+	}
 	hv.detailLoading = true
 	// Drop the previous commit's detail, error, file list and file selection
 	// at once: while the new detail read is in flight the pane must not show
