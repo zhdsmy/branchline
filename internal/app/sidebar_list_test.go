@@ -197,6 +197,16 @@ func TestSidebarListTagActionBarShiftsRowsBelow(t *testing.T) {
 	// The row below the bar clicks at its moved position, exactly as before.
 	clickRefRow(t, h, "rel-2")
 	wantPickedRefs(t, h, nil, nil, []string{"rel-2"})
+
+	// The bar follows the selection: clicking rel-2 moved the lone
+	// selection onto it — one row for one, the selection never changing
+	// size — so its bar unfolds under rel-2 and rel-1's is gone.
+	if _, ok := h.ui.AccessByRole(ui.RoleButton, "Delete tag rel-2"); !ok {
+		t.Fatalf("Delete tag rel-2 action missing under the moved selection; texts=%q", h.ui.Texts())
+	}
+	if _, ok := h.ui.AccessByRole(ui.RoleButton, "Delete tag rel-1"); ok {
+		t.Fatal("Delete tag rel-1 action still visible after the selection moved to rel-2")
+	}
 }
 
 // Creating a branch through the New Branch dialog inserts its row at its

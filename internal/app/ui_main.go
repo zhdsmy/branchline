@@ -130,7 +130,7 @@ func (a *app) sidebar(c *ui.Context) {
 		rc := &a.refsView.sidebarRows
 		a.refsView.sidebarList.KeepOffset = true
 		a.refsView.sidebarList.Key = func(row int) any { return rows[row].key }
-	a.refsView.sidebarList.Label = func(row int) string { return rows[row].accessName }
+		a.refsView.sidebarList.Label = func(row int) string { return rows[row].accessName }
 		a.refsView.sidebarList.Selection = &rc.mirror
 		a.refsView.sidebarList.MenuKeepsSelection = true
 		rowTheme := *c.Theme()
