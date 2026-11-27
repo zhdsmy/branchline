@@ -39,17 +39,28 @@ type remoteEditKey struct {
 	path   string
 }
 
+// remoteEditKeyFor keys the copies of one repository. A repository that was
+// never persisted has no store ID, and two of them would share the empty key
+// and each other's copies, so they key by their address instead.
+func remoteEditKeyFor(meta store.Repo, path string) remoteEditKey {
+	id := meta.ID
+	if id == "" {
+		id = meta.Address()
+	}
+	return remoteEditKey{repoID: id, path: path}
+}
+
 // remoteEditEntry is the state of one remote-edited file: the copy itself
 // once downloaded, the SHA-256 of its content as first downloaded (the
 // baseline Discard Local Copy compares edits against), and the in-flight
-// flags rejecting concurrent downloads, saves and discards of the same
-// file.
+// flags rejecting concurrent downloads and discards of the same file. Saves
+// need no flag of their own: they are writes of the session, whose busy
+// state rejects the re-entry for exactly the write's duration.
 type remoteEditEntry struct {
 	copy         git.RemoteCopy
 	hasCopy      bool
 	downloadHash string
 	downloading  bool
-	saving       bool
 	discarding   bool
 }
 
@@ -200,7 +211,7 @@ func (a *app) remoteEditMenuItems(m *ui.Menu, f git.FileChange) {
 		return
 	}
 	st := remoteEditUI(a)
-	key := remoteEditKey{repoID: a.session.Meta().ID, path: f.Path}
+	key := remoteEditKeyFor(a.session.Meta(), f.Path)
 	entry := st.entries[key]
 	hasCopy := entry != nil && entry.hasCopy
 	openOK := f.Status != 'D' && f.Status != 'U'
@@ -215,11 +226,14 @@ func (a *app) remoteEditMenuItems(m *ui.Menu, f git.FileChange) {
 		}
 	}
 	if hasCopy {
-		busy := entry.saving || entry.discarding
-		if m.Item("Save to Server").ID("remote-edit-save").Disabled(a.session.Busy() || busy).Chosen() {
+		// Save to Server is a write of the session: while any write is in
+		// flight the item is disabled. Discarding the copy underneath a save
+		// that is still reading it would corrupt the upload, so the discard
+		// waits for the write too; the copy's own removal keeps its flag.
+		if m.Item("Save to Server").ID("remote-edit-save").Disabled(a.session.Busy()).Chosen() {
 			a.saveRemoteEdit(key, entry)
 		}
-		if m.Item("Discard Local Copy").ID("remote-edit-discard").Disabled(busy).Chosen() {
+		if m.Item("Discard Local Copy").ID("remote-edit-discard").Disabled(a.session.Busy() || entry.discarding).Chosen() {
 			a.discardRemoteEdit(key, entry)
 		}
 	}
@@ -286,57 +300,65 @@ func (a *app) openRemoteEdit(st *remoteEditState, key remoteEditKey, entry *remo
 	})
 }
 
-// saveRemoteEdit writes the copy back to the server in the background. It
-// refuses re-entry while a save of the same copy is already in flight, and
-// the menu keeps the item disabled for exactly that time. On success the
-// copy's metadata moves to what the server reported, so the next edit and
-// save starts from the new baseline, and the repository reloads so Local
-// Changes shows what the write changed. When the server file is no longer
-// what was downloaded, nothing was written: the notice says so and offers
-// revealing the local copy, never an overwrite. Every other failure shows
-// as the dismissible operation error with the copy kept.
+// saveRemoteEdit writes the copy back to the server through the session's
+// ordinary write operation, exactly like the sync actions: the write takes
+// the busy state for its duration, so no other write starts underneath it,
+// the menu keeps the item disabled for exactly that time, and the session's
+// own reload publishes what the write changed. On success the copy's
+// metadata moves to what the server reported, so the next edit and save
+// starts from the new baseline. A repository switch drops the completion
+// with its generation: the write may still have landed, and the copy keeps
+// its pre-save metadata, so the next save re-verifies against the server
+// instead of assuming — a conservative re-read, never a silent overwrite.
+// When the server file is no longer what was downloaded, nothing was
+// written: the notice says so and offers revealing the local copy, never an
+// overwrite. Every other failure shows as the dismissible operation error
+// with the copy kept.
 func (a *app) saveRemoteEdit(key remoteEditKey, entry *remoteEditEntry) {
-	if entry == nil || !entry.hasCopy || entry.saving {
+	if entry == nil || !entry.hasCopy {
 		return
 	}
-	repo, gen := a.syncRepo()
+	repo, _ := a.syncRepo()
 	if repo == nil {
 		return
 	}
-	entry.saving = true
 	copy := entry.copy
-	a.spawn(func() {
-		meta, err := repo.SaveEdited(context.Background(), copy)
-		a.post(func() {
-			entry.saving = false
-			if err == nil {
-				entry.copy.Meta = meta
-				if !dropIfStale(a, gen) {
-					a.session.Reload()
-				}
-				return
-			}
-			if dropIfStale(a, gen) {
-				return
-			}
-			if errors.Is(err, git.ErrRemoteChanged) {
-				st := remoteEditUI(a)
-				st.conflictOpen = true
-				st.conflictPath = key.path
-				return
-			}
+	path := key.path
+	var meta git.RemoteFileMeta
+	a.session.doThen("Save to Server", func(*git.Repo) error {
+		var err error
+		meta, err = repo.SaveEdited(context.Background(), copy)
+		return err
+	}, func(err error) {
+		// doThen drops this completion when the repository generation moved
+		// on, so nothing of the save is published to another repository, and
+		// the copy's metadata deliberately stays where it is.
+		if err == nil {
+			entry.copy.Meta = meta
+			return
+		}
+		if errors.Is(err, git.ErrRemoteChanged) {
 			a.session.ClearActionErr()
-			syncStateFor(a).syncErr = git.RedactText(err.Error())
-		})
+			st := remoteEditUI(a)
+			st.conflictOpen = true
+			st.conflictPath = path
+			return
+		}
+		a.session.ClearActionErr()
+		syncStateFor(a).syncErr = git.RedactText(err.Error())
 	})
 }
 
 // discardRemoteEdit starts removing the copy of key. The comparison with
-// what was downloaded runs in the background because it reads the copy:
-// unchanged, the copy's directory is removed right away; changed — or
-// unreadable, which must never delete unconfirmed — the discard
-// confirmation asks first. Its confirm runs the same deletion path, so a
-// copy that cannot be read is never silently removed either way.
+// what was downloaded runs in the same background task as the removal: an
+// unchanged copy's directory is removed right there, so no round trip to
+// the UI thread sits between the read that proved it unchanged and its
+// deletion. One window remains and cannot close without locking the copy:
+// bytes written between the read and the removal are still lost. Changed —
+// or unreadable, which must never delete unconfirmed — the task posts back
+// and the discard confirmation asks first; its confirm runs the deletion
+// path of its own, so a copy that cannot be read is never silently removed
+// either way.
 func (a *app) discardRemoteEdit(key remoteEditKey, entry *remoteEditEntry) {
 	if entry == nil || !entry.hasCopy || entry.discarding {
 		return
@@ -350,15 +372,24 @@ func (a *app) discardRemoteEdit(key remoteEditKey, entry *remoteEditEntry) {
 			sum := sha256.Sum256(content)
 			changed = hex.EncodeToString(sum[:]) != baseline
 		}
+		if !changed {
+			// The copy holds exactly what was downloaded: nothing of the
+			// user is in it, so it leaves without asking, right here in the
+			// task that proved it unchanged.
+			err := os.RemoveAll(filepath.Dir(copy.Local))
+			a.post(func() {
+				entry.discarding = false
+				if err == nil {
+					delete(remoteEditUI(a).entries, key)
+				}
+			})
+			return
+		}
 		a.post(func() {
 			entry.discarding = false
-			if changed {
-				st := remoteEditUI(a)
-				st.confirmingDiscard = true
-				st.copyKey = key
-				return
-			}
-			a.deleteRemoteEditCopy(key, entry)
+			st := remoteEditUI(a)
+			st.confirmingDiscard = true
+			st.copyKey = key
 		})
 	})
 }
@@ -424,7 +455,7 @@ func (a *app) remoteEditBadge(c *ui.Context, f git.FileChange) {
 	st := featureState(a, func() *remoteEditState {
 		return &remoteEditState{entries: map[remoteEditKey]*remoteEditEntry{}}
 	})
-	key := remoteEditKey{repoID: a.session.Meta().ID, path: f.Path}
+	key := remoteEditKeyFor(a.session.Meta(), f.Path)
 	entry := st.entries[key]
 	if entry == nil || !entry.hasCopy {
 		return
@@ -472,7 +503,7 @@ func (a *app) remoteEditDialogs(c *ui.Context) {
 
 	if st.conflictOpen {
 		open := true
-		key := remoteEditKey{repoID: a.session.Meta().ID, path: st.conflictPath}
+		key := remoteEditKeyFor(a.session.Meta(), st.conflictPath)
 		if ui.Modal(c.Key("remote-edit-conflict-modal"), &open, func() {
 			ui.Column(c.Key("remote-edit-conflict-body")).Width(430).Padding(18, 18, 14, 18).Gap(10).Children(func() {
 				ui.Text(c, "File changed on the server").FontSize(17).FontWeight(650).TextColor(p.text)

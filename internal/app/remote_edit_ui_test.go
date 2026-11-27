@@ -831,3 +831,189 @@ func TestRemoteEditUIConflictNoticeSurvivesPageSwitch(t *testing.T) {
 		t.Fatalf("reveals = %q, want exactly the copy %q", shown, local)
 	}
 }
+
+// saving to the server is a write of the session: while the upload is in
+// flight the session is busy and the row's write controls are disabled, and
+// when the write finishes the session's own reload publishes what the
+// working tree on the server became — a file appearing there during the
+// save shows up without any manual refresh.
+func TestRemoteEditUISaveIsASessionWrite(t *testing.T) {
+	repo, srv := loopbackSSHRepo(t)
+	h, capture, _ := openRemoteEditHarness(t, repo, srv)
+	gated := installGatedShellExecutor(t, h)
+
+	chooseRemoteEditItem(t, h, "a.txt", "Open for Editing")
+	h.drain()
+	opened := capture.openedPaths()
+	if len(opened) != 1 {
+		t.Fatalf("opens = %q, want exactly one", opened)
+	}
+	if err := os.WriteFile(opened[0], []byte("edited\n"), 0o600); err != nil {
+		t.Fatalf("edit copy: %v", err)
+	}
+
+	gated.gateNext()
+	chooseRemoteEditItem(t, h, "a.txt", "Save to Server")
+	gated.gateArrived(t)
+
+	if !h.app.session.Busy() {
+		t.Fatal("session not busy while the save is in flight")
+	}
+	if got := h.app.session.BusyLabel(); got != "Save to Server" {
+		t.Fatalf("busy label = %q, want Save to Server", got)
+	}
+	h.ui.Frame()
+	if info, ok := h.ui.AccessByRole(ui.RoleButton, "Stage a.txt"); !ok || !info.Disabled {
+		t.Fatalf("Stage a.txt during the save = %+v found=%v, want disabled", info, ok)
+	}
+
+	// The server gains a file the snapshot does not know while the save is
+	// still held: only the write's own reload can surface it.
+	srv.WriteFile(t, repo.Path, "b.txt", []byte("new during save\n"))
+
+	gated.releaseGate(t)
+	h.drain()
+
+	if h.app.session.Busy() {
+		t.Fatal("session still busy after the save finished")
+	}
+	if got := string(srv.ReadFile(t, repo.Path, "a.txt")); got != "edited\n" {
+		t.Fatalf("server content after save = %q, want the edited copy", got)
+	}
+	if err := h.app.session.ActionErr(); err != nil {
+		t.Fatalf("the save reported an action error: %v", err)
+	}
+	h.ui.Frame()
+	if !changeRowShown(h, "Unstaged b.txt") {
+		t.Fatalf("the file appearing during the save is not shown after it — the session never reloaded; texts=%q", h.ui.Texts())
+	}
+}
+
+// discarding a copy never edited compares and removes in one background
+// task: the copy's directory is already gone when the task's one completion
+// reaches the UI thread, with nothing in between that could ask or hesitate.
+func TestRemoteEditUIDiscardUnchangedDeletesInOneTask(t *testing.T) {
+	repo, srv := loopbackSSHRepo(t)
+	h, capture, _ := openRemoteEditHarness(t, repo, srv)
+
+	chooseRemoteEditItem(t, h, "a.txt", "Open for Editing")
+	h.drain()
+	opened := capture.openedPaths()
+	if len(opened) != 1 {
+		t.Fatalf("opens = %q, want exactly one", opened)
+	}
+	local := opened[0]
+	copyDir := filepath.Dir(local)
+
+	h.queue.PauseWorkers()
+	chooseRemoteEditItem(t, h, "a.txt", "Discard Local Copy")
+	discard := h.queue.WaitWorker(t)
+	h.queue.ReleaseWorker(discard)
+
+	// Exactly one UI callback later — the discard task's completion — the
+	// copy's directory must already be gone, because the removal happened
+	// inside the task itself.
+	h.queue.RunNext(t)
+	if _, err := os.Stat(copyDir); !os.IsNotExist(err) {
+		h.queue.ResumeWorkers()
+		h.drain()
+		t.Fatalf("copy directory still exists after the discard task completed (err %v): comparison and removal are separate tasks", err)
+	}
+	h.queue.ResumeWorkers()
+	h.drain()
+	h.ui.Frame()
+
+	if h.ui.HasText("Discard local copy?") {
+		t.Fatalf("confirmation asked for an unedited copy, want a direct delete; texts=%q", h.ui.Texts())
+	}
+	if entry := remoteEditEntryOf(h, "a.txt"); entry != nil {
+		t.Fatalf("entry still present after the discard: %+v", entry)
+	}
+	if _, ok := h.ui.Access("Edited Locally"); ok {
+		t.Fatal("badge still present after the discard")
+	}
+}
+
+// loopbackRepoOn parses the store.Repo of one repository dir on an already
+// running loopback server, exactly as loopbackSSHRepo does for its own —
+// including the PATH prepend reaching the disposable ssh wrapper, which
+// repeats harmlessly for every repository of the same server.
+func loopbackRepoOn(t *testing.T, srv *sshtest.Target, remoteDir string) store.Repo {
+	t.Helper()
+	repo, err := store.ParseAddress(srv.Address(remoteDir))
+	if err != nil {
+		t.Fatalf("parse loopback SSH address %q: %v", srv.Address(remoteDir), err)
+	}
+	repo.Name = store.DefaultName(repo.Path)
+	repo.Identity = srv.Identity
+	if binDir := srv.BinDir(); binDir != "" {
+		t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	}
+	return repo
+}
+
+// a repository that was never persisted has no store ID: two unsaved SSH
+// repositories editing the same relative path must not share one entry —
+// each keeps its own copy, its own badge and its own baseline.
+func TestRemoteEditUIUnsavedReposGetSeparateEntries(t *testing.T) {
+	// Two repositories of one loopback server: the same credentials reach
+	// both, and their differing paths give them differing addresses.
+	srv := sshtest.StartLoopback(t)
+	repo1 := loopbackRepoOn(t, srv, srv.InitRepo(t, "repo-one"))
+	repo2 := loopbackRepoOn(t, srv, srv.InitRepo(t, "repo-two"))
+	srv.WriteFile(t, repo1.Path, "shared.txt", []byte("one\n"))
+	srv.WriteFile(t, repo2.Path, "shared.txt", []byte("two\n"))
+
+	h := newTestApp(t)
+	capture, _ := installRemoteEditSeams(t, h)
+	h.app.openRepo(repo1)
+	h.drain()
+	if err := h.app.session.LoadErr(); err != nil {
+		t.Fatalf("first SSH initial load failed: %v", err)
+	}
+	if h.app.session.Meta().ID != "" {
+		t.Fatalf("unsaved repository has ID %q, want empty", h.app.session.Meta().ID)
+	}
+
+	chooseRemoteEditItem(t, h, "shared.txt", "Open for Editing")
+	h.drain()
+
+	h.app.openRepo(repo2)
+	h.drain()
+	if h.app.session.Meta().ID != "" {
+		t.Fatalf("unsaved repository has ID %q, want empty", h.app.session.Meta().ID)
+	}
+	chooseRemoteEditItem(t, h, "shared.txt", "Open for Editing")
+	h.drain()
+
+	opened := capture.openedPaths()
+	if len(opened) != 2 {
+		t.Fatalf("opens = %q, want one download per repository — the second repository may not reuse the first copy", opened)
+	}
+	if opened[0] == opened[1] {
+		t.Fatalf("both repositories share the copy %q", opened[0])
+	}
+	if got, err := os.ReadFile(opened[0]); err != nil || string(got) != "one\n" {
+		t.Fatalf("first copy content = %q err %v, want one", got, err)
+	}
+	if got, err := os.ReadFile(opened[1]); err != nil || string(got) != "two\n" {
+		t.Fatalf("second copy content = %q err %v, want two", got, err)
+	}
+
+	st := remoteEditUI(h.app)
+	key1 := remoteEditKeyFor(repo1, "shared.txt")
+	key2 := remoteEditKeyFor(repo2, "shared.txt")
+	if key1 == key2 {
+		t.Fatal("both unsaved repositories key their copies identically")
+	}
+	entry1, entry2 := st.entries[key1], st.entries[key2]
+	if entry1 == nil || !entry1.hasCopy || entry2 == nil || !entry2.hasCopy {
+		t.Fatalf("entries = first %+v second %+v, want both with their own copies", entry1, entry2)
+	}
+	if len(st.entries) != 2 {
+		t.Fatalf("entries = %d, want exactly two — one per unsaved repository", len(st.entries))
+	}
+	if entry1.copy.Local != opened[0] || entry2.copy.Local != opened[1] {
+		t.Fatalf("entry copies = %q and %q, want the downloads %q and %q", entry1.copy.Local, entry2.copy.Local, opened[0], opened[1])
+	}
+}
