@@ -21,6 +21,13 @@ import (
 func TestRemoteEditLoopbackSSH(t *testing.T) {
 	srv := sshtest.StartLoopback(t)
 	runRemoteEditOverSSH(t, srv)
+
+	// UnwritableDirectory runs only on loopback: the configured Linux
+	// environments are root logins, and root writes past directory permission
+	// bits (CAP_DAC_OVERRIDE), so the write failure cannot be exercised there.
+	t.Run("UnwritableDirectory", func(t *testing.T) {
+		runRemoteEditUnwritableDirectory(t, srv)
+	})
 }
 
 // TestConfiguredLinuxRemoteEdit runs the same remote-editing checks against
@@ -290,63 +297,6 @@ func runRemoteEditOverSSH(t *testing.T, srv *sshtest.Target) {
 		}
 	})
 
-	// UnwritableDirectory removes the write permission of the file's directory
-	// before a save: the save must fail, the original content and permission
-	// bits must survive, and no temporary file may remain. Servers logged in
-	// as root can write into any directory (CAP_DAC_OVERRIDE), so the subtest
-	// probes whether the permission actually blocks writes before asserting.
-	t.Run("UnwritableDirectory", func(t *testing.T) {
-		dir := srv.InitRepo(t, "re-unwritable")
-		r := srv.Repo(t, dir)
-		cache := filepath.Join(t.TempDir(), "cache")
-
-		srv.WriteFile(t, dir, "sub/f.txt", []byte("original\n"))
-		subdir := filepath.Join(dir, "sub")
-		srv.RunShell(t, "chmod 644 "+git.ShellQuote(filepath.Join(dir, "sub/f.txt")))
-
-		copy, err := r.DownloadForEdit(context.Background(), "sub/f.txt", cache)
-		if err != nil {
-			t.Fatalf("download: %v", err)
-		}
-		if err := os.WriteFile(copy.Local, []byte("replacement\n"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-
-		srv.RunShell(t, "chmod 555 "+git.ShellQuote(subdir))
-		// The restore is registered after InitRepo's cleanup of dir, so it
-		// runs first even when the subtest fails partway through.
-		t.Cleanup(func() {
-			srv.RunShell(t, "chmod 755 "+git.ShellQuote(subdir))
-		})
-
-		probe := strings.TrimSpace(srv.RunShell(t, "if touch "+git.ShellQuote(filepath.Join(subdir, ".write-probe"))+" 2>/dev/null; then rm -f "+git.ShellQuote(filepath.Join(subdir, ".write-probe"))+"; echo writable; else echo readonly; fi"))
-		if probe == "writable" {
-			t.Skipf("the server login can write into a chmod 555 directory (root bypasses permission bits); the unwritable-directory behavior cannot be exercised here")
-		}
-		if probe != "readonly" {
-			t.Fatalf("unexpected write probe result %q", probe)
-		}
-
-		_, err = r.SaveEdited(context.Background(), copy)
-		if !errors.Is(err, git.ErrRemoteTempFile) {
-			t.Errorf("save into an unwritable directory: %v", err)
-		}
-		if got := srv.ReadFile(t, dir, "sub/f.txt"); string(got) != "original\n" {
-			t.Errorf("server content written: %q", got)
-		}
-		out := remoteEditServerStat(t, srv, filepath.Join(dir, "sub/f.txt"))
-		fields := strings.Fields(strings.TrimSpace(out))
-		if len(fields) != 3 {
-			t.Fatalf("server stat output %q", out)
-		}
-		if fields[1] != "644" {
-			t.Errorf("server mode after failed save %q, want 644", fields[1])
-		}
-		if left := remoteEditServerLeftovers(t, srv, subdir); len(left) != 0 {
-			t.Errorf("temporary files left: %v", left)
-		}
-	})
-
 	// LargeFile round-trips a 4 MiB file: the downloaded bytes and the bytes
 	// on the server after the write-back must hash to what was sent.
 	t.Run("LargeFile", func(t *testing.T) {
@@ -436,4 +386,66 @@ func runRemoteEditOverSSH(t *testing.T, srv *sshtest.Target) {
 			requireRemoteEditStatMatchesServer(t, srv, full, meta)
 		}
 	})
+}
+
+// runRemoteEditUnwritableDirectory removes the write permission of the file's
+// directory before a save: the save must fail, the original content and
+// permission bits must survive, and no temporary file may remain. It is kept
+// out of runRemoteEditOverSSH because the configured Linux environments log
+// in as root, and root writes past directory permission bits
+// (CAP_DAC_OVERRIDE), so the write failure cannot be exercised there; the
+// probe stays in place so the test also stays honest on any loopback login
+// with such powers.
+func runRemoteEditUnwritableDirectory(t *testing.T, srv *sshtest.Target) {
+	t.Helper()
+
+	dir := srv.InitRepo(t, "re-unwritable")
+	r := srv.Repo(t, dir)
+	cache := filepath.Join(t.TempDir(), "cache")
+
+	srv.WriteFile(t, dir, "sub/f.txt", []byte("original\n"))
+	subdir := filepath.Join(dir, "sub")
+	srv.RunShell(t, "chmod 644 "+git.ShellQuote(filepath.Join(dir, "sub/f.txt")))
+
+	copy, err := r.DownloadForEdit(context.Background(), "sub/f.txt", cache)
+	if err != nil {
+		t.Fatalf("download: %v", err)
+	}
+	if err := os.WriteFile(copy.Local, []byte("replacement\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	srv.RunShell(t, "chmod 555 "+git.ShellQuote(subdir))
+	// The restore is registered after InitRepo's cleanup of dir, so it
+	// runs first even when the subtest fails partway through.
+	t.Cleanup(func() {
+		srv.RunShell(t, "chmod 755 "+git.ShellQuote(subdir))
+	})
+
+	probe := strings.TrimSpace(srv.RunShell(t, "if touch "+git.ShellQuote(filepath.Join(subdir, ".write-probe"))+" 2>/dev/null; then rm -f "+git.ShellQuote(filepath.Join(subdir, ".write-probe"))+"; echo writable; else echo readonly; fi"))
+	if probe == "writable" {
+		t.Skipf("the server login can write into a chmod 555 directory (root bypasses permission bits); the unwritable-directory behavior cannot be exercised here")
+	}
+	if probe != "readonly" {
+		t.Fatalf("unexpected write probe result %q", probe)
+	}
+
+	_, err = r.SaveEdited(context.Background(), copy)
+	if !errors.Is(err, git.ErrRemoteTempFile) {
+		t.Errorf("save into an unwritable directory: %v", err)
+	}
+	if got := srv.ReadFile(t, dir, "sub/f.txt"); string(got) != "original\n" {
+		t.Errorf("server content written: %q", got)
+	}
+	out := remoteEditServerStat(t, srv, filepath.Join(dir, "sub/f.txt"))
+	fields := strings.Fields(strings.TrimSpace(out))
+	if len(fields) != 3 {
+		t.Fatalf("server stat output %q", out)
+	}
+	if fields[1] != "644" {
+		t.Errorf("server mode after failed save %q, want 644", fields[1])
+	}
+	if left := remoteEditServerLeftovers(t, srv, subdir); len(left) != 0 {
+		t.Errorf("temporary files left: %v", left)
+	}
 }
