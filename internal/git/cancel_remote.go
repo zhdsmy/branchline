@@ -207,14 +207,18 @@ func (s *SSHExecutor) stopRemoteGroup(pg int) {
 // would either overwrite it or never run.
 type configureCancel func(cmd *exec.Cmd)
 
-// configureSSHCancel makes canceling the ssh command stop the local ssh at
-// once and, when the server already named its process group, that group
-// too; the wait for the pipes is bounded by cancelWait.
+// configureSSHCancel makes canceling the ssh command stop the local ssh
+// (or its local process group when askpass configured one) at once and,
+// when the server already named its process group, that group too; the
+// wait for the pipes is bounded by cancelWait.
 func configureSSHCancel(cmd *exec.Cmd, ssh *SSHExecutor, pw *pgidWriter) {
+	prev := cmd.Cancel
 	cmd.WaitDelay = cancelWait
 	cmd.Cancel = func() error {
 		var err error
-		if cmd.Process != nil {
+		if prev != nil {
+			err = prev()
+		} else if cmd.Process != nil {
 			err = cmd.Process.Kill()
 		}
 		if pg := pw.pgid(); pg > 0 {

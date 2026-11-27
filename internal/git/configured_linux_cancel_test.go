@@ -66,6 +66,17 @@ func linuxGroupAlive(entries [][3]string, pg int) bool {
 	return false
 }
 
+// linuxGroupHasCommand reports whether a process in pg has part in its command line.
+func linuxGroupHasCommand(entries [][3]string, pg int, part string) bool {
+	want := strconv.Itoa(pg)
+	for _, e := range entries {
+		if e[1] == want && strings.Contains(e[2], part) {
+			return true
+		}
+	}
+	return false
+}
+
 // TestConfiguredLinuxCancelClone cancels a clone on the server whose
 // upload-pack never answers: the command returns at once, the process
 // group the server named is gone, and the folder git had started is gone
@@ -103,10 +114,14 @@ func TestConfiguredLinuxCancelClone(t *testing.T) {
 	// way a stuck network leaves the real one.
 	hang := scratch + "/hang-upload-pack.sh"
 	setup := "set -eu\n" +
-		"git init -q -b main " + ShellQuote(scratch+"/src") + "\n" +
+		"export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1\n" +
+		"mkdir -p " + ShellQuote(scratch+"/src") + "\n" +
 		"cd " + ShellQuote(scratch+"/src") + "\n" +
+		"git init -q\n" +
+		"git symbolic-ref HEAD refs/heads/main\n" +
 		"git config user.name 'Branchline Test'\n" +
 		"git config user.email test@example.invalid\n" +
+		"git config commit.gpgsign false\n" +
 		"printf 'cancel me\\n' > a.txt\n" +
 		"git add a.txt\n" +
 		"git commit -q -m init\n" +
@@ -133,11 +148,11 @@ func TestConfiguredLinuxCancelClone(t *testing.T) {
 	for {
 		entries := scanProcesses(t, conn)
 		pg = findLinuxGroupLeader(entries, token)
-		if pg > 0 && linuxGroupAlive(entries, pg) {
+		if pg > 0 && linuxGroupHasCommand(entries, pg, "sleep 300") {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("no session leader with %q in its command line: %q", token, entries)
+			t.Fatalf("no stuck sleeper in session leader group with %q in its command line: %q", token, entries)
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
