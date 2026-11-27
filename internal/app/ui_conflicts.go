@@ -82,7 +82,7 @@ func (a *app) selectedUnstagedConflict() (git.FileChange, bool) {
 	if !s.selected || s.selectedStaged || !a.session.Loaded() {
 		return git.FileChange{}, false
 	}
-	f, ok := findChange(a.session.Snapshot().Status.Unstaged, s.selectedPath)
+	f, ok := s.listCache.lookup(a.session.Snapshot().Status).lookupUnstaged(s.selectedPath)
 	if !ok || f.Status != 'U' {
 		return git.FileChange{}, false
 	}
@@ -159,21 +159,13 @@ func conflictExplanation(code string) string {
 	}
 }
 
-// changesConflictSection renders the Conflicted section above Unstaged: one
-// row per unmerged file with its conflict type and a quick resolution entry.
-// The section and its separator only exist when the caller passes a non-empty
-// list, so a repository without conflicts keeps the exact layout it had.
-func (a *app) changesConflictSection(c *ui.Context, files []git.FileChange) {
+// changesConflictHeader renders the title row of the Conflicted section,
+// which exists only when the status holds unmerged files.
+func (a *app) changesConflictHeader(c *ui.Context, count int) {
 	p := a.pal
-	title := fmt.Sprintf("Conflicted (%d)", len(files))
-	ui.Column(c.Key("changes-section-conflicted")).FillWidth().Gap(4).Children(func() {
-		ui.Row(c.Key("changes-section-header-conflicted")).Height(30).FillWidth().Padding(0, 2).Gap(6).AlignItems(ui.Center).Children(func() {
-			ui.Text(c, title).FontSize(12).FontWeight(650).TextColor(p.danger).SingleLine()
-		})
-		for _, f := range files {
-			f := f
-			a.changesConflictRow(c, f, p)
-		}
+	title := fmt.Sprintf("Conflicted (%d)", count)
+	ui.Row(c.Key("changes-section-header-conflicted")).Height(30).FillWidth().Padding(0, 2).Gap(6).AlignItems(ui.Center).Children(func() {
+		ui.Text(c, title).FontSize(12).FontWeight(650).TextColor(p.danger).SingleLine()
 	})
 }
 
@@ -182,11 +174,11 @@ func (a *app) changesConflictSection(c *ui.Context, files []git.FileChange) {
 // Discard: staging an unmerged path would either fail or record the conflict
 // markers, and discarding one cannot work, so the row offers only the quick
 // resolution entries the conflict type allows.
-func (a *app) changesConflictRow(c *ui.Context, f git.FileChange, p palette) {
+func (a *app) changesConflictRow(c *ui.Context, f git.FileChange, cache *changesListCache, p palette) {
 	s := &a.changesView
 	rowLabel := "Conflicted " + f.Path
 	selected := s.selected && !s.selectedStaged && s.selectedPath == f.Path
-	stage, haveStage := a.session.Snapshot().Status.ConflictStage(f.Path)
+	stage, haveStage := cache.lookupConflictStage(f.Path)
 
 	ui.Row(c.Key("conflict-row-" + f.Path)).FillWidth().Gap(4).AlignItems(ui.Center).Children(func() {
 		b := ui.ButtonBase(c.Key("conflict-open-" + f.Path)).
