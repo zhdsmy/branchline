@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"sync"
 
 	"github.com/egoist/mygo/ui"
 
@@ -13,10 +12,8 @@ import (
 
 // tagsPushUIState is the per-app state of the remote tag pushing: the Push
 // Tag dialog with the remote probe its force push is gated on, and the Push
-// All Tags dialog. It lives in an app-keyed table because the shared app
-// struct is off-limits; a repository switch resets it and invalidates a
-// probe still in flight so its late answer can never apply to the new
-// repository.
+// All Tags dialog. A repository switch resets it and invalidates a probe
+// still in flight so its late answer can never apply to the new repository.
 type tagsPushUIState struct {
 	repoGen uint64
 
@@ -40,22 +37,11 @@ type tagsPushUIState struct {
 	pushAllCount  int
 }
 
-var tagsPushUIStates = struct {
-	sync.Mutex
-	m map[*app]*tagsPushUIState
-}{m: map[*app]*tagsPushUIState{}}
-
 // tagsPushUI returns the app's tag push state, creating it on first use and
 // resetting it — including canceling a force push probe in flight — when the
 // repository generation moves on. It runs on the UI thread.
 func (a *app) tagsPushUI() *tagsPushUIState {
-	tagsPushUIStates.Lock()
-	defer tagsPushUIStates.Unlock()
-	st := tagsPushUIStates.m[a]
-	if st == nil {
-		st = &tagsPushUIState{}
-		tagsPushUIStates.m[a] = st
-	}
+	st := featureState(a, func() *tagsPushUIState { return &tagsPushUIState{} })
 	if gen := a.session.Generation(); st.repoGen != gen {
 		if st.forceChecking {
 			a.session.cancelRead("tags-remote-check")

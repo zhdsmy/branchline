@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"sync"
 
 	"github.com/egoist/mygo/ui"
 
@@ -15,10 +14,9 @@ import (
 // file owns: the Checkout Commit confirmation with the repository state it
 // was confirmed against, the read-only Tag Details panel with its
 // asynchronous read, the Delete from Remote dialog with the probe its confirm
-// button is gated on, and the clipboard text a copy menu item asked for. It
-// lives in its own app-keyed table because app is a shared file; a repository
-// switch resets it and invalidates a read still in flight so its late answer
-// can never apply to the new repository.
+// button is gated on, and the clipboard text a copy menu item asked for. A
+// repository switch resets it and invalidates a read still in flight so its
+// late answer can never apply to the new repository.
 type tagsMenuUIState struct {
 	repoGen uint64
 
@@ -63,23 +61,12 @@ type tagsMenuUIState struct {
 	hasTagClipboard bool
 }
 
-var tagsMenuUIStates = struct {
-	sync.Mutex
-	m map[*app]*tagsMenuUIState
-}{m: map[*app]*tagsMenuUIState{}}
-
 // tagsMenuUI returns the app's tag menu state, creating it on first use and
 // resetting it — including canceling a details read or remote probe in
 // flight — when the repository generation moves on. It runs on the UI
 // thread.
 func (a *app) tagsMenuUI() *tagsMenuUIState {
-	tagsMenuUIStates.Lock()
-	defer tagsMenuUIStates.Unlock()
-	st := tagsMenuUIStates.m[a]
-	if st == nil {
-		st = &tagsMenuUIState{}
-		tagsMenuUIStates.m[a] = st
-	}
+	st := featureState(a, func() *tagsMenuUIState { return &tagsMenuUIState{} })
 	if gen := a.session.Generation(); st.repoGen != gen {
 		a.session.cancelRead("tags-details")
 		a.session.cancelRead("tags-remote-del-check")
