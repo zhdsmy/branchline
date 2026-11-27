@@ -128,6 +128,16 @@ type interactiveRebaseMessagesState struct {
 	editingHash string
 	editText    string
 	editDirty   bool
+
+	// editFocus is the one-shot request to move the keyboard focus into
+	// the editor's text area, set as the editor opens and cleared as it
+	// lands or the editor closes. AutoFocus cannot serve here: the area's
+	// key never changes, so it does not appear when the editor retargets
+	// another row, and while the original messages are still on their way
+	// the area appears disabled, so the frame of its birth passes long
+	// before it can take input. The request waits for the frame the area
+	// is enabled instead.
+	editFocus bool
 }
 
 // interactiveRebaseMessages returns the app's message state, resetting it
@@ -166,6 +176,7 @@ func (ms *interactiveRebaseMessagesState) resetInteractiveRebaseMessages(gen uin
 	ms.editingHash = ""
 	ms.editText = ""
 	ms.editDirty = false
+	ms.editFocus = false
 }
 
 // clearInteractiveRebaseMessages closes the message editor and discards the
@@ -414,6 +425,9 @@ func (a *app) interactiveRebaseRowMessageButton(c *ui.Context, p palette, st *in
 func (a *app) openInteractiveRebaseMessageEditor(st *interactiveRebaseUIState, hash string) {
 	ms := interactiveRebaseMessages(a)
 	ms.editingHash = hash
+	// Opening the editor is the user's request to write the message: the
+	// focus goes to the text area, in the first frame it can take input.
+	ms.editFocus = true
 	if draft, ok := ms.drafts[hash]; ok {
 		ms.editText = draft
 		ms.editDirty = true
@@ -442,6 +456,9 @@ func (a *app) closeInteractiveRebaseMessageEditor() {
 	ms.editingHash = ""
 	ms.editText = ""
 	ms.editDirty = false
+	// A closed editor must never draw the focus back to an area that is
+	// no longer there, so a pending focus request dies with it.
+	ms.editFocus = false
 }
 
 // interactiveRebaseMessagePanel renders the message state of the plan below
@@ -513,6 +530,13 @@ func (a *app) interactiveRebaseMessagePanel(c *ui.Context, p palette, st *intera
 			Height(110).
 			FillWidth().
 			Disabled(chainLoading || chainFailed)
+		if ms.editFocus && !chainLoading && !chainFailed {
+			// The focus request lands in the first frame the area can take
+			// input: neither a disabled area nor a frame earlier than the
+			// read's landing can hold it, so it is consumed only here.
+			area.Focus()
+			ms.editFocus = false
+		}
 		// The widget applies the input it took this pass lazily: reading
 		// Changed flushes it into the bound value before the state below
 		// judges it, so a keystroke can never be judged against text from
