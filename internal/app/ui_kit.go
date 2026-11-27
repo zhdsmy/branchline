@@ -187,14 +187,9 @@ func iconBtn(c *ui.Context, sfName string, fallback *ui.SVG, size float32, color
 	return b
 }
 
-func toolbarActionBtn(c *ui.Context, sfName string, fallback *ui.SVG, label string, p palette, disabled bool) ui.Element {
-	return toolbarActionBtnTip(c, sfName, fallback, label, label, p, disabled)
-}
-
-// toolbarActionBtnTip is toolbarActionBtn with a tooltip other than the
-// label. Tooltip adds a tip on each call rather than replacing the last, so
-// a button that needs its own tip sets it here instead of calling Tooltip
-// again on the returned element.
+// toolbarActionBtnTip builds a toolbar action button with its own tooltip.
+// Tooltip adds a tip on each call rather than replacing the last, so callers
+// pass the final tooltip here instead of calling Tooltip on the returned element.
 func toolbarActionBtnTip(c *ui.Context, sfName string, fallback *ui.SVG, label, tooltip string, p palette, disabled bool) ui.Element {
 	b := ui.ButtonBase(c).
 		Height(28).
