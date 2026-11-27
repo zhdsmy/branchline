@@ -233,6 +233,7 @@ func (a *app) changesConflictRow(c *ui.Context, f git.FileChange, cache *changes
 // resolutions the conflict type allows, then the file history and blame
 // entries every tracked file of Local Changes offers.
 func (a *app) conflictRowMenu(m *ui.Menu, f git.FileChange, stage git.ConflictStage, haveStage bool) {
+	a.conflictMergeToolMenuItems(m, f, stage, haveStage)
 	worktreeExists := haveStage && stage.WorktreeExists()
 	for _, action := range conflictResolutionActions(f, worktreeExists) {
 		action := action
