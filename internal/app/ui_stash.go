@@ -299,8 +299,9 @@ func (a *app) stashRow(c *ui.Context, s git.Stash) {
 		AlignItems(ui.Center).
 		Justify(ui.Start).
 		Focusable().
-		Role(ui.RoleNone).
+		Role(ui.RoleListItem).
 		Label("Stash " + s.Name).
+		AccessSelected(selected).
 		FocusRing(false)
 	switch {
 	case selected:

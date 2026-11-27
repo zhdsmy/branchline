@@ -117,37 +117,24 @@ func (a *app) sidebar(c *ui.Context) {
 		// section headers, the entry rows, and every reference and stash
 		// row — is one virtual list: it builds only the rows in view, and
 		// its row table rebuilds only when the data behind it changed. The
-		// rows keep their own buttons, menus and selection painting: the
-		// list never chooses anything itself — its selection is the mirror
-		// of what the rows mark, rebuilt with the table — so the row
-		// element it wraps every row in only repeats what the row inside
-		// tells assistive technology, and the theme copy keeps the fill
-		// and hover the list would paint for that invisible, the rows
-		// painting their own exactly as before. KeepOffset keeps the
-		// scrolled place in pixels as rows come and go, exactly as the
-		// plain scroll container did.
+		// list never chooses anything itself: it has no selection, so its
+		// row elements stay passive containers, the rows inside them keep
+		// their own buttons, menus, focus and selection painting exactly
+		// as the plain scroll container's did, and the keyboard behaves as
+		// it always did. KeepOffset keeps the scrolled place in pixels as
+		// rows come and go, exactly as the plain scroll container did.
 		rows := a.sidebarRows()
-		rc := &a.refsView.sidebarRows
 		a.refsView.sidebarList.KeepOffset = true
 		a.refsView.sidebarList.Key = func(row int) any { return rows[row].key }
-		a.refsView.sidebarList.Label = func(row int) string { return rows[row].accessName }
-		a.refsView.sidebarList.Selection = &rc.mirror
-		a.refsView.sidebarList.MenuKeepsSelection = true
-		rowTheme := *c.Theme()
-		listTheme := rowTheme
-		listTheme.Accent = ui.Transparent
-		listTheme.SurfaceHover = ui.Transparent
-		ui.Themed(c.Key("sidebar-list-theme"), &listTheme).
-			Grow(1).Margin(0, -4).Background(ui.Transparent).
-			Children(func() {
-				ui.List(c.Key("sidebar-scroll"), &a.refsView.sidebarList, len(rows)).
-					TrackScroll(&a.navScroll).
-					Grow(1).FillWidth().
-					Padding(0, 4).
-					Gap(4).
-					Rows(func(r ui.ListRow) {
-						a.sidebarRowView(r.Context, rows[r.Index], &rowTheme)
-					})
+		ui.List(c.Key("sidebar-scroll"), &a.refsView.sidebarList, len(rows)).
+			Label("Sidebar").
+			TrackScroll(&a.navScroll).
+			Grow(1).FillWidth().
+			Margin(0, -4).
+			Padding(0, 4).
+			Gap(4).
+			Rows(func(r ui.ListRow) {
+				a.sidebarRowView(r.Context, rows[r.Index])
 			})
 
 		a.refsSidebar(c)

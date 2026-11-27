@@ -53,11 +53,6 @@ const (
 type sidebarRowEntry struct {
 	kind sidebarRowKind
 	key  string
-	// accessName is the row's accessible name, what the row inside the
-	// list's row element is labeled: the list's Label reports it for the
-	// row element itself, so assistive technology meets the row once, with
-	// the name it always had.
-	accessName string
 
 	// Navigation rows.
 	label    string
@@ -87,11 +82,7 @@ type sidebarRowEntry struct {
 // the inputs the table was built from, so an unchanged frame answers with
 // the rows as they are, and the derived state the rows read — the rows in
 // display order, the sorted reference slices they were built from, and the
-// multi-select counts of the three reference kinds. mirror is the
-// selection the list reports for its rows: the same set of rows the row
-// builders mark selected, keyed by the rows' keys, so that the row element
-// the list wraps every row in reads selected exactly when the row inside
-// it does.
+// multi-select counts of the three reference kinds.
 type sidebarRowCache struct {
 	valid        bool
 	localSorted  []git.Branch
@@ -107,9 +98,7 @@ type sidebarRowCache struct {
 	pickVersion  uint64
 	pickLen      int
 	stashSelKey  string
-	routePage    pageKind
 	rows         []sidebarRowEntry
-	mirror       ui.Selection[any]
 	localPicks   int
 	remotePicks  int
 	tagPicks     int
@@ -124,7 +113,7 @@ func (rc *sidebarRowCache) sameSidebarInputs(
 	localSorted, remoteSorted []git.Branch, tagSorted []git.Tag,
 	remotes []string, stashes []git.Stash,
 	branchesColl, remotesColl, tagsColl, stashesColl, hasRepo bool,
-	pickVersion uint64, pickLen int, stashSelKey string, routePage pageKind,
+	pickVersion uint64, pickLen int, stashSelKey string,
 ) bool {
 	return rc.valid &&
 		sameBackingSlice(rc.localSorted, localSorted) &&
@@ -139,8 +128,7 @@ func (rc *sidebarRowCache) sameSidebarInputs(
 		rc.hasRepo == hasRepo &&
 		rc.pickVersion == pickVersion &&
 		rc.pickLen == pickLen &&
-		rc.stashSelKey == stashSelKey &&
-		rc.routePage == routePage
+		rc.stashSelKey == stashSelKey
 }
 
 // sidebarRows is the sidebar's row table, rebuilt when any of its inputs
@@ -166,7 +154,7 @@ func (a *app) sidebarRows() []sidebarRowEntry {
 	rc := &a.refsView.sidebarRows
 	if rc.sameSidebarInputs(localSorted, remoteSorted, tagSorted, refs.Remotes, stashes,
 		a.branchesCollapsed, a.remotesCollapsed, a.tagsCollapsed, stash.collapsed, a.session.HasRepo(),
-		a.refsView.pickVersion, len(a.refsView.pick), stash.selectedKey, a.route.page) {
+		a.refsView.pickVersion, len(a.refsView.pick), stash.selectedKey) {
 		return rc.rows
 	}
 	a.rebuildSidebarRows(rc, refs, stashes, localSorted, remoteSorted, tagSorted, stash)
@@ -223,55 +211,55 @@ func (a *app) rebuildSidebarRows(rc *sidebarRowCache, refs git.Refs, stashes []g
 
 	rows := make([]sidebarRowEntry, 0, len(localSorted)+len(remoteSorted)+len(tagSorted)+len(stashes)+24)
 	rows = append(rows,
-		sidebarRowEntry{kind: sidebarRowNav, key: "nav-Changes", accessName: "Changes", label: "Changes", sfName: "square.and.pencil", fallback: fallbackDiff, target: route{page: pageChanges}},
-		sidebarRowEntry{kind: sidebarRowNav, key: "nav-History", accessName: "History", label: "History", sfName: "clock", fallback: fallbackHist, target: route{page: pageHistory}},
+		sidebarRowEntry{kind: sidebarRowNav, key: "nav-Changes", label: "Changes", sfName: "square.and.pencil", fallback: fallbackDiff, target: route{page: pageChanges}},
+		sidebarRowEntry{kind: sidebarRowNav, key: "nav-History", label: "History", sfName: "clock", fallback: fallbackHist, target: route{page: pageHistory}},
 		sidebarRowEntry{kind: sidebarRowSpacer, key: "nav-gap"},
 	)
 
-	rows = append(rows, sidebarRowEntry{kind: sidebarRowSection, key: "sec-Branches", accessName: "Branches", title: "Branches", count: len(refs.Branches), collapsed: &a.branchesCollapsed, menu: a.branchesSectionContextMenu})
+	rows = append(rows, sidebarRowEntry{kind: sidebarRowSection, key: "sec-Branches", title: "Branches", count: len(refs.Branches), collapsed: &a.branchesCollapsed, menu: a.branchesSectionContextMenu})
 	if !a.branchesCollapsed {
 		if a.session.HasRepo() {
-			rows = append(rows, sidebarRowEntry{kind: sidebarRowNewBranch, key: "row-new-branch", accessName: "New Branch"})
+			rows = append(rows, sidebarRowEntry{kind: sidebarRowNewBranch, key: "row-new-branch"})
 		}
 		if len(refs.Branches) == 0 {
-			rows = append(rows, sidebarRowEntry{kind: sidebarRowPlaceholder, key: "ph-branches", accessName: "No branches", text: "No branches"})
+			rows = append(rows, sidebarRowEntry{kind: sidebarRowPlaceholder, key: "ph-branches", text: "No branches"})
 		} else {
 			for _, br := range localSorted {
-				rows = append(rows, sidebarRowEntry{kind: sidebarRowBranch, key: "br-" + br.FullName, accessName: br.Name, branch: br})
+				rows = append(rows, sidebarRowEntry{kind: sidebarRowBranch, key: "br-" + br.FullName, branch: br})
 			}
 		}
 	}
 
-	rows = append(rows, sidebarRowEntry{kind: sidebarRowSection, key: "sec-Remotes", accessName: "Remotes", title: "Remotes", count: len(refs.Remotes), collapsed: &a.remotesCollapsed, menu: a.remotesSectionContextMenu})
+	rows = append(rows, sidebarRowEntry{kind: sidebarRowSection, key: "sec-Remotes", title: "Remotes", count: len(refs.Remotes), collapsed: &a.remotesCollapsed, menu: a.remotesSectionContextMenu})
 	if !a.remotesCollapsed {
 		if a.session.HasRepo() {
-			rows = append(rows, sidebarRowEntry{kind: sidebarRowNewRemote, key: "row-new-remote", accessName: "New Remote"})
+			rows = append(rows, sidebarRowEntry{kind: sidebarRowNewRemote, key: "row-new-remote"})
 		}
 		if len(refs.Remotes) == 0 {
-			rows = append(rows, sidebarRowEntry{kind: sidebarRowPlaceholder, key: "ph-remotes", accessName: "No remotes", text: "No remotes"})
+			rows = append(rows, sidebarRowEntry{kind: sidebarRowPlaceholder, key: "ph-remotes", text: "No remotes"})
 		} else {
 			for _, rem := range refs.Remotes {
-				rows = append(rows, sidebarRowEntry{kind: sidebarRowRemote, key: "rem-" + rem, accessName: rem, remote: rem})
+				rows = append(rows, sidebarRowEntry{kind: sidebarRowRemote, key: "rem-" + rem, remote: rem})
 				for _, rb := range byRemote[rem] {
-					rows = append(rows, sidebarRowEntry{kind: sidebarRowRemoteBranch, key: "rem-br-" + rb.FullName, accessName: rb.Name, branch: rb})
+					rows = append(rows, sidebarRowEntry{kind: sidebarRowRemoteBranch, key: "rem-br-" + rb.FullName, branch: rb})
 				}
 			}
 		}
 	}
 
-	rows = append(rows, sidebarRowEntry{kind: sidebarRowSection, key: "sec-Tags", accessName: "Tags", title: "Tags", count: len(refs.Tags), collapsed: &a.tagsCollapsed, menu: a.tagsSectionContextMenu})
+	rows = append(rows, sidebarRowEntry{kind: sidebarRowSection, key: "sec-Tags", title: "Tags", count: len(refs.Tags), collapsed: &a.tagsCollapsed, menu: a.tagsSectionContextMenu})
 	if !a.tagsCollapsed {
 		if a.session.HasRepo() {
-			rows = append(rows, sidebarRowEntry{kind: sidebarRowNewTag, key: "row-new-tag", accessName: "New Tag"})
+			rows = append(rows, sidebarRowEntry{kind: sidebarRowNewTag, key: "row-new-tag"})
 		}
 		if a.session.HasRepo() && len(refs.Tags) > 0 && len(refs.Remotes) > 0 {
-			rows = append(rows, sidebarRowEntry{kind: sidebarRowPushAllTags, key: "row-push-all-tags", accessName: "Push All Tags"})
+			rows = append(rows, sidebarRowEntry{kind: sidebarRowPushAllTags, key: "row-push-all-tags"})
 		}
 		if len(refs.Tags) == 0 {
-			rows = append(rows, sidebarRowEntry{kind: sidebarRowPlaceholder, key: "ph-tags", accessName: "No tags", text: "No tags"})
+			rows = append(rows, sidebarRowEntry{kind: sidebarRowPlaceholder, key: "ph-tags", text: "No tags"})
 		} else {
 			for _, tag := range tagSorted {
-				rows = append(rows, sidebarRowEntry{kind: sidebarRowTag, key: "tag-" + tag.Name, accessName: tag.Name, tag: tag})
+				rows = append(rows, sidebarRowEntry{kind: sidebarRowTag, key: "tag-" + tag.Name, tag: tag})
 				if tag.Name == expandedTag {
 					rows = append(rows, sidebarRowEntry{kind: sidebarRowTagActions, key: "tagrow-actions-" + tag.Name, tag: tag})
 				}
@@ -279,16 +267,16 @@ func (a *app) rebuildSidebarRows(rc *sidebarRowCache, refs git.Refs, stashes []g
 		}
 	}
 
-	rows = append(rows, sidebarRowEntry{kind: sidebarRowSection, key: "sec-Stashes", accessName: "Stashes", title: "Stashes", count: len(stashes), collapsed: &stash.collapsed})
+	rows = append(rows, sidebarRowEntry{kind: sidebarRowSection, key: "sec-Stashes", title: "Stashes", count: len(stashes), collapsed: &stash.collapsed})
 	if !stash.collapsed {
 		if a.session.HasRepo() {
-			rows = append(rows, sidebarRowEntry{kind: sidebarRowSaveStash, key: "row-save-stash", accessName: "Save Stash"})
+			rows = append(rows, sidebarRowEntry{kind: sidebarRowSaveStash, key: "row-save-stash"})
 		}
 		if len(stashes) == 0 {
-			rows = append(rows, sidebarRowEntry{kind: sidebarRowPlaceholder, key: "ph-stashes", accessName: "No stashes", text: "No stashes"})
+			rows = append(rows, sidebarRowEntry{kind: sidebarRowPlaceholder, key: "ph-stashes", text: "No stashes"})
 		} else {
 			for _, s := range stashes {
-				rows = append(rows, sidebarRowEntry{kind: sidebarRowStash, key: "stashrow-" + stashRowKey(s), accessName: "Stash " + s.Name, stash: s})
+				rows = append(rows, sidebarRowEntry{kind: sidebarRowStash, key: "stashrow-" + stashRowKey(s), stash: s})
 				if stash.selectedKey != "" && stashRowKey(s) == stash.selectedKey {
 					rows = append(rows, sidebarRowEntry{kind: sidebarRowStashActions, key: "stashrow-actions-" + stashRowKey(s), stash: s})
 				}
@@ -311,54 +299,18 @@ func (a *app) rebuildSidebarRows(rc *sidebarRowCache, refs git.Refs, stashes []g
 		pickVersion:  a.refsView.pickVersion,
 		pickLen:      len(pick),
 		stashSelKey:  stash.selectedKey,
-		routePage:    a.route.page,
 		rows:         rows,
 		localPicks:   localPicks,
 		remotePicks:  remotePicks,
 		tagPicks:     tagPicks,
-	}
-	a.rebuildSidebarMirror(rc)
-}
-
-// rebuildSidebarMirror fills the cache's selection mirror with the keys of
-// exactly the rows the row builders mark selected: a navigation row of the
-// page showing, a branch row current or inside a multi-selection, a
-// remote-tracking or tag row inside one, and the selected stash row. The
-// list's row element reads its rows chosen from the mirror, so the node
-// assistive technology meets first tells what the row inside it tells, and
-// nothing else — the mirror is rebuilt from the selection's own state
-// wherever the table is, never mutated by hand.
-func (a *app) rebuildSidebarMirror(rc *sidebarRowCache) {
-	pick := a.refsView.pick
-	rc.mirror = ui.Selection[any]{}
-	for _, entry := range rc.rows {
-		chosen := false
-		switch entry.kind {
-		case sidebarRowNav:
-			chosen = a.route.page == entry.target.page
-		case sidebarRowBranch:
-			chosen = entry.branch.Current || rc.localPicks >= 2 && pick[localBranchPickKey(entry.branch.Name)]
-		case sidebarRowRemoteBranch:
-			chosen = rc.remotePicks >= 2 && pick[remoteBranchPickKey(entry.branch.FullName)]
-		case sidebarRowTag:
-			chosen = pick[tagPickKey(entry.tag.Name)]
-		case sidebarRowStash:
-			chosen = rc.stashSelKey != "" && stashRowKey(entry.stash) == rc.stashSelKey
-		}
-		if chosen {
-			rc.mirror.Add(entry.key)
-		}
 	}
 }
 
 // sidebarRowView draws one row of the sidebar's virtual list. The row
 // builders are the ones the scroll area always used, unchanged in what they
 // paint; the sorted slices and the pick counts they read come from the
-// cache the row table was built with, so drawing walks nothing. rowTheme
-// is the theme the rest of the window uses: the action bars' buttons build
-// inside it again, since the list's own copy hides the fill and hover it
-// would paint for its rows, and theirs has to stay visible.
-func (a *app) sidebarRowView(c *ui.Context, entry sidebarRowEntry, rowTheme *ui.Theme) {
+// cache the row table was built with, so drawing walks nothing.
+func (a *app) sidebarRowView(c *ui.Context, entry sidebarRowEntry) {
 	rc := &a.refsView.sidebarRows
 	switch entry.kind {
 	case sidebarRowNav:
@@ -388,17 +340,13 @@ func (a *app) sidebarRowView(c *ui.Context, entry sidebarRowEntry, rowTheme *ui.
 	case sidebarRowTag:
 		a.tagRow(c, entry.tag, rc.tagSorted, rc.tagPicks)
 	case sidebarRowTagActions:
-		ui.Themed(c, rowTheme).Children(func() {
-			a.tagRowActions(c, entry.tag)
-		})
+		a.tagRowActions(c, entry.tag)
 	case sidebarRowSaveStash:
 		a.saveStashRow(c)
 	case sidebarRowStash:
 		a.stashRow(c, entry.stash)
 	case sidebarRowStashActions:
-		ui.Themed(c, rowTheme).Children(func() {
-			a.stashActionBar(c, entry.stash, a.session.Busy())
-		})
+		a.stashActionBar(c, entry.stash, a.session.Busy())
 	case sidebarRowPlaceholder:
 		a.refPlaceholderRow(c, entry.text)
 	}

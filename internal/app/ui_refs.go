@@ -168,8 +168,9 @@ func (a *app) branchRow(c *ui.Context, br git.Branch, inflight bool, ordered []g
 		Radius(6).
 		AlignItems(ui.Center).
 		Focusable().
-		Role(ui.RoleNone).
-		Label(br.Name)
+		Role(ui.RoleListItem).
+		Label(br.Name).
+		AccessSelected(br.Current || (multi && picked))
 	switch {
 	case multi && picked:
 		row.Background(p.selected)
@@ -249,8 +250,9 @@ func (a *app) remoteBranchRow(c *ui.Context, rb git.Branch, refs git.Refs, sorte
 		Gap(8).
 		AlignItems(ui.Center).
 		Focusable().
-		Role(ui.RoleNone).
-		Label(rb.Name)
+		Role(ui.RoleListItem).
+		Label(rb.Name).
+		AccessSelected(multi && picked)
 	switch {
 	case multi && picked:
 		row.Background(p.selected)
