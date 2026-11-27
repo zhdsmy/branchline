@@ -185,11 +185,6 @@ class Job:
             stdout=self.log_file, stderr=subprocess.STDOUT,
             start_new_session=True)
 
-    def wait(self):
-        self.returncode = self.process.wait()
-        self.elapsed = time.monotonic() - self.started
-        self.log_file.close()
-
     def terminate_group(self):
         if self.process is not None and self.process.poll() is None:
             try:
@@ -267,9 +262,26 @@ def run_jobs(jobs, race, timeout):
             if interrupted:
                 break
             job.start(race, timeout)
+        # Poll instead of a sequential wait loop: a plain wait() chain would
+        # measure every process at the moment the slowest one before it
+        # finished, not at its own exit.
+        pending = [job for job in jobs if job.process is not None]
+        while pending and not interrupted:
+            time.sleep(0.05)
+            for job in list(pending):
+                returncode = job.process.poll()
+                if returncode is not None:
+                    job.returncode = returncode
+                    job.elapsed = time.monotonic() - job.started
+                    job.log_file.close()
+                    pending.remove(job)
+        # Reap whatever is still running; after an interruption these are
+        # the processes whose groups were just terminated.
         for job in jobs:
-            if job.process is not None:
-                job.wait()
+            if job.process is not None and job.returncode is None:
+                job.returncode = job.process.wait()
+                job.elapsed = time.monotonic() - job.started
+                job.log_file.close()
     finally:
         signal.signal(signal.SIGTERM, old_term)
         signal.signal(signal.SIGINT, old_int)
