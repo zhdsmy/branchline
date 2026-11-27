@@ -516,8 +516,8 @@ type Settings struct {
 	DiffContextLines int  `json:"diffContextLines,omitempty"`
 	DiffContextSaved bool `json:"diffContextSaved,omitempty"`
 	// DiffWrap wraps long diff lines rather than scrolling them sideways.
-	DiffWrap  bool   `json:"diffWrap,omitempty"`
-	DateOrder bool   `json:"dateOrder,omitempty"`
+	DiffWrap         bool   `json:"diffWrap,omitempty"`
+	DateOrder        bool   `json:"dateOrder,omitempty"`
 	BranchSpace      string `json:"branchSpace,omitempty"` // "-", "_", or "" to leave spaces
 	RememberCheckout bool   `json:"rememberCheckout,omitempty"`
 	MarkDirtyTabs    bool   `json:"markDirtyTabs,omitempty"`
