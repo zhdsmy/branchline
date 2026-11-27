@@ -429,20 +429,6 @@ func TestSidebarListAccessTabCycle(t *testing.T) {
 	}
 }
 
-// sidebarAccessNames counts, per accessible name, the nodes of the
-// accessibility tree that carry it, text nodes apart: exactly what a
-// screen reader user meets walking the tree.
-func sidebarAccessNames(h *testHarness) map[string]int {
-	counts := map[string]int{}
-	for _, info := range h.ui.AccessAll() {
-		if info.Role == ui.RoleText || info.Name == "" {
-			continue
-		}
-		counts[info.Name]++
-	}
-	return counts
-}
-
 // sidebarAccessInfo returns the accessibility information of the one
 // non-text node named name, failing the test unless there is exactly one.
 func sidebarAccessInfo(t *testing.T, h *testHarness, name string) ui.AccessInfo {
