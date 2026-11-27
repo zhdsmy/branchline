@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"image/draw"
 	"image/png"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -75,23 +77,54 @@ type screenshotCompareStats struct {
 	HasDiff        bool
 }
 
+// screenshotCropMode selects how much of the window one scene's baseline
+// keeps. The zero value captures the whole window exactly as every baseline
+// always has; the dialog mode keeps only the modal card with a fixed margin
+// around it, because every additional full-window capture of a dialog would
+// blow the golden-directory size budget on pixels of dimmed background.
+type screenshotCropMode int
+
+const (
+	// screenshotCropWindow captures the full window: the default, unchanged.
+	screenshotCropWindow screenshotCropMode = iota
+	// screenshotCropDialog captures the open modal's panel with a margin of
+	// screenshotDialogMarginPt points on every side. The panel is found in
+	// the accessibility tree; a scene that fails to produce it fails the
+	// test rather than silently falling back to a full-window capture.
+	screenshotCropDialog
+)
+
+// screenshotDialogMarginPt is the context kept around a cropped dialog, in
+// points before the backing scale is applied.
+const screenshotDialogMarginPt = 16
+
 type screenshotState struct {
 	name  string
 	setup func(t *testing.T) *testHarness
+	crop  screenshotCropMode
 }
 
 func screenshotStates() []screenshotState {
 	return []screenshotState{
-		{"changes-diff", setupScreenshotChangesDiff},
-		{"history-detail", setupScreenshotHistoryDetail},
-		{"refs-sidebar", setupScreenshotRefsSidebar},
-		{"repo-switcher", setupScreenshotRepoSwitcher},
-		{"add-ssh-modal", setupScreenshotAddSSHModal},
-		{"sync-error-banner", setupScreenshotSyncErrorBanner},
-		{"askpass-dialog", setupScreenshotAskPassDialog},
-		{"empty-repo-unborn", setupScreenshotEmptyRepoUnborn},
-		{"no-repo-welcome", setupScreenshotNoRepoWelcome},
-		{"delete-branch-modal", setupScreenshotDeleteBranchModal},
+		{name: "changes-diff", setup: setupScreenshotChangesDiff},
+		{name: "history-detail", setup: setupScreenshotHistoryDetail},
+		{name: "refs-sidebar", setup: setupScreenshotRefsSidebar},
+		{name: "repo-switcher", setup: setupScreenshotRepoSwitcher},
+		{name: "add-ssh-modal", setup: setupScreenshotAddSSHModal},
+		{name: "sync-error-banner", setup: setupScreenshotSyncErrorBanner},
+		{name: "askpass-dialog", setup: setupScreenshotAskPassDialog},
+		{name: "empty-repo-unborn", setup: setupScreenshotEmptyRepoUnborn},
+		{name: "no-repo-welcome", setup: setupScreenshotNoRepoWelcome},
+		{name: "delete-branch-modal", setup: setupScreenshotDeleteBranchModal},
+		{name: "history-compare", setup: setupScreenshotHistoryCompare},
+		{name: "clone-dialog", setup: setupScreenshotCloneDialog, crop: screenshotCropDialog},
+		{name: "merge-dialog", setup: setupScreenshotMergeDialog, crop: screenshotCropDialog},
+		{name: "reset-modal", setup: setupScreenshotResetModal, crop: screenshotCropDialog},
+		{name: "cherry-pick-modal", setup: setupScreenshotCherryPickModal, crop: screenshotCropDialog},
+		{name: "interactive-rebase-modal", setup: setupScreenshotInteractiveRebaseModal, crop: screenshotCropDialog},
+		{name: "apply-stash-dialog", setup: setupScreenshotApplyStashDialog, crop: screenshotCropDialog},
+		{name: "new-tag-dialog", setup: setupScreenshotNewTagDialog, crop: screenshotCropDialog},
+		{name: "file-reset-modal", setup: setupScreenshotFileResetModal, crop: screenshotCropDialog},
 	}
 }
 
@@ -125,7 +158,7 @@ func TestUIScreenshots(t *testing.T) {
 				}
 				t.Run(theme, func(t *testing.T) {
 					h := prepareScreenshotState(t, state.setup)
-					compareScreenshotState(t, h, state.name+"-"+theme, dark, baseline, host)
+					compareScreenshotState(t, h, state, theme, dark, baseline, host)
 				})
 			}
 		})
@@ -193,6 +226,75 @@ func settleFrame(tt *ui.Tester) {
 	tt.Frame()
 }
 
+// captureScreenshot renders the settled frame in the theme dark and copies
+// the pixels the crop mode keeps. Both baseline comparison and baseline
+// regeneration capture through this one function, so the images written by
+// -update are exactly what comparison expects. The tester is left in light
+// mode with one final frame rendered, as the screenshot flow always did.
+func captureScreenshot(t *testing.T, tt *ui.Tester, name string, dark bool, crop screenshotCropMode) *image.RGBA {
+	t.Helper()
+	tt.SetDark(dark)
+	settleFrame(tt)
+	full := copyImage(tt.Image())
+	if crop == screenshotCropWindow {
+		if got, want := full.Bounds().Size().X, screenshotWidth*screenshotScale; got != want {
+			t.Fatalf("captured image width = %d, want %d", got, want)
+		}
+		if got, want := full.Bounds().Size().Y, screenshotHeight*screenshotScale; got != want {
+			t.Fatalf("captured image height = %d, want %d", got, want)
+		}
+	}
+	img := full
+	if crop == screenshotCropDialog {
+		img = cropScreenshotDialog(t, tt, full, name)
+	}
+	tt.SetDark(false)
+	tt.Frame()
+	return img
+}
+
+// cropScreenshotDialog cuts the capture down to the modal dialog's panel and
+// screenshotDialogMarginPt points of context around it. The panel is the
+// accessibility tree's dialog node, whose bounds are window points and get
+// scaled to pixels here; failing to find it fails the test — a scene that
+// lost its dialog must not degenerate into a full-window baseline.
+func cropScreenshotDialog(t *testing.T, tt *ui.Tester, full *image.RGBA, name string) *image.RGBA {
+	t.Helper()
+	dialog, ok := tt.AccessByRole(ui.RoleDialog, "")
+	if !ok {
+		t.Fatalf("screenshot %s is cropped to its dialog but the frame has no dialog node; texts=%q", name, tt.Texts())
+	}
+	b := dialog.Bounds
+	if b.W <= 0 || b.H <= 0 {
+		t.Fatalf("screenshot %s dialog bounds = %+v, want a visible panel", name, b)
+	}
+	margin := float64(screenshotDialogMarginPt * screenshotScale)
+	scale := float64(screenshotScale)
+	fb := full.Bounds()
+	x0 := int(math.Floor(float64(b.X)*scale - margin))
+	y0 := int(math.Floor(float64(b.Y)*scale - margin))
+	x1 := int(math.Ceil(float64(b.X+b.W)*scale + margin))
+	y1 := int(math.Ceil(float64(b.Y+b.H)*scale + margin))
+	if x0 < fb.Min.X {
+		x0 = fb.Min.X
+	}
+	if y0 < fb.Min.Y {
+		y0 = fb.Min.Y
+	}
+	if x1 > fb.Max.X {
+		x1 = fb.Max.X
+	}
+	if y1 > fb.Max.Y {
+		y1 = fb.Max.Y
+	}
+	if x1 <= x0 || y1 <= y0 {
+		t.Fatalf("screenshot %s dialog crop (%d,%d)-(%d,%d) is empty", name, x0, y0, x1, y1)
+	}
+	out := image.NewRGBA(image.Rect(0, 0, x1-x0, y1-y0))
+	draw.Draw(out, out.Bounds(), full, image.Pt(x0, y0), draw.Src)
+	return out
+}
+
 // prepareScreenshotState drives one real product path into a screenshot
 // state. The setup functions intentionally leave the tester in light mode;
 // each leaf subtest then switches exactly once to its own theme.
@@ -209,21 +311,10 @@ func screenshotWithinTolerance(stats screenshotCompareStats, maxRatio float64) b
 	return stats.TotalPixels > 0 && stats.Ratio <= maxRatio
 }
 
-func compareScreenshotState(t *testing.T, h *testHarness, name string, dark bool, baseline screenshotMeta, host screenshotHostMeta) {
+func compareScreenshotState(t *testing.T, h *testHarness, state screenshotState, theme string, dark bool, baseline screenshotMeta, host screenshotHostMeta) {
 	t.Helper()
-	tt := h.ui
-	tt.SetDark(dark)
-	settleFrame(tt)
-	img := copyImage(tt.Image())
-	tt.SetDark(false)
-	tt.Frame()
-
-	if got, want := img.Bounds().Size().X, screenshotWidth*screenshotScale; got != want {
-		t.Fatalf("captured image width = %d, want %d", got, want)
-	}
-	if got, want := img.Bounds().Size().Y, screenshotHeight*screenshotScale; got != want {
-		t.Fatalf("captured image height = %d, want %d", got, want)
-	}
+	name := state.name + "-" + theme
+	img := captureScreenshot(t, h.ui, name, dark, state.crop)
 
 	goldenPath := filepath.Join(screenshotGoldenDir, name+".png")
 	want, err := readPNG(goldenPath)
@@ -520,13 +611,9 @@ func runScreenshotUpdate(t *testing.T) {
 				}
 				t.Run(theme, func(t *testing.T) {
 					h := prepareScreenshotState(t, state.setup)
-					tt := h.ui
-					tt.SetDark(dark)
-					settleFrame(tt)
-					img := copyImage(tt.Image())
-					tt.SetDark(false)
-					tt.Frame()
-					path := filepath.Join(screenshotGoldenDir, state.name+"-"+theme+".png")
+					name := state.name + "-" + theme
+					img := captureScreenshot(t, h.ui, name, dark, state.crop)
+					path := filepath.Join(screenshotGoldenDir, name+".png")
 					if err := writePNG(path, img); err != nil {
 						t.Fatalf("write screenshot baseline %s: %v", path, err)
 					}
@@ -941,8 +1028,8 @@ func TestScreenshotGoldenBudget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("glob screenshot baselines: %v", err)
 	}
-	if len(entries) != 20 {
-		t.Fatalf("screenshot baseline PNG count = %d, want 20", len(entries))
+	if len(entries) != 38 {
+		t.Fatalf("screenshot baseline PNG count = %d, want 38", len(entries))
 	}
 	var total int64
 	for _, path := range entries {
