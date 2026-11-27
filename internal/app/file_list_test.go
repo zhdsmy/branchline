@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"slices"
 	"os"
 	"os/exec"
 	"strings"
@@ -118,8 +119,10 @@ func TestChangedFileListHistoryRowContextMenu(t *testing.T) {
 	}
 }
 
-// The file rows of the comparison and of the search detail carry no
-// context menu: right-clicking them opens nothing.
+// The file rows of the comparison offer only the external diff entry of a
+// context menu — File History and Blame belong to one commit, not to a
+// range — while the rows of the search detail carry none: right-clicking
+// them opens nothing.
 func TestChangedFileListCompareAndSearchRowsHaveNoMenu(t *testing.T) {
 	h, _, base, head := openBigCommitDetail(t, "cfl-nomenu", 20)
 
@@ -132,9 +135,11 @@ func TestChangedFileListCompareAndSearchRowsHaveNoMenu(t *testing.T) {
 		t.Fatalf("right-click compare file row: %v", err)
 	}
 	h.ui.Frame()
-	if menu := h.ui.Menu(); len(menu) != 0 {
-		t.Fatalf("compare file row opened a menu %q, want none", menu)
+	if menu := h.ui.Menu(); !slices.Equal(menu, []string{"Open in External Diff Tool"}) {
+		t.Fatalf("compare file row menu = %q, want only the external diff entry", menu)
 	}
+	h.ui.CloseMenu()
+	h.ui.Frame()
 
 	openSearchView(t, h)
 	submitSearchQuery(t, h, "files-change")
