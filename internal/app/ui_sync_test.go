@@ -77,11 +77,12 @@ func TestSyncLocalFetchPullPushAndSetUpstream(t *testing.T) {
 	// Create a local branch without an upstream and publish it with Push.
 	repo.Git("checkout", "-b", "feature")
 	featureHead := repo.CommitFile("feature.txt", "feature\n", "feature commit")
+	// The external checkout and commit happened behind the snapshot's back:
+	// reload so the Push dialog sees the new branch.
+	h.app.session.Reload()
 	h.drain()
 
-	if err := h.ui.Click("Push"); err != nil {
-		t.Fatalf("click Push: %v", err)
-	}
+	clickPushConfirm(t, h)
 	h.drain()
 
 	if got := strings.TrimSpace(runGitCommand(t, bareDir, "rev-parse", "refs/heads/feature")); got != featureHead {
@@ -154,9 +155,7 @@ func TestSyncLocalFetchPullPushAndSetUpstream(t *testing.T) {
 	}
 
 	// Pushing with nothing to send toasts the up-to-date note.
-	if err := h.ui.Click("Push"); err != nil {
-		t.Fatalf("click Push again: %v", err)
-	}
+	clickPushConfirm(t, h)
 	h.drain()
 	if err := h.app.session.ActionErr(); err != nil {
 		t.Fatalf("up-to-date push reported an error: %v", err)
@@ -509,9 +508,7 @@ func TestSyncErrorDisplayAndDismiss(t *testing.T) {
 		t.Fatalf("click Fetch to learn remote state: %v", err)
 	}
 	h.drain()
-	if err := h.ui.Click("Push"); err != nil {
-		t.Fatalf("click Push: %v", err)
-	}
+	clickPushConfirm(t, h)
 	h.drain()
 	if err := h.app.session.ActionErr(); err == nil {
 		t.Fatal("expected ActionErr after non-fast-forward Push")
@@ -988,7 +985,7 @@ func TestSyncPushGoneUpstreamNonOriginRemote(t *testing.T) {
 	h := newTestApp(t)
 	openSyncRepo(t, h, repo.StoreRepo())
 
-	clickPush(t, h)
+	clickPushConfirm(t, h)
 	h.drain()
 
 	if err := h.app.session.ActionErr(); err != nil {
@@ -1116,7 +1113,11 @@ func TestSyncFetchPullPushLoopbackSSH(t *testing.T) {
 	srv.RunGit(t, repoDir, "commit", "-m", "feature commit")
 	featureHead := srv.RunGit(t, repoDir, "rev-parse", "HEAD")
 
-	clickPush(t, h)
+	// The server-side checkout and commit happened behind the snapshot's
+	// back: reload so the Push dialog sees the new branch.
+	h.app.session.Reload()
+	h.drain()
+	clickPushConfirm(t, h)
 	h.drain()
 
 	if got := srv.RunGit(t, bareDir, "rev-parse", "refs/heads/feature"); got != featureHead {
@@ -1641,7 +1642,11 @@ func TestConfiguredLinuxSyncFetchPullPush(t *testing.T) {
 	srv.RunGit(t, repoDir, "commit", "-m", "feature commit")
 	featureHead := srv.RunGit(t, repoDir, "rev-parse", "HEAD")
 
-	clickPush(t, h)
+	// The server-side checkout and commit happened behind the snapshot's
+	// back: reload so the Push dialog sees the new branch.
+	h.app.session.Reload()
+	h.drain()
+	clickPushConfirm(t, h)
 	h.drain()
 
 	if got := srv.RunGit(t, bareDir, "rev-parse", "refs/heads/feature"); got != featureHead {

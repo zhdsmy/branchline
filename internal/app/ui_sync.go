@@ -264,13 +264,23 @@ func (a *app) syncToolbar(c *ui.Context) {
 	if pull.Clicked() {
 		a.syncPull()
 	}
-	push := toolbarActionBtn(c.Key("sync-push"), "arrow.up", fallbackUpArr, "Push", p, disabled)
+	// The Push button opens the Push dialog; holding Option it pushes the
+	// current branch as a click always did.
+	push := toolbarActionBtnTip(c.Key("sync-push"), "arrow.up", fallbackUpArr, "Push",
+		"Push — hold Option to push the current branch directly", p, disabled)
 	if push.Clicked() {
-		a.syncPush()
+		if push.ClickModifiers()&ui.Alt != 0 {
+			a.syncPush()
+		} else {
+			a.openPushDialog()
+		}
 	}
 
 	// The askpass modal is built from the toolbar pass: ui.Modal mounts into
 	// the window-level overlayRoot, so it is not clipped by the toolbar strip.
+	// The Push dialog mounts beneath it, so a question of the push worker can
+	// never hide behind the dialog it belongs to.
+	a.pushDialog(c)
 	st.pass.view(c)
 }
 
