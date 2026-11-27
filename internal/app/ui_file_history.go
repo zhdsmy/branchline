@@ -2,7 +2,6 @@ package app
 
 import (
 	"strconv"
-	"sync"
 
 	"github.com/egoist/mygo/ui"
 
@@ -60,22 +59,10 @@ type fileInspectorState struct {
 	blameList    ui.ListState
 }
 
-// fileInspectorStates keeps each app instance's inspector state out of the
-// shared app struct, which feature files must not extend.
-var fileInspectorStates = struct {
-	sync.Mutex
-	m map[*app]*fileInspectorState
-}{m: map[*app]*fileInspectorState{}}
-
 func (a *app) fileInspectorUI() *fileInspectorState {
-	fileInspectorStates.Lock()
-	defer fileInspectorStates.Unlock()
-	st := fileInspectorStates.m[a]
-	if st == nil {
-		st = &fileInspectorState{histSel: -1, blameSel: -1}
-		fileInspectorStates.m[a] = st
-	}
-	return st
+	return featureState(a, func() *fileInspectorState {
+		return &fileInspectorState{histSel: -1, blameSel: -1}
+	})
 }
 
 // fileInspectorActive reports whether the inspector covers the given page:

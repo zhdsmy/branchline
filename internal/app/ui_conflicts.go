@@ -2,7 +2,6 @@ package app
 
 import (
 	"fmt"
-	"sync"
 	"time"
 
 	"github.com/egoist/mygo/ui"
@@ -23,9 +22,7 @@ const (
 
 // conflictUIState is the per-app state of the conflict resolution UI: the
 // overwrite/delete confirmation with the conflict identity it was opened
-// against, and the repository generation they belong to. It lives outside the
-// shared app struct, keyed by the app instance, exactly as the commit replay
-// dialog state does.
+// against, and the repository generation they belong to.
 type conflictUIState struct {
 	repoGen uint64
 
@@ -37,23 +34,12 @@ type conflictUIState struct {
 	confirmBody   string
 }
 
-var conflictUIStates = struct {
-	sync.Mutex
-	m map[*app]*conflictUIState
-}{m: map[*app]*conflictUIState{}}
-
 // conflictUI returns the app's conflict resolution state, creating it on first
 // use and discarding an open confirmation when the repository generation moved
 // past it: a switch or close makes the captured identity meaningless, so
 // nothing of the previous repository carries over.
 func conflictUI(a *app) *conflictUIState {
-	conflictUIStates.Lock()
-	defer conflictUIStates.Unlock()
-	st := conflictUIStates.m[a]
-	if st == nil {
-		st = &conflictUIState{}
-		conflictUIStates.m[a] = st
-	}
+	st := featureState(a, func() *conflictUIState { return &conflictUIState{} })
 	if gen := a.session.Generation(); st.repoGen != gen {
 		st.repoGen = gen
 		st.clearConfirm()
