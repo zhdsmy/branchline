@@ -217,47 +217,44 @@ func (a *app) quickRebaseMessageModal(c *ui.Context) {
 	blank := strings.TrimSpace(st.message) == ""
 	confirmDisabled := a.session.Busy() || st.loading || st.readErr != nil || blank
 
-	ui.Modal(c.Key("quick-rebase-message-modal"), &st.open, func() {
-		ui.Column(c.Key("quick-rebase-message-body")).Width(480).Padding(18, 18, 14, 18).Gap(10).Children(func() {
-			ui.Text(c, title).FontSize(17).FontWeight(650).TextColor(p.text)
-			ui.Field(c, "Commit:", func() {
-				ui.Text(c, st.target.Short()+" "+st.target.Subject).FontSize(12).TextColor(p.text).SingleLine().Ellipsis("…")
-			})
-			if st.action == "squash-parent" {
-				ui.Field(c, "Into:", func() {
-					ui.Text(c, st.parentLabel).FontSize(12).TextColor(p.text).SingleLine().Ellipsis("…")
-				})
-			}
-			switch {
-			case st.loading:
-				ui.Text(c, "Loading commit message…").FontSize(12.5).TextColor(p.muted)
-			case st.readErr != nil:
-				ui.Text(c, st.readErr.Error()).FontSize(12).TextColor(p.danger).MaxWidth(444)
-				if ui.Button(c.Key("quick-rebase-retry"), "Retry").Label("Retry").Clicked() {
-					a.startQuickRebaseMessageRead(st)
-				}
-			default:
-				ui.TextArea(c.Key("quick-rebase-message"), &st.message).
-					Label("Commit message").
-					Height(110).
-					FillWidth()
-				if blank {
-					ui.Text(c, "The commit message cannot be empty.").FontSize(11.5).TextColor(p.danger)
-				}
-			}
-			if err := a.session.ActionErr(); st.submitClicked && err != nil {
-				ui.Text(c, err.Error()).FontSize(12).TextColor(p.danger).MaxWidth(444)
-			}
-			ui.Row(c.Key("quick-rebase-message-actions")).Gap(8).Justify(ui.End).Children(func() {
-				if ui.Button(c.Key("quick-rebase-cancel"), "Cancel").Label("Cancel").Clicked() {
-					a.closeQuickRebaseModal()
-				}
-				if ui.PrimaryButton(c.Key("quick-rebase-confirm"), confirm).Label(confirm).Disabled(confirmDisabled).Clicked() {
-					a.submitQuickRebase()
-				}
-			})
+	_, cancelled, confirmed := dialogFrame(c, p, "quick-rebase-message-modal", &st.open, title, 480, func() {
+		ui.Field(c, "Commit:", func() {
+			ui.Text(c, st.target.Short()+" "+st.target.Subject).FontSize(12).TextColor(p.text).SingleLine().Ellipsis("…")
 		})
-	})
+		if st.action == "squash-parent" {
+			ui.Field(c, "Into:", func() {
+				ui.Text(c, st.parentLabel).FontSize(12).TextColor(p.text).SingleLine().Ellipsis("…")
+			})
+		}
+		switch {
+		case st.loading:
+			ui.Text(c, "Loading commit message…").FontSize(12.5).TextColor(p.muted)
+		case st.readErr != nil:
+			ui.Text(c, st.readErr.Error()).FontSize(12).TextColor(p.danger).MaxWidth(444)
+			if ui.Button(c.Key("quick-rebase-retry"), "Retry").Label("Retry").Clicked() {
+				a.startQuickRebaseMessageRead(st)
+			}
+		default:
+			ui.TextArea(c.Key("quick-rebase-message"), &st.message).
+				Label("Commit message").
+				Height(110).
+				FillWidth()
+			if blank {
+				ui.Text(c, "The commit message cannot be empty.").FontSize(11.5).TextColor(p.danger)
+			}
+		}
+		if err := a.session.ActionErr(); st.submitClicked && err != nil {
+			ui.Text(c, err.Error()).FontSize(12).TextColor(p.danger).MaxWidth(444)
+		}
+	},
+		dialogAction{key: "quick-rebase-cancel", text: "Cancel", label: "Cancel", disabled: st.submitClicked && a.session.Busy()},
+		dialogAction{key: "quick-rebase-confirm", text: confirm, label: confirm, disabled: confirmDisabled})
+	if cancelled {
+		a.closeQuickRebaseModal()
+	}
+	if confirmed {
+		a.submitQuickRebase()
+	}
 	if !st.open {
 		a.closeQuickRebaseModal()
 	}
@@ -290,23 +287,20 @@ func (a *app) quickRebaseConfirmModal(c *ui.Context) {
 		confirm = "Drop"
 	}
 
-	ui.Modal(c.Key("quick-rebase-confirm-modal"), &st.open, func() {
-		ui.Column(c.Key("quick-rebase-confirm-body")).Width(430).Padding(18, 18, 14, 18).Gap(10).Children(func() {
-			ui.Text(c, title).FontSize(17).FontWeight(650).TextColor(p.text)
-			ui.Text(c, description).FontSize(13).TextColor(p.muted).MaxWidth(394)
-			if err := a.session.ActionErr(); st.submitClicked && err != nil {
-				ui.Text(c, err.Error()).FontSize(12).TextColor(p.danger).MaxWidth(394)
-			}
-			ui.Row(c.Key("quick-rebase-confirm-actions")).Gap(8).Justify(ui.End).Children(func() {
-				if ui.Button(c.Key("quick-rebase-confirm-cancel"), "Cancel").Label("Cancel").Clicked() {
-					a.closeQuickRebaseModal()
-				}
-				if ui.PrimaryButton(c.Key("quick-rebase-confirm-confirm"), confirm).Label(confirm).Disabled(a.session.Busy()).Clicked() {
-					a.submitQuickRebase()
-				}
-			})
-		})
-	})
+	_, cancelled, confirmed := dialogFrame(c, p, "quick-rebase-confirm-modal", &st.open, title, 430, func() {
+		ui.Text(c, description).FontSize(13).TextColor(p.muted).MaxWidth(394)
+		if err := a.session.ActionErr(); st.submitClicked && err != nil {
+			ui.Text(c, err.Error()).FontSize(12).TextColor(p.danger).MaxWidth(394)
+		}
+	},
+		dialogAction{key: "quick-rebase-confirm-cancel", text: "Cancel", label: "Cancel", disabled: st.submitClicked && a.session.Busy()},
+		dialogAction{key: "quick-rebase-confirm-confirm", text: confirm, label: confirm, disabled: a.session.Busy()})
+	if cancelled {
+		a.closeQuickRebaseModal()
+	}
+	if confirmed {
+		a.submitQuickRebase()
+	}
 	if !st.open {
 		a.closeQuickRebaseModal()
 	}

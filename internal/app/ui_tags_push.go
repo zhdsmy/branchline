@@ -344,36 +344,31 @@ func (a *app) pushAllTagsDialog(c *ui.Context) {
 	}
 	refs := a.session.Snapshot().Refs
 	remotes := refs.Remotes
-	if ui.Modal(c.Key("push-all-tags-modal"), &st.pushAllOpen, func() {
-		ui.Column(c.Key("push-all-tags-body")).Width(460).Padding(18, 18, 14, 18).Gap(10).Children(func() {
-			ui.Text(c, "Push All Tags").FontSize(17).FontWeight(650).TextColor(p.text)
-			countText := fmt.Sprintf("%d local tags are pushed without force.", st.pushAllCount)
-			if st.pushAllCount == 1 {
-				countText = "1 local tag is pushed without force."
-			}
-			ui.Text(c, countText).FontSize(12).TextColor(p.muted)
-			ui.Text(c, "A remote tag pointing anywhere else is never overwritten.").FontSize(12).TextColor(p.muted)
-			switch {
-			case len(remotes) == 0:
-				ui.Text(c, "The repository has no remote to push to.").FontSize(12).TextColor(p.danger)
-			default:
-				ui.Field(c, "Remote:", func() {
-					ui.Select(c, &st.pushAllRemote, remotes).FillWidth().Label("Push All Tags remote")
-				})
-			}
-			ui.Row(c.Key("push-all-tags-actions")).Gap(8).Justify(ui.End).Children(func() {
-				if ui.Button(c.Key("push-all-cancel"), "Cancel").Label("Cancel").Clicked() {
-					a.closePushAllTagsDialog()
-				}
-				if ui.PrimaryButton(c.Key("push-all-confirm"), "Push All Tags").
-					Label("Confirm Push All Tags").
-					Disabled(len(remotes) == 0 || a.session.Busy()).
-					Clicked() {
-					a.submitPushAllTags()
-				}
+	dismissed, cancelled, confirmed := dialogFrame(c, p, "push-all-tags-modal", &st.pushAllOpen, "Push All Tags", 460, func() {
+		countText := fmt.Sprintf("%d local tags are pushed without force.", st.pushAllCount)
+		if st.pushAllCount == 1 {
+			countText = "1 local tag is pushed without force."
+		}
+		ui.Text(c, countText).FontSize(12).TextColor(p.muted)
+		ui.Text(c, "A remote tag pointing anywhere else is never overwritten.").FontSize(12).TextColor(p.muted)
+		switch {
+		case len(remotes) == 0:
+			ui.Text(c, "The repository has no remote to push to.").FontSize(12).TextColor(p.danger)
+		default:
+			ui.Field(c, "Remote:", func() {
+				ui.Select(c, &st.pushAllRemote, remotes).FillWidth().Label("Push All Tags remote")
 			})
-		})
-	}).Dismissed() {
+		}
+	},
+		dialogAction{key: "push-all-cancel", text: "Cancel", label: "Cancel"},
+		dialogAction{key: "push-all-confirm", text: "Push All Tags", label: "Confirm Push All Tags", disabled: len(remotes) == 0 || a.session.Busy()})
+	if cancelled {
+		a.closePushAllTagsDialog()
+	}
+	if confirmed {
+		a.submitPushAllTags()
+	}
+	if dismissed {
 		a.closePushAllTagsDialog()
 	}
 }
