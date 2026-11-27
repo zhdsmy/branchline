@@ -737,7 +737,7 @@ func TestCloneWorksWhileRepositoryBusy(t *testing.T) {
 	h.drain()
 
 	h.queue.PauseWorkers()
-	if err := h.ui.Click("Fetch"); err != nil {
+	if err := h.ui.ClickWith(ui.Alt, "Fetch"); err != nil {
 		t.Fatalf("click Fetch: %v", err)
 	}
 	h.ui.Frame()

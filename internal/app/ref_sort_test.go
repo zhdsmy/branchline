@@ -824,7 +824,7 @@ func TestRefSortCacheInvalidatesOnNewSnapshot(t *testing.T) {
 
 	// Fetch is a write of the toolbar that triggers a full reload even when
 	// it downloads nothing new.
-	if err := h.ui.Click("Fetch"); err != nil {
+	if err := h.ui.ClickWith(ui.Alt, "Fetch"); err != nil {
 		t.Fatalf("click Fetch: %v", err)
 	}
 	h.drain()
