@@ -433,7 +433,12 @@ func (s *SSHExecutor) credentials(args []string) []Credential {
 	return s.Credentials
 }
 
-// ShellQuote quotes s for a POSIX shell.
+// ShellQuote quotes s for a POSIX shell. A word starting with = is quoted
+// even though it is all safe characters: zsh, a common login shell of
+// servers git runs on over SSH, expands =word at the start of a word into
+// the path of a command — =ls runs as /bin/ls. bash, dash and ash do not,
+// so quoting costs nothing but zsh's login shell expanding a file or
+// branch named =ls.
 func ShellQuote(s string) string {
 	if s == "" {
 		return "''"
@@ -445,7 +450,7 @@ func ShellQuote(s string) string {
 			break
 		}
 	}
-	if safe {
+	if safe && !strings.HasPrefix(s, "=") {
 		return s
 	}
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
