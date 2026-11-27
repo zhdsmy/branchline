@@ -60,6 +60,21 @@ type reposUIState struct {
 
 	removeErr string
 
+	renOpen   bool
+	renID     string
+	renOrig   string
+	renName   string
+	renErr    string
+	renSelAll bool
+
+	repoClipboard    string
+	hasRepoClipboard bool
+
+	// showInFinder reveals a local repository in the file manager. nil
+	// means mygo's own shell; tests substitute a recorder so no real
+	// Finder window ever opens.
+	showInFinderFn func(path string)
+
 	reposCache    []store.Repo
 	reposCacheRev uint64
 	repoList      ui.ListState
@@ -93,6 +108,17 @@ func (a *app) repoSwitcher(c *ui.Context) {
 	if a.session.HasRepo() {
 		meta := a.session.Meta()
 		title = meta.Name
+		// The session's copy of the name is taken when the repository
+		// opens and never moves again; a rename shows in the store the
+		// moment it saves. Read the current repository's name from the
+		// switcher's own copy of the list, the session's only when the
+		// list does not know it.
+		for _, r := range repos {
+			if r.ID == meta.ID {
+				title = r.Name
+				break
+			}
+		}
 		if meta.Kind == store.SSH {
 			iconName, fb = "server.rack", fallbackSSH
 		}
@@ -162,6 +188,7 @@ func (a *app) repoSwitcher(c *ui.Context) {
 	a.notGitModal(c, st)
 	a.removeErrorModal(c, st)
 	a.cloneModal(c)
+	a.repoRenameModal(c, st)
 }
 
 // repoRow is one repository of the switcher popup: a switch button labeled
@@ -217,6 +244,9 @@ func repoRow(c *ui.Context, a *app, r store.Repo, st *reposUIState, p palette) {
 			a.switchRepoByID(r.ID)
 			st.popupOpen = false
 		}
+		b.ContextMenu(func(m *ui.Menu) {
+			a.repoRowMenuItems(m, r, st)
+		})
 
 		rm := ui.ButtonBase(c.Key("repo-remove-"+r.ID)).
 			Size(24, 24).
@@ -409,17 +439,20 @@ func (r *sshFormRequest) matches(st *reposUIState) bool {
 
 // showSSHForm opens the Add SSH dialog with a fresh draft, advancing the
 // generation so answers of earlier checks cannot publish into it. The
-// unrelated notices (not-a-git, remove failure) survive the reset.
+// unrelated notices (not-a-git, remove failure) survive the reset, as does
+// the injected file-manager function of the tests.
 func (st *reposUIState) showSSHForm() {
 	gen := st.sshGen + 1
 	notGitOpen, notGitDir := st.notGitOpen, st.notGitDir
 	removeErr := st.removeErr
+	showInFinderFn := st.showInFinderFn
 	*st = reposUIState{
-		sshOpen:    true,
-		sshGen:     gen,
-		notGitOpen: notGitOpen,
-		notGitDir:  notGitDir,
-		removeErr:  removeErr,
+		sshOpen:        true,
+		sshGen:         gen,
+		notGitOpen:     notGitOpen,
+		notGitDir:      notGitDir,
+		removeErr:      removeErr,
+		showInFinderFn: showInFinderFn,
 	}
 }
 
