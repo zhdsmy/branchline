@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"slices"
 
 	"github.com/egoist/mygo/ui"
 
@@ -26,33 +27,121 @@ type historyCompareState struct {
 	fileSel int
 }
 
+// historySelectionCache is the one-entry cache syncHistorySelection builds
+// on: the commits chosen in the list, in list order, derived against one
+// immutable snapshot slice. The snapshot replaces its commit slice whole on
+// every load and never mutates it in place, so the identity of the slice is
+// the identity of its rows: while the same backing array and length arrive
+// and the chosen keys are the ones the cache recorded, the derivation cannot
+// have a different answer. Retaining the source keeps its backing array
+// alive, so a new snapshot can never reuse its address.
+type historySelectionCache struct {
+	// src is the snapshot commit slice the entry was derived against.
+	src []git.Commit
+	// keys are the chosen commit hashes ordered was collected for. Their
+	// count and identity — not their order, which a Selection does not
+	// keep — decide whether the entry still answers for the choice.
+	keys map[string]struct{}
+	// index is the hash-to-row table of src, rebuilt only when src itself
+	// changes, so that after the first frame of a snapshot neither the
+	// prune nor the ordering scans every loaded commit again.
+	index map[string]int
+	// ordered are the chosen commits in list order.
+	ordered []git.Commit
+	valid   bool
+}
+
+// historySelectionKeysMatch reports whether the selection holds exactly the
+// keys the cache recorded: same count, and every chosen key among them. A
+// selection is usually one or two keys, so a frame with an unchanged choice
+// costs a couple of table lookups and builds nothing.
+func historySelectionKeysMatch(sel *ui.Selection[string], keys map[string]struct{}) bool {
+	if sel.Len() != len(keys) {
+		return false
+	}
+	for k := range sel.All() {
+		if _, ok := keys[k]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// deriveHistorySelection refreshes the cache against the snapshot slice and
+// the chosen keys, reporting whether it rebuilt. A hit — same slice, same
+// keys — costs nothing beyond the key comparison; a miss prunes the keys of
+// rows the snapshot no longer has, collects the survivors in list order
+// through the hash-to-row table, and remembers the keys that survive. The
+// table itself is rebuilt only when the snapshot slice changes, so steady
+// frames of a deep history touch nothing proportional to its length.
+func deriveHistorySelection(c *historySelectionCache, sel *ui.Selection[string], commits []git.Commit) bool {
+	if c.valid && sameBackingSlice(c.src, commits) && historySelectionKeysMatch(sel, c.keys) {
+		return false
+	}
+	if !c.valid || !sameBackingSlice(c.src, commits) {
+		if c.index == nil {
+			c.index = make(map[string]int, len(commits))
+		} else {
+			clear(c.index)
+		}
+		for i, cm := range commits {
+			c.index[cm.Hash] = i
+		}
+		c.src = commits
+	}
+	// The keys of rows the snapshot dropped leave the selection here, as
+	// they always have: the list keeps them otherwise, and the pane would
+	// go on showing commits the history no longer holds.
+	if sel.Len() > 0 {
+		var gone []string
+		for k := range sel.All() {
+			if _, ok := c.index[k]; !ok {
+				gone = append(gone, k)
+			}
+		}
+		for _, k := range gone {
+			sel.Remove(k)
+		}
+	}
+	rows := make([]int, 0, sel.Len())
+	for k := range sel.All() {
+		if i, ok := c.index[k]; ok {
+			rows = append(rows, i)
+		}
+	}
+	slices.Sort(rows)
+	if c.keys == nil {
+		c.keys = make(map[string]struct{}, len(rows))
+	} else {
+		clear(c.keys)
+	}
+	c.ordered = c.ordered[:0]
+	for _, i := range rows {
+		cm := commits[i]
+		c.ordered = append(c.ordered, cm)
+		c.keys[cm.Hash] = struct{}{}
+	}
+	c.valid = true
+	return true
+}
+
 // syncHistorySelection reconciles the History detail pane with the rows
 // chosen in the commit list. It runs on every frame the list builds, because
 // the choice can change without user input: keys of commits a reload dropped
 // (amended away, rebased out, reset off the walk) are pruned here, since the
 // selection itself keeps keys of rows that are gone. Pruning to one commit
 // falls back to the single-commit view; pruning to none clears the pane.
+//
+// The derivation of the chosen commits — the prune and the list-ordering —
+// is cached on the snapshot slice and the chosen keys: an unchanged frame
+// reuses it instead of tabulating and scanning every loaded commit, so the
+// per-frame cost follows the number of chosen commits, not the number
+// loaded.
 func (a *app) syncHistorySelection(snap repository.Snapshot) {
 	hv := &a.historyView
 
-	if hv.selection.Len() > 0 {
-		present := make(map[string]struct{}, len(snap.Commits))
-		for _, cm := range snap.Commits {
-			present[cm.Hash] = struct{}{}
-		}
-		for k := range hv.selection.All() {
-			if _, ok := present[k]; !ok {
-				hv.selection.Remove(k)
-			}
-		}
-	}
-
-	var ordered []git.Commit
-	for _, cm := range snap.Commits {
-		if hv.selection.Has(cm.Hash) {
-			ordered = append(ordered, cm)
-		}
-	}
+	rebuilt := deriveHistorySelection(&hv.selCache, &hv.selection, snap.Commits)
+	ordered := hv.selCache.ordered
 
 	switch len(ordered) {
 	case 0:
@@ -72,10 +161,15 @@ func (a *app) syncHistorySelection(snap repository.Snapshot) {
 		// clicking the row that is already shown does not re-read its detail.
 		prevSel := hv.sel
 		hv.sel = ordered[0].Hash
-		cm := ordered[0]
-		cm.Parents = append([]string(nil), cm.Parents...)
-		hv.commit = cm
-		if hv.mode != historySingleCommit || prevSel != cm.Hash {
+		if rebuilt {
+			// The capture of the chosen commit is refreshed with the
+			// derivation: the snapshot slice it came from is immutable, so
+			// re-copying it every frame could never observe a change.
+			cm := ordered[0]
+			cm.Parents = append([]string(nil), cm.Parents...)
+			hv.commit = cm
+		}
+		if hv.mode != historySingleCommit || prevSel != ordered[0].Hash {
 			a.exitHistoryMode()
 			hv.mode = historySingleCommit
 			a.selectHistoryCommit(ordered[0])
