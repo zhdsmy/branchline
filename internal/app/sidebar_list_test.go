@@ -430,27 +430,43 @@ func TestSidebarListAccessTabCycle(t *testing.T) {
 }
 
 // sidebarAccessInfo returns the accessibility information of the one
-// non-text node named name, failing the test unless there is exactly one.
+// focusable non-text node named name, failing the test unless there is
+// exactly one. The sidebar's virtual list wraps every row it builds in
+// its own item node, which takes the row's name from its content but
+// never takes the focus: exactly one same-named non-focusable node of the
+// list's item role — that wrapper — is allowed beside the focusable row,
+// and anything more fails the test.
 func sidebarAccessInfo(t *testing.T, h *testHarness, name string) ui.AccessInfo {
 	t.Helper()
-	var found []ui.AccessInfo
+	var focusable []ui.AccessInfo
+	wrappers := 0
 	for _, info := range h.ui.AccessAll() {
-		if info.Role == ui.RoleText {
+		if info.Role == ui.RoleText || info.Name != name {
 			continue
 		}
-		if info.Name == name {
-			found = append(found, info)
+		switch {
+		case info.Focusable:
+			focusable = append(focusable, info)
+		case info.Role == ui.RoleListItem:
+			wrappers++
+		default:
+			t.Fatalf("non-focusable %v node named %q that is not the list's row wrapper", info.Role, name)
 		}
 	}
-	if len(found) != 1 {
-		t.Fatalf("%d non-text nodes named %q, want exactly 1", len(found), name)
+	if len(focusable) != 1 {
+		t.Fatalf("%d focusable non-text nodes named %q, want exactly 1", len(focusable), name)
 	}
-	return found[0]
+	if wrappers > 1 {
+		t.Fatalf("%d non-focusable item nodes named %q, want at most the list's one row wrapper", wrappers, name)
+	}
+	return focusable[0]
 }
 
-// Every reference and stash row of the sidebar meets assistive technology
-// exactly once: one non-text node carries the row's name, and the rows a
-// click selects report themselves selected there.
+// Every reference and stash row of the sidebar carries its name on
+// exactly one focusable node — the row itself — and the rows a click
+// selects report themselves selected there. The virtual list's one
+// non-focusable item node wrapping each row shares the name, as
+// sidebarAccessInfo allows.
 func TestSidebarListAccessRowsNamedOnce(t *testing.T) {
 	repo := sidebarAccessFixture(t, "access-rows-once")
 
@@ -468,11 +484,13 @@ func TestSidebarListAccessRowsNamedOnce(t *testing.T) {
 		t.Fatal("the current branch row does not report selected")
 	}
 
-	// A click selects feature-a alone: it reports selected, and no other
-	// branch row does beyond the current one.
+	// A plain click picks feature-a alone. A single picked branch row does
+	// not highlight — only multi-selections paint and report selected, as
+	// the sidebar's selection model defines — so it keeps reporting
+	// unselected, exactly as it shows.
 	clickRefRow(t, h, "feature-a")
-	if info := sidebarAccessInfo(t, h, "feature-a"); !info.Selected {
-		t.Fatal("the clicked branch row does not report selected")
+	if info := sidebarAccessInfo(t, h, "feature-a"); info.Selected {
+		t.Fatal("a lone picked branch row reports selected, want the multi-select-only reporting")
 	}
 	if info := sidebarAccessInfo(t, h, "feature-b"); info.Selected {
 		t.Fatal("feature-b reports selected after feature-a was clicked")
@@ -595,8 +613,8 @@ func TestSidebarListAccessKeysKeepSelection(t *testing.T) {
 		if name, ok := sidebarFocus(h); !ok || name != "feature-a" {
 			t.Fatalf("after %s the focus is %q (focused %v), want feature-a", step.name, name, ok)
 		}
-		if info := sidebarAccessInfo(t, h, "feature-a"); !info.Selected {
-			t.Fatalf("after %s feature-a no longer reports selected", step.name)
+		if info := sidebarAccessInfo(t, h, "feature-a"); info.Selected {
+			t.Fatalf("after %s the lone picked feature-a reports selected, want the multi-select-only reporting", step.name)
 		}
 	}
 

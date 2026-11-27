@@ -62,18 +62,40 @@ func refSortFixture(t *testing.T, name string) *gitRepoFixture {
 }
 
 // sidebarRowOrder lists the accessible labels of the sidebar's list rows in
-// the order they render, top to bottom.
+// the order they render, top to bottom. The virtual list wraps every row
+// it builds in its own item node, which takes the row's name from its
+// content but never the focus: a row whose content keeps the row's own
+// focusable element — as the sidebar's reference rows do — would be
+// counted twice, once for the wrapper and once for the row inside it. A
+// non-focusable item node is therefore skipped when a focusable element
+// of the same name sits inside its bounds, so every such row counts once,
+// as the row it wraps. Rows of one name are stacked without overlap, so
+// the bounds of a row never hold a like-named row of another entry.
 func sidebarRowOrder(t *testing.T, h *testHarness) []string {
 	t.Helper()
+	all := h.ui.AccessAll()
 	type row struct {
 		y    float32
 		name string
 	}
 	var rows []row
-	for _, a := range h.ui.AccessAll() {
-		if a.Role == ui.RoleListItem {
-			rows = append(rows, row{a.Bounds.Y, a.Name})
+outer:
+	for _, a := range all {
+		if a.Role != ui.RoleListItem {
+			continue
 		}
+		if !a.Focusable && a.Name != "" {
+			for _, b := range all {
+				if !b.Focusable || b.Name != a.Name {
+					continue
+				}
+				ab, bb := a.Bounds, b.Bounds
+				if bb.X >= ab.X-1 && bb.Y >= ab.Y-1 && bb.X+bb.W <= ab.X+ab.W+1 && bb.Y+bb.H <= ab.Y+ab.H+1 {
+					continue outer
+				}
+			}
+		}
+		rows = append(rows, row{a.Bounds.Y, a.Name})
 	}
 	slices.SortStableFunc(rows, func(x, y row) int {
 		switch {
