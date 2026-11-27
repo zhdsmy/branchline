@@ -96,6 +96,14 @@ func (h *testHarness) drain() {
 	h.ui.Frame()
 }
 
+// drainWithin is drain with a caller-chosen timeout for the one step of a
+// test whose background work is inherently longer than the shared ceiling.
+func (h *testHarness) drainWithin(timeout time.Duration) {
+	h.t.Helper()
+	h.queue.DrainWithin(h.t, timeout)
+	h.ui.Frame()
+}
+
 // gatedWorker represents a single real background worker held before running
 // its body so a test can deterministically control completion order.
 type gatedWorker struct {
@@ -246,8 +254,17 @@ func (q *uiQueue) RunNext(t *testing.T) {
 // work scheduled by those callbacks (such as a reload triggered by a write).
 func (q *uiQueue) Drain(t *testing.T) int {
 	t.Helper()
+	return q.DrainWithin(t, queueTimeout)
+}
+
+// DrainWithin behaves like Drain with a caller-chosen timeout in place of
+// queueTimeout, for steps whose background work is inherently longer than
+// the shared ceiling — for example a rebase replaying a thousand commits,
+// which is real git work that scales with the commit count, not a hang.
+func (q *uiQueue) DrainWithin(t *testing.T, timeout time.Duration) int {
+	t.Helper()
 	var timedOut bool
-	timer := time.AfterFunc(queueTimeout, func() {
+	timer := time.AfterFunc(timeout, func() {
 		q.mu.Lock()
 		timedOut = true
 		q.cond.Broadcast()
