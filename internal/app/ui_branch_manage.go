@@ -3,7 +3,6 @@ package app
 import (
 	"fmt"
 	"strings"
-	"sync"
 
 	"github.com/egoist/mygo/ui"
 
@@ -13,8 +12,7 @@ import (
 // branchManageUIState is the per-app state of the branch management items
 // this file owns: the Rename Branch dialog draft with the commit the branch
 // pointed at when the dialog opened, and the clipboard text a copy menu item
-// asked for. It lives outside the shared app struct, keyed by the app
-// instance, exactly as the merge dialog's state does.
+// asked for.
 type branchManageUIState struct {
 	repoGen uint64
 
@@ -28,24 +26,13 @@ type branchManageUIState struct {
 	hasBranchClipboard bool
 }
 
-var branchManageUIStates = struct {
-	sync.Mutex
-	m map[*app]*branchManageUIState
-}{m: map[*app]*branchManageUIState{}}
-
 // branchManageUI returns the app's state of the branch management actions,
 // creating it on first use and discarding every open dialog draft when the
 // repository generation moved past it: a switch or close makes the captured
 // branch and commit meaningless, so the dialog of the previous repository
 // never carries over.
 func branchManageUI(a *app) *branchManageUIState {
-	branchManageUIStates.Lock()
-	defer branchManageUIStates.Unlock()
-	st := branchManageUIStates.m[a]
-	if st == nil {
-		st = &branchManageUIState{}
-		branchManageUIStates.m[a] = st
-	}
+	st := featureState(a, func() *branchManageUIState { return &branchManageUIState{} })
 	if gen := a.session.Generation(); st.repoGen != gen {
 		st.repoGen = gen
 		st.clearRenameDraft()

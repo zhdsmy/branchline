@@ -2,7 +2,6 @@ package app
 
 import (
 	"fmt"
-	"sync"
 
 	"github.com/egoist/mygo/ui"
 
@@ -16,10 +15,9 @@ const conflictInspectScope = "conflict-inspect"
 
 // conflictEditorState is the per-app state of the conflict block inspector
 // and merge editor: the cached inspection of the selected conflicted file,
-// the per-hunk side choices, and the editable resolution draft. It lives
-// outside the shared app struct, keyed by the app instance, exactly as the
-// quick-resolution confirmation state does. All fields are owned by the UI
-// thread; background workers receive only captured values.
+// the per-hunk side choices, and the editable resolution draft. All fields
+// are owned by the UI thread; background workers receive only captured
+// values.
 type conflictEditorState struct {
 	// Cache identity: the repository generation, the selected path, and the
 	// status revision the published inspection was read against. A read
@@ -56,24 +54,14 @@ type conflictEditorState struct {
 	maxBytes int
 }
 
-var conflictEditorStates = struct {
-	sync.Mutex
-	m map[*app]*conflictEditorState
-}{m: map[*app]*conflictEditorState{}}
-
 // conflictEditor returns the app's conflict editor state, creating it on
 // first use. A repository switch resets everything the state holds for the
 // previous repository: the captured identity of another repository's conflict
 // is meaningless.
 func conflictEditor(a *app) *conflictEditorState {
-	conflictEditorStates.Lock()
-	defer conflictEditorStates.Unlock()
-	st := conflictEditorStates.m[a]
-	if st == nil {
-		st = &conflictEditorState{repoGen: a.session.Generation()}
-		conflictEditorStates.m[a] = st
-		return st
-	}
+	st := featureState(a, func() *conflictEditorState {
+		return &conflictEditorState{repoGen: a.session.Generation()}
+	})
 	if gen := a.session.Generation(); st.repoGen != gen {
 		st.repoGen = gen
 		st.resetAll()

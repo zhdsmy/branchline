@@ -3,7 +3,6 @@ package app
 import (
 	"fmt"
 	"strings"
-	"sync"
 
 	"github.com/egoist/mygo/ui"
 
@@ -14,9 +13,8 @@ import (
 // rebase form's options section: the captured branch and HEAD the backup ref
 // preview is drawn from, the two checkbox drafts, the asynchronous probe of
 // the executor's capabilities and the dependent branches, and the repository
-// generation they belong to. It lives outside the shared app struct, keyed
-// by the app instance, exactly as the form's own plan state does, so the two
-// states never share a field and never lock in each other's order.
+// generation they belong to. It lives in its own feature state, exactly as
+// the form's own plan state does, so the two states never share a field.
 type interactiveRebaseOptionsUIState struct {
 	repoGen uint64
 
@@ -34,11 +32,6 @@ type interactiveRebaseOptionsUIState struct {
 	dependents []string
 }
 
-var interactiveRebaseOptionsUIStates = struct {
-	sync.Mutex
-	m map[*app]*interactiveRebaseOptionsUIState
-}{m: map[*app]*interactiveRebaseOptionsUIState{}}
-
 // interactiveRebaseOptionsUI returns the app's interactive rebase options
 // state, creating it on first use and discarding every captured or probed
 // value when the repository generation moved past it: a switch or close makes
@@ -46,13 +39,7 @@ var interactiveRebaseOptionsUIStates = struct {
 // repository carries over. The probe of the closing form is canceled with it,
 // so its late result can never land in the next repository's form.
 func interactiveRebaseOptionsUI(a *app) *interactiveRebaseOptionsUIState {
-	interactiveRebaseOptionsUIStates.Lock()
-	defer interactiveRebaseOptionsUIStates.Unlock()
-	st := interactiveRebaseOptionsUIStates.m[a]
-	if st == nil {
-		st = &interactiveRebaseOptionsUIState{}
-		interactiveRebaseOptionsUIStates.m[a] = st
-	}
+	st := featureState(a, func() *interactiveRebaseOptionsUIState { return &interactiveRebaseOptionsUIState{} })
 	if gen := a.session.Generation(); st.repoGen != gen {
 		st.repoGen = gen
 		if st.inspecting {

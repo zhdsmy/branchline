@@ -3,7 +3,6 @@ package app
 import (
 	"fmt"
 	"strings"
-	"sync"
 
 	"github.com/egoist/mygo/ui"
 
@@ -56,9 +55,7 @@ type interactiveRebaseRow struct {
 // interactiveRebaseUIState is the per-app state of the interactive rebase:
 // the form draft with the HEAD, branch and base it was opened against, the
 // plan rows as the user edits them, the asynchronous plan read behind the
-// form, and the repository generation they belong to. It lives outside the
-// shared app struct, keyed by the app instance, exactly as the non-interactive
-// rebase state does.
+// form, and the repository generation they belong to.
 type interactiveRebaseUIState struct {
 	repoGen uint64
 
@@ -73,11 +70,6 @@ type interactiveRebaseUIState struct {
 	submitClicked bool
 }
 
-var interactiveRebaseUIStates = struct {
-	sync.Mutex
-	m map[*app]*interactiveRebaseUIState
-}{m: map[*app]*interactiveRebaseUIState{}}
-
 // interactiveRebaseUI returns the app's interactive rebase state, creating
 // it on first use and discarding every open form draft when the repository
 // generation moved past it: a switch or close makes the captured base, HEAD,
@@ -85,13 +77,7 @@ var interactiveRebaseUIStates = struct {
 // over. The plan read of the closing form is canceled with it, so its late
 // result can never land in the next repository's form.
 func interactiveRebaseUI(a *app) *interactiveRebaseUIState {
-	interactiveRebaseUIStates.Lock()
-	defer interactiveRebaseUIStates.Unlock()
-	st := interactiveRebaseUIStates.m[a]
-	if st == nil {
-		st = &interactiveRebaseUIState{}
-		interactiveRebaseUIStates.m[a] = st
-	}
+	st := featureState(a, func() *interactiveRebaseUIState { return &interactiveRebaseUIState{} })
 	if gen := a.session.Generation(); st.repoGen != gen {
 		st.repoGen = gen
 		if st.open || st.loading {

@@ -12,6 +12,8 @@
 
 `internal/app` 内部按模块分文件：`app.go`、`ui_main.go`、`ui_kit.go`、`session.go`、`ui_diff.go` 为共享壳层与协议；`ui_history.go`、`ui_changes.go`、`ui_refs.go`、`ui_repos.go`、`ui_sync.go` 分别承载各核心功能页并各自在文件内扩展其挂载在 `app` 上的页面状态。
 
+功能的界面状态用 `featureState` 按类型挂在 `app` 上，不再新建包级的 `map[*app]` 表：条目永不删除会留下整个测试进程的状态，锁也掩盖了访问线程的问题。这些状态与 `app` 的其他字段一样只在 UI 线程读写，worker 不访问；新建功能的状态同样走 `featureState`，不改 `app.go`。
+
 ## 后台操作约束
 
 1. **UI 线程捕获参数**：启动后台读或写前，必须在 UI 线程捕获 `*git.Repo`、`repository.Options`、提交信息、路径和目标引用。worker 不读取 `app`、`repoSession`、对话框草稿或 `store` 的可变字段。

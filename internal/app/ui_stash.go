@@ -3,7 +3,6 @@ package app
 import (
 	"fmt"
 	"strings"
-	"sync"
 
 	"github.com/egoist/mygo/ui"
 
@@ -61,20 +60,8 @@ type stashUIState struct {
 	dropTarget stashTarget
 }
 
-var stashUIStates = struct {
-	sync.Mutex
-	m map[*app]*stashUIState
-}{m: map[*app]*stashUIState{}}
-
 func (a *app) stashUI() *stashUIState {
-	stashUIStates.Lock()
-	defer stashUIStates.Unlock()
-	st := stashUIStates.m[a]
-	if st == nil {
-		st = &stashUIState{saveUntracked: true}
-		stashUIStates.m[a] = st
-	}
-	return st
+	return featureState(a, func() *stashUIState { return &stashUIState{saveUntracked: true} })
 }
 
 // stashResetForRepoGen discards the selection and every stash dialog when

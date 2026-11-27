@@ -3,7 +3,6 @@ package app
 import (
 	"fmt"
 	"strings"
-	"sync"
 
 	"github.com/egoist/mygo/ui"
 
@@ -12,9 +11,7 @@ import (
 
 // mergeUIState is the per-app state of the merge dialog: the draft with the
 // HEAD, branch and merge source it was opened against, the asynchronous
-// conflict prediction, and the repository generation they belong to. It lives
-// outside the shared app struct, keyed by the app instance, exactly as the
-// reset and commit-replay dialog states do.
+// conflict prediction, and the repository generation they belong to.
 type mergeUIState struct {
 	repoGen uint64
 
@@ -28,11 +25,6 @@ type mergeUIState struct {
 	predictState      string // "", "clean" or "conflicts"
 }
 
-var mergeUIStates = struct {
-	sync.Mutex
-	m map[*app]*mergeUIState
-}{m: map[*app]*mergeUIState{}}
-
 // mergeUI returns the app's merge-dialog state, creating it on first use and
 // discarding every open dialog draft when the repository generation moved
 // past it: a switch or close makes the captured source, HEAD and branch
@@ -40,13 +32,7 @@ var mergeUIStates = struct {
 // conflict prediction of the old repository is invalidated at the same time
 // so its late result can never land on the new repository's dialog.
 func mergeUI(a *app) *mergeUIState {
-	mergeUIStates.Lock()
-	defer mergeUIStates.Unlock()
-	st := mergeUIStates.m[a]
-	if st == nil {
-		st = &mergeUIState{}
-		mergeUIStates.m[a] = st
-	}
+	st := featureState(a, func() *mergeUIState { return &mergeUIState{} })
 	if gen := a.session.Generation(); st.repoGen != gen {
 		st.repoGen = gen
 		a.session.cancelRead("merge-predict")

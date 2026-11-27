@@ -2,7 +2,6 @@ package app
 
 import (
 	"fmt"
-	"sync"
 	"time"
 
 	"github.com/egoist/mygo/ui"
@@ -17,20 +16,8 @@ type gitVersionUIState struct {
 	dismissedGen uint64
 }
 
-var gitVersionUIStates = struct {
-	sync.Mutex
-	m map[*app]*gitVersionUIState
-}{m: map[*app]*gitVersionUIState{}}
-
 func (a *app) gitVersionUI() *gitVersionUIState {
-	gitVersionUIStates.Lock()
-	defer gitVersionUIStates.Unlock()
-	st := gitVersionUIStates.m[a]
-	if st == nil {
-		st = &gitVersionUIState{}
-		gitVersionUIStates.m[a] = st
-	}
-	return st
+	return featureState(a, func() *gitVersionUIState { return &gitVersionUIState{} })
 }
 
 // hasGitVersionBanner reports whether the page content renders a compatibility

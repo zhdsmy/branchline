@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"slices"
 	"strings"
-	"sync"
 
 	"github.com/egoist/mygo/ui"
 
@@ -14,9 +13,7 @@ import (
 // quickRebaseUIState is the per-app state of the single-commit quick rebase
 // actions: the message editor or confirmation draft with the commit, HEAD,
 // branch and parent it was opened against, the asynchronous message read
-// behind the editor, and the repository generation they belong to. It lives
-// outside the shared app struct, keyed by the app instance, exactly as the
-// interactive rebase form state does.
+// behind the editor, and the repository generation they belong to.
 type quickRebaseUIState struct {
 	repoGen uint64
 
@@ -34,11 +31,6 @@ type quickRebaseUIState struct {
 	submitClicked bool
 }
 
-var quickRebaseUIStates = struct {
-	sync.Mutex
-	m map[*app]*quickRebaseUIState
-}{m: map[*app]*quickRebaseUIState{}}
-
 // quickRebaseUI returns the app's quick rebase state, creating it on first
 // use and discarding every open dialog draft when the repository generation
 // moved past it: a switch or close makes the captured commit, HEAD, branch
@@ -46,13 +38,7 @@ var quickRebaseUIStates = struct {
 // over. The message read of the closing dialog is canceled with it, so its
 // late result can never land in the next repository's dialog.
 func quickRebaseUI(a *app) *quickRebaseUIState {
-	quickRebaseUIStates.Lock()
-	defer quickRebaseUIStates.Unlock()
-	st := quickRebaseUIStates.m[a]
-	if st == nil {
-		st = &quickRebaseUIState{}
-		quickRebaseUIStates.m[a] = st
-	}
+	st := featureState(a, func() *quickRebaseUIState { return &quickRebaseUIState{} })
 	if gen := a.session.Generation(); st.repoGen != gen {
 		st.repoGen = gen
 		if st.open || st.loading {

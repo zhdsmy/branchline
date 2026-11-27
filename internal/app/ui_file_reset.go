@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"slices"
 	"strings"
-	"sync"
 
 	"github.com/egoist/mygo/ui"
 
@@ -20,8 +19,7 @@ const (
 )
 
 // fileResetUIState is the UI state of one app instance's file-reset
-// confirmation dialog. It lives outside the shared app struct, which feature
-// files must not extend. Every value the dialog or its write worker needs is
+// confirmation dialog. Every value the dialog or its write worker needs is
 // captured on the UI thread when the menu item is chosen: the revision to
 // restore from, the paths the reset touches, and the local status entries of
 // exactly those paths as the snapshot showed them then. The worker re-reads
@@ -58,22 +56,11 @@ type fileResetUIState struct {
 	local []git.FileChange
 }
 
-var fileResetUIStates = struct {
-	sync.Mutex
-	m map[*app]*fileResetUIState
-}{m: map[*app]*fileResetUIState{}}
-
 // fileResetUI returns the app's file-reset state, dropping every value
 // captured for a dialog of a repository generation that has moved on: the
 // captured revision and local status belong to the repository that is gone.
 func fileResetUI(a *app) *fileResetUIState {
-	fileResetUIStates.Lock()
-	defer fileResetUIStates.Unlock()
-	st := fileResetUIStates.m[a]
-	if st == nil {
-		st = &fileResetUIState{}
-		fileResetUIStates.m[a] = st
-	}
+	st := featureState(a, func() *fileResetUIState { return &fileResetUIState{} })
 	if gen := a.session.Generation(); st.repoGen != gen {
 		st.repoGen = gen
 		*st = fileResetUIState{repoGen: gen}

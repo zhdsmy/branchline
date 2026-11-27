@@ -3,7 +3,6 @@ package app
 import (
 	"fmt"
 	"strings"
-	"sync"
 
 	"github.com/egoist/mygo/ui"
 
@@ -13,8 +12,7 @@ import (
 // rebaseUIState is the per-app state of the non-interactive rebase: the
 // dialog draft with the HEAD, branch and target it was opened against, the
 // asynchronous pre-flight inspection running behind it, and the repository
-// generation they belong to. It lives outside the shared app struct, keyed
-// by the app instance, exactly as the reset and replay dialog states do.
+// generation they belong to.
 type rebaseUIState struct {
 	repoGen uint64
 
@@ -34,11 +32,6 @@ type rebaseUIState struct {
 	predictState string
 }
 
-var rebaseUIStates = struct {
-	sync.Mutex
-	m map[*app]*rebaseUIState
-}{m: map[*app]*rebaseUIState{}}
-
 // rebaseUI returns the app's rebase state, creating it on first use and
 // discarding every open dialog draft when the repository generation moved
 // past it: a switch or close makes the captured target, HEAD and branch
@@ -46,13 +39,7 @@ var rebaseUIStates = struct {
 // inspection of the closing dialog is canceled with it, so its late result
 // can never land in the next repository's dialog.
 func rebaseUI(a *app) *rebaseUIState {
-	rebaseUIStates.Lock()
-	defer rebaseUIStates.Unlock()
-	st := rebaseUIStates.m[a]
-	if st == nil {
-		st = &rebaseUIState{}
-		rebaseUIStates.m[a] = st
-	}
+	st := featureState(a, func() *rebaseUIState { return &rebaseUIState{} })
 	if gen := a.session.Generation(); st.repoGen != gen {
 		st.repoGen = gen
 		if st.open || st.inspecting {

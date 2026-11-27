@@ -7,7 +7,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/egoist/mygo/ui"
@@ -75,24 +74,11 @@ type settingsCommitGitState struct {
 	saveErr string
 }
 
-// commitGitStates are the page states by app. The pages register through
-// registerSettingsPage, so their state cannot live on settingsState; the
-// mutex guards the map itself, while each state is owned by its app's UI
-// thread.
-var commitGitStates = struct {
-	sync.Mutex
-	byApp map[*app]*settingsCommitGitState
-}{byApp: map[*app]*settingsCommitGitState{}}
-
+// commitGitState returns the app's page state. The pages register through
+// registerSettingsPage, so their state cannot live on settingsState; each
+// state is owned by its app's UI thread.
 func commitGitState(a *app) *settingsCommitGitState {
-	commitGitStates.Lock()
-	defer commitGitStates.Unlock()
-	st := commitGitStates.byApp[a]
-	if st == nil {
-		st = &settingsCommitGitState{}
-		commitGitStates.byApp[a] = st
-	}
-	return st
+	return featureState(a, func() *settingsCommitGitState { return &settingsCommitGitState{} })
 }
 
 func init() {

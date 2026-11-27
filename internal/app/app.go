@@ -3,6 +3,7 @@ package app
 import (
 	"log"
 	"os"
+	"reflect"
 	"strings"
 
 	"github.com/egoist/mygo"
@@ -51,15 +52,17 @@ type app struct {
 	remotesCollapsed  bool
 	tagsCollapsed     bool
 
-	// Per-feature UI states defined in their owning ui_*.go files: the state
-	// structs are split by feature module so each one grows without coupling
-	// to this shared file.
-	historyView historyState
-	changesView changesState
-	refsView    refsState
-	reposView   reposState
-	syncView    syncState
-	settings    settingsState
+	// Per-feature UI states defined in their owning ui_*.go files. The fields
+	// below are the states mounted directly on app; newer features instead
+	// keep their state in featureStates through featureState, so adding a
+	// feature does not edit this struct.
+	featureStates map[reflect.Type]any
+	historyView   historyState
+	changesView   changesState
+	refsView      refsState
+	reposView     reposState
+	syncView      syncState
+	settings      settingsState
 
 	// settingsWin is the open Settings window, nil while closed.
 	// settingsOpen mirrors it for headless tests, whose window hook creates

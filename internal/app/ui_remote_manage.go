@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"sync"
 
 	"github.com/egoist/mygo/ui"
 
@@ -14,8 +13,7 @@ import (
 // remoteUIState is the per-app state of the remote-management dialogs: the
 // add draft, the edit draft and the delete confirmation, each capturing the
 // remote's name and URL on the UI thread when opened, plus the repository
-// generation they belong to. It lives outside the shared app struct, keyed
-// by the app instance, exactly as the merge dialog state does.
+// generation they belong to.
 type remoteUIState struct {
 	repoGen uint64
 
@@ -39,23 +37,12 @@ type remoteUIState struct {
 	delExpectKnown bool
 }
 
-var remoteUIStates = struct {
-	sync.Mutex
-	m map[*app]*remoteUIState
-}{m: map[*app]*remoteUIState{}}
-
 // remoteUI returns the app's remote-dialog state, creating it on first use
 // and discarding every open draft when the repository generation moved past
 // it: a switch or close makes the captured remote names and URLs meaningless,
 // so nothing of the previous repository carries over.
 func remoteUI(a *app) *remoteUIState {
-	remoteUIStates.Lock()
-	defer remoteUIStates.Unlock()
-	st := remoteUIStates.m[a]
-	if st == nil {
-		st = &remoteUIState{}
-		remoteUIStates.m[a] = st
-	}
+	st := featureState(a, func() *remoteUIState { return &remoteUIState{} })
 	if gen := a.session.Generation(); st.repoGen != gen {
 		st.repoGen = gen
 		*st = remoteUIState{repoGen: gen}

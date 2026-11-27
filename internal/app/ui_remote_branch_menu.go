@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"sync"
 
 	"github.com/egoist/mygo/ui"
 
@@ -14,10 +13,8 @@ import (
 // remoteBranchMenuUIState is the per-app state of the remote branch context
 // menu's two dialogs: the Checkout Remote Branch draft with the remote
 // branch, HEAD and branch it was opened against, and the Delete Remote
-// Branch confirmation with the commit the remote branch pointed at. It
-// lives outside the shared app struct, keyed by the app instance, exactly
-// as the merge and rebase dialog states do, and every captured value belongs
-// to one repository generation.
+// Branch confirmation with the commit the remote branch pointed at. Every
+// captured value belongs to one repository generation.
 type remoteBranchMenuUIState struct {
 	repoGen uint64
 
@@ -36,24 +33,13 @@ type remoteBranchMenuUIState struct {
 	rdExpectOID string
 }
 
-var remoteBranchMenuUIStates = struct {
-	sync.Mutex
-	m map[*app]*remoteBranchMenuUIState
-}{m: map[*app]*remoteBranchMenuUIState{}}
-
 // remoteBranchMenuUI returns the app's remote branch menu state, creating it
 // on first use and discarding every open dialog draft when the repository
 // generation moved past it: a switch or close makes the captured remote
 // branch, HEAD and expectations meaningless, so nothing of the previous
 // repository carries over.
 func remoteBranchMenuUI(a *app) *remoteBranchMenuUIState {
-	remoteBranchMenuUIStates.Lock()
-	defer remoteBranchMenuUIStates.Unlock()
-	st := remoteBranchMenuUIStates.m[a]
-	if st == nil {
-		st = &remoteBranchMenuUIState{}
-		remoteBranchMenuUIStates.m[a] = st
-	}
+	st := featureState(a, func() *remoteBranchMenuUIState { return &remoteBranchMenuUIState{} })
 	if gen := a.session.Generation(); st.repoGen != gen {
 		st.repoGen = gen
 		st.clearDraft()

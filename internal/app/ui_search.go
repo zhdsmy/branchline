@@ -3,7 +3,6 @@ package app
 import (
 	"fmt"
 	"strings"
-	"sync"
 
 	"github.com/egoist/mygo/ui"
 
@@ -131,23 +130,14 @@ func (st *searchUIState) searchOptions(branch string) git.SearchOptions {
 	return o
 }
 
-var searchUIStates = struct {
-	sync.Mutex
-	m map[*app]*searchUIState
-}{m: map[*app]*searchUIState{}}
-
 // searchUI returns the app's commit-search state, creating it on first use.
 // It runs on the UI thread. A repository switch or close invalidates every
 // in-flight search read of the old repository and drops its state: nothing
 // typed, found or selected there may leak into the new repository.
 func (a *app) searchUI() *searchUIState {
-	searchUIStates.Lock()
-	st := searchUIStates.m[a]
-	if st == nil {
-		st = &searchUIState{listSel: -1, fileSel: -1, revealMaxSteps: defaultRevealMaxSteps}
-		searchUIStates.m[a] = st
-	}
-	searchUIStates.Unlock()
+	st := featureState(a, func() *searchUIState {
+		return &searchUIState{listSel: -1, fileSel: -1, revealMaxSteps: defaultRevealMaxSteps}
+	})
 
 	if gen := a.session.Generation(); st.repoGen != gen {
 		a.session.cancelRead("commit-search")

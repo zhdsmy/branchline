@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"slices"
 	"strings"
-	"sync"
 
 	"github.com/egoist/mygo/ui"
 
@@ -15,9 +14,7 @@ import (
 // remoteBranchPullUIState is the per-app state of the Pull into '<branch>'
 // dialog of the remote branch context menu: the remote and branch it pulls,
 // the current branch and HEAD it was opened against, and the two options.
-// It lives outside the shared app struct, keyed by the app instance, exactly
-// as the other remote branch dialog states do, and every captured value
-// belongs to one repository generation.
+// Every captured value belongs to one repository generation.
 type remoteBranchPullUIState struct {
 	repoGen uint64
 
@@ -31,23 +28,12 @@ type remoteBranchPullUIState struct {
 	pullStash        bool
 }
 
-var remoteBranchPullUIStates = struct {
-	sync.Mutex
-	m map[*app]*remoteBranchPullUIState
-}{m: map[*app]*remoteBranchPullUIState{}}
-
 // remoteBranchPullUI returns the app's pull-into dialog state, creating it on
 // first use and discarding every captured value when the repository
 // generation moved past it: a switch or close makes the captured branch, HEAD
 // and remote meaningless, so nothing of the previous repository carries over.
 func remoteBranchPullUI(a *app) *remoteBranchPullUIState {
-	remoteBranchPullUIStates.Lock()
-	defer remoteBranchPullUIStates.Unlock()
-	st := remoteBranchPullUIStates.m[a]
-	if st == nil {
-		st = &remoteBranchPullUIState{}
-		remoteBranchPullUIStates.m[a] = st
-	}
+	st := featureState(a, func() *remoteBranchPullUIState { return &remoteBranchPullUIState{} })
 	if gen := a.session.Generation(); st.repoGen != gen {
 		st.repoGen = gen
 		st.clearDraft()
