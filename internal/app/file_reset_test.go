@@ -1,6 +1,7 @@
 package app
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -523,6 +524,123 @@ func TestFileResetMergeCommitUsesFirstParent(t *testing.T) {
 	assertFileBytes(t, repo, "m.txt", "top\nmain line\nbottom\n")
 	if got := headOf(t, repo); got != postMerge {
 		t.Fatalf("HEAD moved by a file reset: %q, want %q", got, postMerge)
+	}
+}
+
+// Staged modifications and untracked files at the reset path both produce the
+// uncommitted-changes warning in the dialog, and confirming resets both the
+// working tree and the index to the chosen revision.
+func TestFileResetModalWarnsStagedAndUntracked(t *testing.T) {
+	// Staged-only modification (working tree matches index, differs from HEAD).
+	repo, fx := fileResetFixture(t, "fr-warn-staged")
+	repo.WriteFile("a.txt", "staged edit\n")
+	repo.Git("add", "--", "a.txt")
+
+	h := newTestApp(t)
+	openHistoryPage(t, h, repo.StoreRepo())
+	chooseFileReset(t, h, fx.c3, "a v3", "a.txt",
+		"Reset File to State at Commit…", "Reset File to State at Commit")
+
+	if !hasExactText(h.ui, "Uncommitted changes to a.txt will be lost.") {
+		t.Fatalf("warning missing for a staged-only change; texts=%q", h.ui.Texts())
+	}
+	// Both dialog buttons fit cleanly inside the 1200x800 window without overlap.
+	cancelBtn, ok := h.ui.Access("Cancel")
+	if !ok || cancelBtn.Bounds.W <= 0 || cancelBtn.Bounds.H <= 0 {
+		t.Fatalf("Cancel button missing or empty bounds: ok=%v bounds=%+v", ok, cancelBtn.Bounds)
+	}
+	confirmBtn, ok := h.ui.Access("Confirm Reset")
+	if !ok || confirmBtn.Bounds.W <= 0 || confirmBtn.Bounds.H <= 0 {
+		t.Fatalf("Confirm Reset button missing or empty bounds: ok=%v bounds=%+v", ok, confirmBtn.Bounds)
+	}
+	if cancelBtn.Bounds.X < 0 || confirmBtn.Bounds.X+confirmBtn.Bounds.W > 1200 || cancelBtn.Bounds.X+cancelBtn.Bounds.W > confirmBtn.Bounds.X {
+		t.Fatalf("dialog action buttons laid out poorly: cancel=%+v confirm=%+v", cancelBtn.Bounds, confirmBtn.Bounds)
+	}
+
+	confirmFileReset(t, h)
+	if err := h.app.session.ActionErr(); err != nil {
+		t.Fatalf("reset of staged file failed: %v", err)
+	}
+	assertFileMatchesRev(t, repo, "a.txt", fx.c3)
+
+	// Untracked file occupying a path the commit deleted: resetting to before
+	// that commit warns and overwrites the untracked file with the parent version.
+	repo2 := newGitRepo(t, "fr-warn-untracked")
+	c1 := repo2.CommitFile("b.txt", "parent b\n", "add b")
+	repo2.Git("rm", "-q", "b.txt")
+	repo2.Git("commit", "-m", "remove b")
+	c2 := headOf(t, repo2)
+	repo2.WriteFile("b.txt", "untracked b\n")
+
+	h2 := newTestApp(t)
+	openHistoryPage(t, h2, repo2.StoreRepo())
+	chooseFileReset(t, h2, c2, "remove b", "b.txt",
+		"Reset File to State Before Commit…", "Reset File to State Before Commit")
+	if !hasExactText(h2.ui, "Uncommitted changes to b.txt will be lost.") {
+		t.Fatalf("warning missing for an untracked file; texts=%q", h2.ui.Texts())
+	}
+	confirmFileReset(t, h2)
+	if err := h2.app.session.ActionErr(); err != nil {
+		t.Fatalf("reset over untracked file failed: %v", err)
+	}
+	assertFileMatchesRev(t, repo2, "b.txt", c1)
+}
+
+// When the write worker cannot read repository status, the guard refuses the
+// reset: the toolbar shows the error, and neither the working tree nor the
+// index is modified.
+func TestFileResetGuardRefusesStatusFailure(t *testing.T) {
+	repo, fx := fileResetFixture(t, "fr-guard-status")
+	repo.WriteFile("a.txt", "local keep\n")
+
+	h := newTestApp(t)
+	openHistoryPage(t, h, repo.StoreRepo())
+	chooseFileReset(t, h, fx.c3, "a v3", "a.txt",
+		"Reset File to State at Commit…", "Reset File to State at Commit")
+
+	installFailFirstExecutor(t, h, isStatusCommand, errors.New("injected status failure"))
+	confirmFileReset(t, h)
+
+	assertRepoErrorShown(t, h, "reading the repository state failed")
+	assertFileBytes(t, repo, "a.txt", "local keep\n")
+	if got := repo.Git("show", ":a.txt"); got != "v4\n" {
+		t.Fatalf("index a.txt = %q after status failure, want untouched v4", got)
+	}
+	if got := headOf(t, repo); got != fx.c7 {
+		t.Fatalf("HEAD moved after status failure: %q, want %q", got, fx.c7)
+	}
+}
+
+// When the target commit disappears after the dialog opened, the guard refuses
+// the reset without touching the working tree or the index.
+func TestFileResetGuardRefusesMissingCommit(t *testing.T) {
+	repo := newGitRepo(t, "fr-guard-missing-rev")
+	repo.CommitFile("a.txt", "base\n", "base commit")
+	repo.CreateBranch("temp")
+	repo.Checkout("temp")
+	tempCommit := repo.CommitFile("a.txt", "temp version\n", "temp commit")
+	repo.Checkout("main")
+	mainTip := repo.CommitFile("a.txt", "main version\n", "main commit")
+
+	h := newTestApp(t)
+	openHistoryPage(t, h, repo.StoreRepo())
+	chooseFileReset(t, h, tempCommit, "temp commit", "a.txt",
+		"Reset File to State at Commit…", "Reset File to State at Commit")
+
+	// Drop the branch and remove the unreachable loose commit object so
+	// rev^{commit} no longer resolves while main stays intact.
+	repo.Git("branch", "-D", "temp")
+	objPath := filepath.Join(repo.Path(), ".git", "objects", tempCommit[:2], tempCommit[2:])
+	if err := os.Remove(objPath); err != nil {
+		t.Fatalf("remove unreachable commit object %s: %v", objPath, err)
+	}
+
+	confirmFileReset(t, h)
+
+	assertRepoErrorShown(t, h, "no longer exists")
+	assertFileMatchesRev(t, repo, "a.txt", mainTip)
+	if got := headOf(t, repo); got != mainTip {
+		t.Fatalf("HEAD moved after missing-commit refusal: %q, want %q", got, mainTip)
 	}
 }
 
