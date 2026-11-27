@@ -965,3 +965,47 @@ func TestHistoryCompareLoopbackSSH(t *testing.T) {
 		t.Fatalf("SSH files after swap = %q, want extra.txt deleted", paths)
 	}
 }
+
+// Show in History replaces an active comparison with the revealed commit: the
+// search result becomes the single selection and the comparison is gone.
+func TestHistoryCompareSearchRevealLeavesComparison(t *testing.T) {
+	repo, f := newCompareRepo(t, "cmp-reveal")
+
+	h := newTestApp(t)
+	openHistoryPage(t, h, repo.StoreRepo())
+	selectComparePair(t, h, f.c2, "second grow", f.c1, "first seed")
+
+	hv := &h.app.historyView
+	if hv.mode != historyCompare {
+		t.Fatalf("setup: mode = %d, want compare", hv.mode)
+	}
+
+	openSearchView(t, h)
+	submitSearchQuery(t, h, "third shrink")
+	st := searchState(h)
+	if len(st.results) != 1 || st.results[0].Hash != f.c3 {
+		t.Fatalf("search results = %q, want third shrink", searchResultSubjects(st))
+	}
+	if err := h.ui.Click("Show in History"); err != nil {
+		t.Fatalf("click Show in History: %v\ntexts=%q", err, h.ui.Texts())
+	}
+	h.ui.Frame()
+	h.drain()
+	h.drain() // the reveal selects inside a frame; drain its detail chain too
+
+	if hv.mode != historySingleCommit {
+		t.Fatalf("mode = %d after the reveal, want historySingleCommit (%d)", hv.mode, historySingleCommit)
+	}
+	if hv.sel != f.c3 {
+		t.Fatalf("sel = %q after the reveal, want %q", hv.sel, f.c3)
+	}
+	if hv.selection.Len() != 1 || !hv.selection.Has(f.c3) {
+		t.Fatalf("selection after reveal = %d keys, want only the revealed commit", hv.selection.Len())
+	}
+	if row, ok := h.ui.AccessByRole(ui.RoleListItem, commitRowLabel(f.c3, "third shrink")); !ok || !row.Selected {
+		t.Fatalf("revealed row access = %+v (found=%v), want Selected=true", row, ok)
+	}
+	if h.ui.HasText("Comparing") {
+		t.Fatalf("compare header survived the reveal; texts=%q", h.ui.Texts())
+	}
+}
