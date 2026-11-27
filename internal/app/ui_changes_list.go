@@ -11,7 +11,8 @@ import (
 
 // changesRowKind distinguishes the rows of the single virtual list the
 // Local Changes file pane is built of: section headers, the hairlines
-// between sections, empty-section hints, and the three kinds of file rows.
+// between sections, empty-section hints, the file rows and, in the tree,
+// the folder rows of the unstaged and staged sections.
 type changesRowKind uint8
 
 const (
@@ -20,30 +21,41 @@ const (
 	changesRowDividerConflict
 	changesRowUnstagedHeader
 	changesRowUnstaged
+	changesRowUnstagedFolder
 	changesRowUnstagedEmpty
 	changesRowDividerUnstaged
 	changesRowStagedHeader
 	changesRowStaged
+	changesRowStagedFolder
 	changesRowStagedEmpty
 )
 
 // changesRow is one row of the Local Changes file list. File rows carry
-// their change; structural rows are identified by their kind alone.
+// their change; folder rows carry their depth, merged display name, full
+// path and the number of files under them; structural rows are identified
+// by their kind alone.
 type changesRow struct {
-	kind changesRowKind
-	file git.FileChange
+	kind       changesRowKind
+	file       git.FileChange
+	depth      int
+	display    string
+	folderPath string
+	count      int
 }
 
 // changesRowKey is the stable identity of one row: the section it belongs
-// to and the file path inside that section. Structural rows use their kind
-// as the section and an empty path, which is unique because no file path
-// is empty.
+// to and the file or folder path inside that section. Structural rows use
+// their kind as the section and an empty path, which is unique because no
+// file path is empty.
 type changesRowKey struct {
 	section changesRowKind
 	path    string
 }
 
 func (r changesRow) key() changesRowKey {
+	if r.kind == changesRowUnstagedFolder || r.kind == changesRowStagedFolder {
+		return changesRowKey{section: r.kind, path: r.folderPath}
+	}
 	return changesRowKey{section: r.kind, path: r.file.Path}
 }
 
@@ -60,7 +72,10 @@ func (r changesRow) key() changesRowKey {
 // recomputes. Keeping the source slices in the cache keeps their backing
 // arrays alive, so a new snapshot can never reuse a cached array's address.
 // The signature, the split and the path indexes do not depend on the
-// filter; only the shown lists and the row sequence do.
+// filter, the view mode or the collapse state; only the shown lists and the
+// row sequence do. The collapse sets enter the derivation by reference but
+// are compared only through collapseRev, which every collapse choice bumps:
+// comparing the maps every frame would cost what the tree saves.
 type changesListCache struct {
 	valid bool
 
@@ -69,6 +84,11 @@ type changesListCache struct {
 	staged    []git.FileChange
 	conflicts []git.ConflictStage
 	filter    string
+
+	tree              bool
+	collapseRev       uint64
+	collapsedUnstaged map[string]bool
+	collapsedStaged   map[string]bool
 
 	signature       string
 	conflicted      []git.FileChange
@@ -93,10 +113,10 @@ func (c *changesListCache) invalidate() {
 // lookup returns the derivation for st, building it when the snapshot
 // slices it was derived from are gone. Head movement alone also rebuilds:
 // the signature covers it for amend prefill and staged diffs. A rebuild
-// keeps the filter of the previous derivation: the signature, split and
-// path indexes lookup callers read are the same for every filter, and the
-// filter-sensitive rows are consumed only through lookupFiltered, which
-// rebuilds again when the filter changed.
+// keeps the filter, view mode and collapse version of the previous
+// derivation: the signature, split and path indexes lookup callers read are
+// the same for every filter, and the rows are consumed only through
+// lookupFiltered, which rebuilds again when any of them changed.
 func (c *changesListCache) lookup(st git.Status) *changesListCache {
 	if c.valid &&
 		c.head == st.Head &&
@@ -105,21 +125,24 @@ func (c *changesListCache) lookup(st git.Status) *changesListCache {
 		sameBackingSlice(c.conflicts, st.Conflicts) {
 		return c
 	}
-	c.build(st, c.filter)
+	c.build(st, c.filter, c.tree, c.collapseRev, c.collapsedUnstaged, c.collapsedStaged)
 	return c
 }
 
 // lookupFiltered returns the derivation for st under the given raw filter
-// text, rebuilding when either the snapshot or the normalized filter moved
-// on since the last build. Typing, staging and reloading recompute the row
-// sequence once; the frames in between reuse it.
-func (c *changesListCache) lookupFiltered(st git.Status, rawFilter string) *changesListCache {
+// text, view mode and collapse state, rebuilding when any of them moved on
+// since the last build. Typing, staging, toggling the view, collapsing a
+// folder and reloading recompute the row sequence once; the frames in
+// between reuse it without allocating.
+func (c *changesListCache) lookupFiltered(st git.Status, rawFilter string, tree bool, collapseRev uint64, collapsedUnstaged, collapsedStaged map[string]bool) *changesListCache {
 	filter := normalizeChangesFilter(rawFilter)
 	cached := c.lookup(st)
-	if cached.filter == filter {
+	if cached.filter == filter &&
+		cached.tree == tree &&
+		cached.collapseRev == collapseRev {
 		return cached
 	}
-	c.build(st, filter)
+	c.build(st, filter, tree, collapseRev, collapsedUnstaged, collapsedStaged)
 	return c
 }
 
@@ -158,14 +181,19 @@ func filterFileChanges(files []git.FileChange, filter string) []git.FileChange {
 	return shown
 }
 
-// build recomputes every derived value from st and the normalized filter.
-func (c *changesListCache) build(st git.Status, filter string) {
+// build recomputes every derived value from st, the normalized filter, the
+// view mode and the collapse state at collapseRev.
+func (c *changesListCache) build(st git.Status, filter string, tree bool, collapseRev uint64, collapsedUnstaged, collapsedStaged map[string]bool) {
 	c.valid = true
 	c.head = st.Head
 	c.unstaged = st.Unstaged
 	c.staged = st.Staged
 	c.conflicts = st.Conflicts
 	c.filter = filter
+	c.tree = tree
+	c.collapseRev = collapseRev
+	c.collapsedUnstaged = collapsedUnstaged
+	c.collapsedStaged = collapsedStaged
 
 	c.signature = changesStatusSignature(st)
 	c.conflicted, c.ordinary = splitConflictedChanges(st.Unstaged)
@@ -195,6 +223,16 @@ func (c *changesListCache) build(st git.Status, filter string) {
 	c.shownOrdinary = filterFileChanges(c.ordinary, filter)
 	c.shownStaged = filterFileChanges(st.Staged, filter)
 
+	// The tree groups the unstaged and staged sections; the conflicted
+	// section stays flat either way. Under a filter every folder is
+	// expanded, so the collapse sets do not reach the build.
+	expandAll := filter != ""
+	var unstagedRows, stagedRows []changesTreeRow
+	if tree {
+		unstagedRows = buildChangesTree(c.shownOrdinary, collapsedUnstaged, expandAll)
+		stagedRows = buildChangesTree(c.shownStaged, collapsedStaged, expandAll)
+	}
+
 	rows := make([]changesRow, 0, len(c.shownOrdinary)+len(c.shownConflicted)+len(c.shownStaged)+7)
 	if len(c.shownConflicted) > 0 {
 		rows = append(rows, changesRow{kind: changesRowConflictHeader})
@@ -206,21 +244,38 @@ func (c *changesListCache) build(st git.Status, filter string) {
 	rows = append(rows, changesRow{kind: changesRowUnstagedHeader})
 	if len(c.shownOrdinary) == 0 {
 		rows = append(rows, changesRow{kind: changesRowUnstagedEmpty})
+	} else if tree {
+		rows = appendTreeRows(rows, unstagedRows, changesRowUnstagedFolder, changesRowUnstaged)
 	} else {
 		for _, f := range c.shownOrdinary {
-			rows = append(rows, changesRow{kind: changesRowUnstaged, file: f})
+			rows = append(rows, changesRow{kind: changesRowUnstaged, file: f, display: changeDisplayName(f)})
 		}
 	}
 	rows = append(rows, changesRow{kind: changesRowDividerUnstaged})
 	rows = append(rows, changesRow{kind: changesRowStagedHeader})
 	if len(c.shownStaged) == 0 {
 		rows = append(rows, changesRow{kind: changesRowStagedEmpty})
+	} else if tree {
+		rows = appendTreeRows(rows, stagedRows, changesRowStagedFolder, changesRowStaged)
 	} else {
 		for _, f := range c.shownStaged {
-			rows = append(rows, changesRow{kind: changesRowStaged, file: f})
+			rows = append(rows, changesRow{kind: changesRowStaged, file: f, display: changeDisplayName(f)})
 		}
 	}
 	c.rows = rows
+}
+
+// appendTreeRows translates the flattened tree rows of one section into the
+// list rows of its folder and file kinds.
+func appendTreeRows(rows []changesRow, treeRows []changesTreeRow, folderKind, fileKind changesRowKind) []changesRow {
+	for _, tr := range treeRows {
+		if tr.folder {
+			rows = append(rows, changesRow{kind: folderKind, depth: tr.depth, display: tr.display, folderPath: tr.fullPath, count: tr.count})
+		} else {
+			rows = append(rows, changesRow{kind: fileKind, file: tr.file, depth: tr.depth, display: tr.display})
+		}
+	}
+	return rows
 }
 
 // lookupUnstaged finds path among the unstaged entries, matching Path first
@@ -297,13 +352,17 @@ func (a *app) changesListRow(c *ui.Context, cache *changesListCache, row changes
 	case changesRowUnstagedHeader:
 		a.changesFileSectionHeader(c, false, cache.shownOrdinary, len(cache.ordinary), filtered)
 	case changesRowUnstaged:
-		a.changesFileRow(c, row.file, false)
+		a.changesFileRow(c, row.file, false, row.depth, row.display)
+	case changesRowUnstagedFolder:
+		a.changesFolderRow(c, row)
 	case changesRowUnstagedEmpty:
 		a.changesFileEmptyHint(c, false, filtered && len(cache.ordinary) > 0)
 	case changesRowStagedHeader:
 		a.changesFileSectionHeader(c, true, cache.shownStaged, len(cache.staged), filtered)
 	case changesRowStaged:
-		a.changesFileRow(c, row.file, true)
+		a.changesFileRow(c, row.file, true, row.depth, row.display)
+	case changesRowStagedFolder:
+		a.changesFolderRow(c, row)
 	case changesRowStagedEmpty:
 		a.changesFileEmptyHint(c, true, filtered && len(cache.staged) > 0)
 	}

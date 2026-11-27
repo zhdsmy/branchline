@@ -50,6 +50,16 @@ type changesState struct {
 	// on case or surrounding space.
 	filter string
 
+	// treeMode groups the unstaged and staged files in folders; it is the
+	// repository's saved choice, read when the repository opens. The
+	// collapse state of the folder rows lives in collapsedUnstaged and
+	// collapsedStaged keyed by the merged folder path, and collapseRev is
+	// the version the row derivation rebuilds on. None of it persists.
+	treeMode          bool
+	collapsedUnstaged map[string]bool
+	collapsedStaged   map[string]bool
+	collapseRev       uint64
+
 	// list is the place of the virtual file list, and listCache the
 	// derivation of the current snapshot's status the list and the
 	// selection lookups share. Both are owned by the UI thread.
@@ -215,8 +225,66 @@ func (a *app) resetChangesForRepo() {
 	s.diff.Clear(a.session, changesDiffScope)
 	s.repoGen = a.session.Generation()
 	s.filter = ""
+	s.treeMode = false
+	if a.store != nil {
+		if meta, ok := a.store.Get(a.session.Meta().ID); ok {
+			s.treeMode = meta.Local.Diff.FileListTree
+		}
+	}
+	s.collapsedUnstaged = nil
+	s.collapsedStaged = nil
+	s.collapseRev++
 	s.list = ui.ListState{}
 	s.listCache.invalidate()
+}
+
+// toggleChangesTree switches the file list between the flat list and the
+// tree. The view changes either way; the choice is then written to the
+// repository's settings, preserving every other setting, and a failed write
+// surfaces as the settings toast while the view keeps the choice for this
+// opening.
+func (a *app) toggleChangesTree() {
+	s := &a.changesView
+	s.treeMode = !s.treeMode
+	if a.store == nil {
+		return
+	}
+	id := a.session.Meta().ID
+	if id == "" {
+		return
+	}
+	meta, ok := a.store.Get(id)
+	if !ok {
+		return
+	}
+	local := meta.Local
+	local.Diff.FileListTree = s.treeMode
+	if err := a.store.UpdateLocal(id, local); err != nil {
+		a.toast = "Cannot save settings: " + err.Error()
+	}
+}
+
+// setChangesFolderCollapsed records the collapse choice of one folder row of
+// one section. The merged folder path keys the choice, which a filter never
+// writes: rows clicked under a filter do nothing. A choice already in effect
+// is a no-op, so Right on an open folder and Left on a collapsed one keep the
+// derivation cached.
+func (a *app) setChangesFolderCollapsed(staged bool, folderPath string, collapsed bool) {
+	if staged && a.changesView.collapsedStaged == nil {
+		a.changesView.collapsedStaged = map[string]bool{}
+	}
+	if !staged && a.changesView.collapsedUnstaged == nil {
+		a.changesView.collapsedUnstaged = map[string]bool{}
+	}
+	set := a.changesView.collapsedUnstaged
+	if staged {
+		set = a.changesView.collapsedStaged
+	}
+	if set[folderPath] == collapsed {
+		return
+	}
+	set[folderPath] = collapsed
+	a.changesView.collapseRev++
 }
 
 // syncChangesRepoState advances repository-generation state and derives the
@@ -505,7 +573,7 @@ func (a *app) changesFilesPane(c *ui.Context) {
 		// The input above has already committed this frame's typing into
 		// s.filter, so the derivation the list draws matches what the box
 		// shows.
-		cache := s.listCache.lookupFiltered(st, s.filter)
+		cache := s.listCache.lookupFiltered(st, s.filter, s.treeMode, s.collapseRev, s.collapsedUnstaged, s.collapsedStaged)
 		a.pruneFilteredSelection(cache)
 		a.changesFilesList(c, cache)
 		ui.Box(c).Height(1).FillWidth().Background(p.hairline)
@@ -513,10 +581,12 @@ func (a *app) changesFilesPane(c *ui.Context) {
 	})
 }
 
-// changesFilterRow renders the filter box above the file list: a
-// full-width input whose text the three sections filter by, with a button
-// clearing it while it holds any text.
+// changesFilterRow renders the filter box above the file list: a full-width
+// input whose text the three sections filter by, a button clearing it while
+// it holds any text, and the icon button switching the file list between the
+// flat list and the tree, its label the view a click turns on.
 func (a *app) changesFilterRow(c *ui.Context) {
+	p := a.pal
 	s := &a.changesView
 	ui.Row(c.Key("changes-filter")).FillWidth().Padding(8, 12, 6, 12).Gap(6).AlignItems(ui.Center).Children(func() {
 		ui.TextInput(c.Key("changes-filter-input"), &s.filter).
@@ -528,8 +598,25 @@ func (a *app) changesFilterRow(c *ui.Context) {
 				s.filter = ""
 			}
 		}
+		label := "Show as Tree"
+		icon, fb := "list.bullet.indent", fallbackTreeList
+		if s.treeMode {
+			label = "Show as List"
+			icon, fb = "list.bullet", fallbackFlatList
+		}
+		if iconBtn(c.Key("changes-view-toggle"), icon, fb, 13, p.muted, label, p).Clicked() {
+			a.toggleChangesTree()
+		}
 	})
 }
+
+// fallbackFlatList and fallbackTreeList are the geometric icons of the file
+// list view toggle used on systems without SF Symbols: three plain lines for
+// the flat list, the same lines indented under a short one for the tree.
+var (
+	fallbackFlatList = mustSVG(`<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 4.5h11M2.5 8h11M2.5 11.5h11"/></svg>`)
+	fallbackTreeList = mustSVG(`<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 4h6M5.5 8h8M5.5 12h8M2.5 4v8"/></svg>`)
+)
 
 // pruneFilteredSelection drops the selection when the filter hides the
 // selected file, so the diff panel returns to its unselected placeholder
@@ -665,7 +752,86 @@ func (a *app) changesFileEmptyHint(c *ui.Context, staged bool, filteredOut bool)
 	})
 }
 
-func (a *app) changesFileRow(c *ui.Context, f git.FileChange, staged bool) {
+// changesTreeIndent is the indentation step of one tree level in points.
+const changesTreeIndent = 14
+
+// changesFolderRow renders one folder of the tree: its indentation, the
+// collapse arrow, the merged name and the count of files under it at every
+// level. Clicking the row, or pressing space or enter on it, toggles the
+// collapse; Right expands and Left collapses. Under a filter every folder
+// is force-expanded: the arrow leaves and the click does nothing, because
+// collapsing a filtered view would hide matches the filter asks for.
+func (a *app) changesFolderRow(c *ui.Context, row changesRow) {
+	p := a.pal
+	s := &a.changesView
+	staged := row.kind == changesRowStagedFolder
+	set := s.collapsedUnstaged
+	title := "Unstaged"
+	if staged {
+		set = s.collapsedStaged
+		title = "Staged"
+	}
+	filterActive := s.listCache.filter != ""
+	collapsed := !filterActive && set[row.folderPath]
+	noun := "files"
+	if row.count == 1 {
+		noun = "file"
+	}
+	rowLabel := fmt.Sprintf("%s Folder %s, %d %s", title, row.folderPath, row.count, noun)
+
+	b := ui.ButtonBase(c.Key("change-folder-" + title + "-" + row.folderPath)).
+		FillWidth().
+		MinWidth(0).
+		Height(28).
+		PaddingStart(6 + changesTreeIndent*float32(row.depth)).
+		PaddingEnd(6).
+		Gap(4).
+		Radius(7).
+		AlignItems(ui.Center).
+		Justify(ui.Start).
+		Label(rowLabel).
+		Expanded(!collapsed).
+		FocusRing(false)
+	bg := ui.Transparent
+	if b.Hovered() {
+		bg = p.hover
+	}
+	b.Background(b.AnimateColor(colorAnimKey{"bg", p.gen}, bg, ui.Animation{Duration: 110 * time.Millisecond}))
+	b.Children(func() {
+		ui.Box(c).Width(14).Shrink(0).Center().Children(func() {
+			if !filterActive {
+				icon, fb := "chevron.down", fallbackDown
+				if collapsed {
+					icon, fb = "chevron.right", fallbackFwd
+				}
+				symbolIcon(c, icon, fb, 10, p.faint)
+			}
+		})
+		ui.Text(c, row.display).FontSize(12.5).TextColor(p.text).SingleLine().Ellipsis("…").Shrink(1).MinWidth(0)
+		ui.Spacer(c)
+		ui.Text(c, fmt.Sprintf("%d %s", row.count, noun)).FontSize(11).TextColor(p.faint).SingleLine().Shrink(0)
+	})
+	if !filterActive {
+		if b.Clicked() {
+			a.setChangesFolderCollapsed(staged, row.folderPath, !collapsed)
+		}
+		if collapsed {
+			if b.Shortcut(0, ui.KeyRight) {
+				a.setChangesFolderCollapsed(staged, row.folderPath, false)
+			}
+		} else if b.Shortcut(0, ui.KeyLeft) {
+			a.setChangesFolderCollapsed(staged, row.folderPath, true)
+		}
+	}
+}
+
+// changesFileRow renders one file of a section. depth is the indentation
+// level the tree gives the row, 0 in the flat list, and display its text:
+// the full path in the flat list, the bare name in the tree, where the
+// folders are rows of their own. Everything else — the accessible name, the
+// status letter, the buttons, the menu and the click selecting the file —
+// is the same in both views.
+func (a *app) changesFileRow(c *ui.Context, f git.FileChange, staged bool, depth int, display string) {
 	p := a.pal
 	s := &a.changesView
 	title := "Unstaged"
@@ -682,7 +848,8 @@ func (a *app) changesFileRow(c *ui.Context, f git.FileChange, staged bool) {
 			Grow(1).
 			MinWidth(0).
 			Height(28).
-			PaddingX(6).
+			PaddingStart(6 + changesTreeIndent*float32(depth)).
+			PaddingEnd(6).
 			Radius(7).
 			AlignItems(ui.Center).
 			Justify(ui.Start).
@@ -701,7 +868,7 @@ func (a *app) changesFileRow(c *ui.Context, f git.FileChange, staged bool) {
 			ui.Box(c).Width(16).Shrink(0).Center().Children(func() {
 				ui.Text(c, string([]byte{f.Status})).FontSize(11).FontWeight(700).TextColor(changeStatusColor(p, f.Status)).SingleLine()
 			})
-			ui.Text(c, changeDisplayName(f)).FontSize(12.5).TextColor(p.text).SingleLine().Ellipsis("…").Shrink(1).MinWidth(0)
+			ui.Text(c, display).FontSize(12.5).TextColor(p.text).SingleLine().Ellipsis("…").Shrink(1).MinWidth(0)
 		})
 		b.ContextMenu(func(m *ui.Menu) {
 			a.changesFileContextMenu(m, f)
