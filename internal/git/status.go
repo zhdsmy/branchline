@@ -182,9 +182,15 @@ func (r *Repo) state() string {
 }
 
 // statePassive is state for a caller that already listed the repository's
-// own filters, so one status read costs one listing instead of two.
+// own filters, so one status read costs one listing instead of two. The
+// read only needs the lines about an operation in progress, which git
+// prints regardless of the file list, so an everything-excluding pathspec
+// keeps git from scanning the whole working tree a second time. With every
+// path pruned a conflicted merge reads as "All conflicts fixed but you are
+// still merging" even before resolution, which the keyword match below
+// already treats as a merge.
 func (r *Repo) statePassive(passive []string) string {
-	args := append(append([]string{}, passive...), "status", "--untracked-files=no", "--ignore-submodules=dirty")
+	args := append(append([]string{}, passive...), "status", "--untracked-files=no", "--ignore-submodules=dirty", "--", ":(exclude)*")
 	out, err := r.run(quick, args...)
 	if err != nil {
 		return ""
