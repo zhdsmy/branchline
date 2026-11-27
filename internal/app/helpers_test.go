@@ -55,11 +55,23 @@ func newTestApp(t *testing.T, repos ...store.Repo) *testHarness {
 		t:     t,
 		app:   a,
 		store: s,
-		ui:    ui.NewTester(a.view, 1200, 800),
+		ui:    ui.NewTester(instantView(a.view), 1200, 800),
 		queue: q,
 	}
 	h.ui.Frame()
 	return h
+}
+
+// instantView wraps view so every frame shows animations at their targets at
+// once. The Tester's clock only moves under Advance, so an animation an input
+// starts would otherwise never finish: the Tester would keep rendering its
+// maximum of twenty frames after every input. The window's first frame is
+// exempt inside the toolkit, which is fine since animations start at rest.
+func instantView(view func(c *ui.Context)) func(c *ui.Context) {
+	return func(c *ui.Context) {
+		c.DisableAnimations()
+		view(c)
+	}
 }
 
 // openRepo opens r in the app and renders one frame without draining
