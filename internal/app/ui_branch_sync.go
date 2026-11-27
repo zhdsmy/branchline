@@ -33,10 +33,13 @@ func splitBranchUpstream(upstream string, remotes []string) (remote, remoteBranc
 	return best, upstream[len(best)+1:], true
 }
 
-// branchSyncMenuItems adds Pull, Checkout and… and Push to entries to a
-// local branch's context menu in the sidebar:
+// branchSyncMenuItems adds Pull, Checkout, Checkout and… and Push to entries
+// to a local branch's context menu in the sidebar:
 //   - Pull '<upstream>' appears only on the current branch when it has a live
 //     upstream and disables while a write or Git operation is in progress;
+//   - Checkout appears on every non-current branch, upstream or not: it checks
+//     the branch out exactly as double-clicking its row does, and disables
+//     while a write or Git operation is in progress;
 //   - Checkout and… appears on every non-current branch with a live upstream:
 //     a submenu of Fast-Forward…, Merge…, Rebase… and Reset…, each opening the
 //     dialog that switches to the branch and brings it level with its
@@ -55,9 +58,10 @@ func (a *app) branchSyncMenuItems(m *ui.Menu, br git.Branch) {
 	}
 
 	showPull := br.Current && hasUpstream
+	showCheckout := !br.Current
 	showCheckoutAnd := !br.Current && hasUpstream
 	showPush := len(snap.Refs.Remotes) > 0
-	if !showPull && !showCheckoutAnd && !showPush {
+	if !showPull && !showCheckout && !showCheckoutAnd && !showPush {
 		return
 	}
 
@@ -66,6 +70,12 @@ func (a *app) branchSyncMenuItems(m *ui.Menu, br git.Branch) {
 		pullDisabled := busy || snap.Status.State != ""
 		if m.Item("Pull '" + br.Upstream + "'").Disabled(pullDisabled).Chosen() {
 			a.branchSyncPull(br.Name, br.Hash, br.Upstream)
+		}
+	}
+	if showCheckout {
+		checkoutDisabled := busy || snap.Status.State != ""
+		if m.Item("Checkout").Disabled(checkoutDisabled).Chosen() {
+			a.checkoutLocalBranch(br.Name)
 		}
 	}
 	if showCheckoutAnd {
@@ -102,6 +112,15 @@ func (a *app) branchSyncMenuItems(m *ui.Menu, br git.Branch) {
 			}
 		})
 	}
+}
+
+// checkoutLocalBranch checks out a local branch exactly as double-clicking
+// its sidebar row does: the write rejects itself while another one is in
+// progress and the snapshot reloads once it finishes.
+func (a *app) checkoutLocalBranch(name string) {
+	a.session.do("Checkout "+name, func(r *git.Repo) error {
+		return r.Checkout(name)
+	})
 }
 
 // branchSyncPull runs a guarded pull of the checked-out branch's upstream
