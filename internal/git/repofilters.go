@@ -119,7 +119,11 @@ func splitFilterKey(key string) (string, bool) {
 // filterConfigValues reads the filter.x.clean and filter.x.process values
 // of one scope — the effective configuration when no scope is given — as
 // git itself resolves them, includes applied. git config exits 1 when
-// nothing matches, which is an empty answer, not a failure.
+// nothing matches, which is an empty answer, not a failure. The worktree
+// scope refuses to answer at all in a repository with several working
+// trees that never opted into extensions.worktreeConfig — but that is the
+// case where the scope is only another name for the local file, so the
+// refusal is an empty answer too.
 func (r *Repo) filterConfigValues(scope ...string) (map[string]string, error) {
 	args := []string{"config", "--includes", "--null"}
 	args = append(args, scope...)
@@ -129,6 +133,9 @@ func (r *Repo) filterConfigValues(scope ...string) (map[string]string, error) {
 		return nil, nil
 	}
 	if err != nil {
+		if strings.Contains(err.Error(), "cannot be used with multiple working trees") {
+			return nil, nil
+		}
 		return nil, err
 	}
 	return parseNullConfigValues(out), nil
