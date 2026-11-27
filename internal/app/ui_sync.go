@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/egoist/mygo/ui"
 
@@ -267,13 +268,50 @@ func (a *app) syncToolbar(c *ui.Context) {
 	if pull.Clicked() {
 		a.syncPull()
 	}
-	push := toolbarActionBtn(c.Key("sync-push"), "arrow.up", fallbackUpArr, "Push", p, disabled)
+	// The Push button opens the Push dialog; holding Option it pushes the
+	// current branch as a click always did. It shares the look of the other
+	// toolbar actions but needs its own tooltip, and Tooltip is not a setter
+	// a second call overrides — it registers one more tip on the node.
+	push := ui.ButtonBase(c.Key("sync-push")).
+		Height(28).
+		PaddingX(9).
+		Gap(6).
+		Radius(7).
+		AlignItems(ui.Center).
+		Label("Push").
+		Tooltip("Push — hold Option to push the current branch directly").
+		Disabled(disabled).
+		FocusRing(false)
+	pushBg := ui.Transparent
+	if !disabled {
+		if push.Pressed() {
+			pushBg = p.press
+		} else if push.Hovered() {
+			pushBg = p.hover
+		}
+	}
+	pushFg := p.text
+	if disabled {
+		pushFg = p.faint
+	}
+	push.Background(push.AnimateColor(colorAnimKey{"bg", p.gen}, pushBg, ui.Animation{Duration: 110 * time.Millisecond}))
+	push.Children(func() {
+		symbolIcon(c, "arrow.up", fallbackUpArr, 13.5, pushFg)
+		ui.Text(c, "Push").FontSize(12.5).FontWeight(500).TextColor(pushFg).SingleLine()
+	})
 	if push.Clicked() {
-		a.syncPush()
+		if push.ClickModifiers()&ui.Alt != 0 {
+			a.syncPush()
+		} else {
+			a.openPushDialog()
+		}
 	}
 
 	// The askpass modal is built from the toolbar pass: ui.Modal mounts into
 	// the window-level overlayRoot, so it is not clipped by the toolbar strip.
+	// The Push dialog mounts beneath it, so a question of the push worker can
+	// never hide behind the dialog it belongs to.
+	a.pushDialog(c)
 	st.pass.view(c)
 }
 
