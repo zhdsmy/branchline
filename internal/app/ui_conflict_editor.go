@@ -13,6 +13,17 @@ import (
 // selection or invalidated when the selection leaves the conflicted file.
 const conflictInspectScope = "conflict-inspect"
 
+// conflictScan is the one-entry cache of the draft's conflict-marker scan:
+// the draft the results belong to, whether it carries conflict markers, and
+// the number of complete conflict blocks in it — at least one while markers
+// remain, because unpaired or truncated markers still block saving and no
+// consumer ever reports zero conflicts over a marked draft.
+type conflictScan struct {
+	draft   string
+	markers bool
+	hunks   int
+}
+
 // conflictEditorState is the per-app state of the conflict block inspector
 // and merge editor: the cached inspection of the selected conflicted file,
 // the per-hunk side choices, and the editable resolution draft. All fields
@@ -43,6 +54,13 @@ type conflictEditorState struct {
 	draft       string
 	draftSynced string
 	draftDirty  bool
+
+	// scan is the cached conflict-marker scan of the draft: the text area
+	// edits the draft in place without a callback, so the draft itself is the
+	// cache key. An unchanged draft compares in constant time — the strings
+	// share their backing bytes — and every consumer of the scan reads this
+	// entry instead of parsing the whole draft once per frame.
+	scan conflictScan
 
 	// hunkList is the place of the merge view's conflict block list, which
 	// draws only the blocks in view.
@@ -120,6 +138,26 @@ func (st *conflictEditorState) userEditSynced() {
 func (st *conflictEditorState) writeDraft(text string) {
 	st.draft = text
 	st.draftSynced = text
+}
+
+// draftScan returns the cached marker scan of the current draft, computing it
+// the first time this draft content is asked for. A draft already empty
+// compares equal to the zero cache's empty key: its zero results are exactly
+// right, so the first frame needs no scan either.
+func (st *conflictEditorState) draftScan() conflictScan {
+	if st.scan.draft == st.draft {
+		return st.scan
+	}
+	markers := git.HasConflictMarkers(st.draft)
+	hunks := 0
+	if markers {
+		hunks = git.CountConflictHunks(st.draft)
+		if hunks == 0 {
+			hunks = 1
+		}
+	}
+	st.scan = conflictScan{draft: st.draft, markers: markers, hunks: hunks}
+	return st.scan
 }
 
 // recompute composes the resolution text from the inspected worktree text and
@@ -360,36 +398,30 @@ func (a *app) conflictEditorHeader(c *ui.Context, f git.FileChange, st *conflict
 	})
 }
 
-// conflictProgressText summarizes the remaining text conflict markers in draft.
-// Delete/modify and delete/delete conflicts have no text merge blocks on both
-// sides, so they return no progress badge and keep only their conflict type.
-// When both sides exist, the count reflects the actual markers currently in
-// draft (including any typed back by hand), reporting "All conflicts resolved"
-// only when no conflict markers remain.
-func conflictProgressText(ins git.ConflictInspection, draft string) string {
+// conflictProgressText summarizes the remaining conflict blocks of the draft
+// the scan describes. Delete/modify and delete/delete conflicts have no text
+// merge blocks on both sides, so they return no progress badge and keep only
+// their conflict type. When both sides exist, the count reflects the actual
+// markers currently in draft (including any typed back by hand), reporting
+// "All conflicts resolved" only when no conflict markers remain.
+func conflictProgressText(ins git.ConflictInspection, scan conflictScan) string {
 	if !ins.HaveOurs || !ins.HaveTheirs {
 		return ""
 	}
-	if !git.HasConflictMarkers(draft) {
+	if !scan.markers {
 		return "All conflicts resolved"
 	}
-	remaining := git.CountConflictHunks(draft)
-	if remaining == 0 {
-		// Unpaired or truncated markers still block saving, so never display
-		// "0 conflicts" while markers remain.
-		remaining = 1
-	}
-	if remaining == 1 {
+	if scan.hunks == 1 {
 		return "1 conflict"
 	}
-	return fmt.Sprintf("%d conflicts", remaining)
+	return fmt.Sprintf("%d conflicts", scan.hunks)
 }
 
 // conflictProgressBadge renders the resolution progress of the merge editor:
 // the count of conflict blocks still present in the draft, or the all-resolved
 // note once both sides exist and the draft carries no conflict markers.
 func (a *app) conflictProgressBadge(c *ui.Context, st *conflictEditorState, ins git.ConflictInspection, p palette) {
-	text := conflictProgressText(ins, st.draft)
+	text := conflictProgressText(ins, st.draftScan())
 	if text == "" {
 		return
 	}
@@ -503,7 +535,7 @@ func (a *app) conflictMergeView(c *ui.Context, f git.FileChange, st *conflictEdi
 		if st.saveErr != nil {
 			ui.Text(c, st.saveErr.Error()).FontSize(11.5).TextColor(p.danger).Padding(6, 12, 0, 12).MaxWidth(720).Shrink(0)
 		}
-		if git.HasConflictMarkers(st.draft) {
+		if st.draftScan().markers {
 			ui.Text(c, "The result still contains conflict markers.").FontSize(11.5).TextColor(p.danger).Padding(6, 12, 0, 12).MaxWidth(720).Shrink(0)
 		}
 		versions := func() {
@@ -533,7 +565,7 @@ func (a *app) conflictMergeView(c *ui.Context, f git.FileChange, st *conflictEdi
 func (a *app) conflictMergeToolbar(c *ui.Context, f git.FileChange, st *conflictEditorState, ins git.ConflictInspection, p palette, busy bool, recompute func()) {
 	hunks := ins.Hunks
 	progress := ""
-	if !git.HasConflictMarkers(st.draft) {
+	if !st.draftScan().markers {
 		progress = "All conflicts resolved"
 	} else if len(hunks) > 0 {
 		progress = fmt.Sprintf("%d/%d", min(st.activeHunk, len(hunks)-1)+1, len(hunks))
@@ -554,7 +586,7 @@ func (a *app) conflictMergeToolbar(c *ui.Context, f git.FileChange, st *conflict
 			}
 
 			ui.Spacer(c)
-			if ui.PrimaryButton(c.Key("conflict-save"), "Save & Mark Resolved").Label("Save and Mark Resolved").Disabled(busy || git.HasConflictMarkers(st.draft)).Clicked() {
+			if ui.PrimaryButton(c.Key("conflict-save"), "Save & Mark Resolved").Label("Save and Mark Resolved").Disabled(busy || st.draftScan().markers).Clicked() {
 				a.saveResolvedConflict(f, st)
 			}
 		})

@@ -76,6 +76,19 @@ type interactiveRebaseUIState struct {
 	// the frame it was recorded in and never survives it.
 	list  ui.ListState
 	moves []interactiveRebaseMove
+
+	// planVersion counts the in-place mutations of the plan rows — a chosen
+	// action and every move that really swaps — so a mutation the backing
+	// slice cannot show still invalidates the derived cache. A wholesale
+	// replacement of rows needs no count: the cache key compares the backing
+	// array itself.
+	planVersion uint64
+
+	// derived is the cache of everything the form computes from the plan and
+	// the message state: fold chains, message targets, the validation, the
+	// drop count, the blocker results and the messages still to read. An
+	// unchanged plan and message state hit it, so a frame scans nothing.
+	derived irDerivedCache
 }
 
 // interactiveRebaseMove is one move a move button recorded: the commit it
@@ -206,10 +219,12 @@ func (a *app) startInteractiveRebasePlanRead(st *interactiveRebaseUIState) {
 
 // moveInteractiveRebaseRow moves the row of hash one step in direction dir —
 // +1 toward the top of the form, which is later in the execution order, -1
-// toward the bottom, which is earlier. The row is found by its full hash in
-// the current order: a move and a second move of the same frame both act on
-// where the commit actually is, never on a captured position.
-func moveInteractiveRebaseRow(rows []*interactiveRebaseRow, hash string, dir int) {
+// toward the bottom, which is earlier — and reports whether rows really
+// changed places: a move off either end of the plan swaps nothing, so it
+// invalidates nothing either. The row is found by its full hash in the
+// current order: a move and a second move of the same frame both act on where
+// the commit actually is, never on a captured position.
+func moveInteractiveRebaseRow(rows []*interactiveRebaseRow, hash string, dir int) bool {
 	idx := -1
 	for i, row := range rows {
 		if row.hash == hash {
@@ -218,13 +233,14 @@ func moveInteractiveRebaseRow(rows []*interactiveRebaseRow, hash string, dir int
 		}
 	}
 	if idx < 0 {
-		return
+		return false
 	}
 	to := idx + dir
 	if to < 0 || to >= len(rows) {
-		return
+		return false
 	}
 	rows[idx], rows[to] = rows[to], rows[idx]
+	return true
 }
 
 // interactiveRebasePlanProblem reports the one plan defect the form refuses
@@ -265,15 +281,13 @@ func (a *app) interactiveRebaseModal(c *ui.Context) {
 	}
 
 	ensureInteractiveRebaseMessages(a, st)
-	msgLoading, msgFailed, msgValidation := interactiveRebaseMessagesBlocker(st.rows, interactiveRebaseMessages(a))
-
-	problem := interactiveRebasePlanProblem(st.rows)
-	drops := 0
-	for _, row := range st.rows {
-		if row.action == "Drop" {
-			drops++
-		}
-	}
+	// Everything the form derives from the plan and the message state comes
+	// out of the one cache: an unchanged plan scans nothing frame after
+	// frame, and a plan or message mutation recomputes the whole set once.
+	derived := st.irDerived(interactiveRebaseMessages(a))
+	msgLoading, msgFailed, msgValidation := derived.msgLoading, derived.msgFailed, derived.msgValidation
+	problem := derived.problem
+	drops := derived.drops
 	rebaseDisabled := a.session.Busy() || st.loading || st.readErr != nil || len(st.rows) == 0 || problem != "" || msgLoading || msgFailed || msgValidation != ""
 
 	ui.Modal(c.Key("ir-modal"), &st.open, func() {
@@ -328,7 +342,12 @@ func (a *app) interactiveRebaseModal(c *ui.Context) {
 					})
 				if len(st.moves) > 0 {
 					for _, m := range st.moves {
-						moveInteractiveRebaseRow(st.rows, m.hash, m.dir)
+						// A real swap mutates the plan in place: the backing
+						// array stays, so only the plan version can tell the
+						// derived cache the rows changed.
+						if moveInteractiveRebaseRow(st.rows, m.hash, m.dir) {
+							st.planVersion++
+						}
 					}
 					st.moves = st.moves[:0]
 				}
@@ -384,6 +403,10 @@ func (a *app) interactiveRebaseRowView(c *ui.Context, p palette, st *interactive
 
 		action := ui.Select(c.Key("ir-action-"+row.hash), &row.action, irActionNames).Label("Action " + short).Width(104).Shrink(0)
 		if action.Changed() {
+			// The choice wrote the row in place through the binding: the plan's
+			// backing array is unchanged, so the plan version carries the
+			// mutation to the derived cache.
+			st.planVersion++
 			if row.action == "Reword" {
 				// Choosing Reword is the user's request to edit the message:
 				// the editor opens on the row at once, and the read of the
