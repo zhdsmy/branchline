@@ -649,7 +649,7 @@ func (s *Settings) UnmarshalJSON(data []byte) error {
 }
 
 func settingsUnset(v Settings) bool {
-	return v.LocalBranchSort == "" && v.RemoteBranchSort == "" && !v.AutoFetch && v.FetchMinutes == 0 && !v.FetchTags && !v.UpdateSubmodules &&
+	return v.LocalBranchSort == "" && v.RemoteBranchSort == "" && v.TagSort == "" && !v.AutoFetch && v.FetchMinutes == 0 && !v.FetchTags && !v.UpdateSubmodules &&
 		!v.PushAfterCommit && !v.IgnoreSpace && !v.DiffChangesOnly && v.DiffContextLines == 0 && !v.DiffContextSaved && !v.DiffWrap && !v.DateOrder && v.BranchSpace == "" &&
 		!v.RememberCheckout && !v.MarkDirtyTabs && !v.CompactLabels &&
 		v.SubjectLow == 0 && !v.SubjectLowSaved && v.SubjectHigh == 0 && !v.SubjectHighSaved && v.PageGuide == 0 && !v.NoPageGuide && !v.ChangeMarks && !v.SpellCheck &&

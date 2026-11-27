@@ -3,6 +3,7 @@ package app
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -644,8 +645,9 @@ func TestSidebarHeaderTagsNewTag(t *testing.T) {
 			t.Fatalf("right-click Tags header: %v", err)
 		}
 		h.ui.Frame()
-		if menu := h.ui.Menu(); len(menu) != 1 || menu[0] != "New Tag…" {
-			t.Fatalf("Tags header menu = %q, want exactly [New Tag…]", menu)
+		wantMenu := []string{"New Tag…", "-", "Sort Tags:", "Alphabetically", "Alphabetically, folders on top", "Alphabetically backward", "Alphabetically backward, folders on top"}
+		if menu := h.ui.Menu(); !slices.Equal(menu, wantMenu) {
+			t.Fatalf("Tags header menu = %q, want exactly %q", menu, wantMenu)
 		}
 		if err := h.ui.ChooseMenuItem("New Tag…"); err != nil {
 			t.Fatalf("choose New Tag…: %v", err)

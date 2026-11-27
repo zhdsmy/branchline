@@ -292,3 +292,21 @@ func TestDiffToolbarChoicesCountAsSetSettings(t *testing.T) {
 		}
 	}
 }
+
+// A settings struct holding only reference sort choices is no longer unset:
+// picking one of the sort orders is a configuration the fresh-install
+// defaults must not overwrite, the sidebar tag order included.
+func TestRefSortChoicesCountAsSetSettings(t *testing.T) {
+	if !settingsUnset(Settings{}) {
+		t.Fatal("zero settings reported as set")
+	}
+	for name, v := range map[string]Settings{
+		"localBranchSort":  {LocalBranchSort: "alpha-master-folders"},
+		"remoteBranchSort": {RemoteBranchSort: "backward-folders"},
+		"tagSort":          {TagSort: "backward"},
+	} {
+		if settingsUnset(v) {
+			t.Fatalf("%s settings reported as unset", name)
+		}
+	}
+}
