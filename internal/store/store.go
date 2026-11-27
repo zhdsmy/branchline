@@ -366,6 +366,13 @@ type Store struct {
 	mu   sync.Mutex
 	path string
 	data file
+	// reposRev advances on every save, saves unrelated to the repository
+	// list and saves that roll back included, so a reader caching the
+	// sorted list can tell it went stale without comparing the
+	// repositories themselves. A revision spent on an unrelated or
+	// rolled-back save only costs the cache one extra copy. It is
+	// runtime-only: a store read back from disk starts at zero again.
+	reposRev uint64
 }
 
 type file struct {
@@ -837,12 +844,36 @@ func Open(path string) (*Store, error) {
 func (s *Store) Repos() []Repo {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.reposSortedLocked()
+}
+
+// reposSortedLocked copies the repositories sorted by the last opened
+// first. The caller holds s.mu.
+func (s *Store) reposSortedLocked() []Repo {
 	list := make([]Repo, len(s.data.Repos))
 	for i, r := range s.data.Repos {
 		list[i] = cloneRepo(r)
 	}
 	sort.SliceStable(list, func(i, j int) bool { return list[i].Opened.After(list[j].Opened) })
 	return list
+}
+
+// ReposWithRev returns the repositories as Repos does, with the revision
+// they were copied at in the same lock: a reader comparing a later
+// ReposRev against it knows whether the copy can still be used.
+func (s *Store) ReposWithRev() ([]Repo, uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.reposSortedLocked(), s.reposRev
+}
+
+// ReposRev returns the revision of the repository list, which every save
+// advances. Reading it copies and sorts nothing, so a view can ask every
+// frame and copy the list only when the revision moved.
+func (s *Store) ReposRev() uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.reposRev
 }
 
 // Get returns the repository with id.
@@ -1061,7 +1092,11 @@ func (s *Store) SetTabSession(ids []string, active string, set bool) error {
 	return nil
 }
 
+// save writes the store, advancing the revision of the repository list in
+// the same lock the caller made its edits in, so a failed write rolled back
+// still leaves the revision ahead of any copy a caching reader took.
 func (s *Store) save() error {
+	s.reposRev++
 	if s.path == "" {
 		return nil // in memory, as in tests
 	}

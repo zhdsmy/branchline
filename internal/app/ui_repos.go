@@ -37,7 +37,10 @@ var pickLocalFolderFn = func(parent *mygo.Window) (string, error) {
 
 // reposUIState is the repository switcher's UI state of one app instance:
 // the popup flag, the Add SSH form draft with its connection-check generation,
-// the not-a-git-repository notice and the remove failure notice.
+// the not-a-git-repository notice and the remove failure notice. The popup's
+// repository rows are cached between frames: reposCacheRev is the store's
+// revision the copy in reposCache was taken at, advanced by one so that the
+// zero value can never match, and repoList keeps the virtual list's place.
 type reposUIState struct {
 	popupOpen bool
 
@@ -56,6 +59,10 @@ type reposUIState struct {
 	notGitDir  string
 
 	removeErr string
+
+	reposCache    []store.Repo
+	reposCacheRev uint64
+	repoList      ui.ListState
 }
 
 // reposUI returns the app's repository switcher state, creating it on first
@@ -72,7 +79,15 @@ func (a *app) reposUI() *reposUIState {
 func (a *app) repoSwitcher(c *ui.Context) {
 	p := a.pal
 	st := a.reposUI()
-	repos := a.store.Repos()
+	// The popup reads the same rows every frame, so copying and sorting
+	// them again only matters when the store says the list changed: the
+	// revision asks cost nothing, the copy happens once per change.
+	rev := a.store.ReposRev()
+	if rev+1 != st.reposCacheRev {
+		st.reposCache, rev = a.store.ReposWithRev()
+		st.reposCacheRev = rev + 1
+	}
+	repos := st.reposCache
 	title := "No Repository"
 	iconName, fb := "folder", fallbackRepo
 	if a.session.HasRepo() {
@@ -103,6 +118,12 @@ func (a *app) repoSwitcher(c *ui.Context) {
 	})
 	if trig.Clicked() {
 		st.popupOpen = !st.popupOpen
+		if st.popupOpen {
+			// The closed popup forgets its rows, so the list starts from
+			// the first row every time it opens, as the scroll container
+			// it replaced did.
+			st.repoList = ui.ListState{}
+		}
 	}
 
 	ui.PopoverBase(c, trig, &st.popupOpen, func(panel ui.Element) {
@@ -118,11 +139,17 @@ func (a *app) repoSwitcher(c *ui.Context) {
 			if len(repos) == 0 {
 				ui.Text(c, "No repositories saved").FontSize(12.5).TextColor(p.muted).Padding(6, 8)
 			} else {
-				ui.Scroll(c.Key("repo-switcher-scroll")).MaxHeight(300).Gap(2).Children(func() {
-					for _, r := range repos {
-						repoRow(c, a, r, st, p)
-					}
-				})
+				// The list builds only the rows in view plus its overscan
+				// rather than every saved repository: the click handling
+				// stays in each row's buttons, which a list that chooses
+				// no rows leaves alone. The repository ID keys its row, so
+				// rows coming and going around it keep its state.
+				st.repoList.Key = func(row int) any { return repos[row].ID }
+				ui.List(c.Key("repo-switcher-scroll"), &st.repoList, len(repos)).
+					MaxHeight(300).Gap(2).
+					Rows(func(row ui.ListRow) {
+						repoRow(row.Context, a, repos[row.Index], st, p)
+					})
 			}
 			ui.Box(c).Height(0.5).FillWidth().Background(p.hairline).Margin(4, 2)
 			a.switcherFootButton(c, st, "Add Local Repository…", p)
