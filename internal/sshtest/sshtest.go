@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/zhdsmy/branchline/internal/git"
+	"github.com/zhdsmy/branchline/internal/sshtest/sshdwatch"
 )
 
 const (
@@ -79,8 +80,7 @@ type Target struct {
 	controlPathsLog string
 	controlPaths    map[string]struct{}
 	cmd             *exec.Cmd
-	exited          chan struct{}
-	pipeW           *os.File
+	proc            *sshdwatch.Proc
 	closed          bool
 	closeOnce       sync.Once
 	closeErr        error
@@ -219,20 +219,12 @@ func (s *Target) close() error {
 		// 2. Terminate loopback sshd and its entire process group before closing
 		// the watchdog pipe write end so the watchdog reader stays
 		// interruptible by SIGTERM instead of entering its own SIGTERM-ignoring
-		// escalation path.
-		if s.cmd != nil && s.cmd.Process != nil {
-			pid := s.cmd.Process.Pid
-			terminateProcessGroup(pid, s.cmd.Process, s.exited)
-			if s.pipeW != nil {
-				_ = s.pipeW.Close()
-				s.pipeW = nil
+		// escalation path. Stop keeps exactly that ordering.
+		if s.proc != nil {
+			s.proc.Stop()
+			if err := waitProcessGroupGone(s.proc.PID(), 3*time.Second); err != nil {
+				errs = append(errs, fmt.Sprintf("loopback sshd process group %d: %v", s.proc.PID(), err))
 			}
-			if err := waitProcessGroupGone(pid, 3*time.Second); err != nil {
-				errs = append(errs, fmt.Sprintf("loopback sshd process group %d: %v", pid, err))
-			}
-		} else if s.pipeW != nil {
-			_ = s.pipeW.Close()
-			s.pipeW = nil
 		}
 
 		// 3. Re-check control sockets after sshd exit and clean up any dead socket file.
@@ -561,32 +553,6 @@ func waitPathGone(p string, timeout time.Duration) bool {
 			return false
 		}
 		time.Sleep(25 * time.Millisecond)
-	}
-}
-
-func terminateProcessGroup(pid int, proc *os.Process, exited <-chan struct{}) {
-	// Signal the whole process group first so forked session sshd children also exit.
-	if pid > 0 {
-		_ = syscall.Kill(-pid, syscall.SIGTERM)
-	}
-	if proc != nil {
-		_ = proc.Signal(syscall.SIGTERM)
-	}
-	if exited != nil {
-		select {
-		case <-exited:
-			return
-		case <-time.After(2 * time.Second):
-		}
-	}
-	if pid > 0 {
-		_ = syscall.Kill(-pid, syscall.SIGKILL)
-	}
-	if proc != nil {
-		_ = proc.Kill()
-	}
-	if exited != nil {
-		<-exited
 	}
 }
 

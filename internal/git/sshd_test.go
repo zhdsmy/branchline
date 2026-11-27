@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -14,6 +15,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/zhdsmy/branchline/internal/sshtest/sshdwatch"
 )
 
 // sshServer is an sshd run as the current user on a free port of
@@ -29,8 +32,38 @@ type sshServer struct {
 
 func startSSHD(t *testing.T) *sshServer {
 	t.Helper()
+	return startWatchSSHD(t, "ERROR", nil)
+}
+
+// skipOrFailSSH fails the test when BRANCHLINE_REQUIRE_SSH asks for a working
+// SSH setup and skips it otherwise. The variable is the one sshtest.EnvRequireSSH
+// names; it is spelled out here as a literal because internal/git cannot import
+// internal/sshtest without creating a dependency cycle.
+func skipOrFailSSH(t *testing.T, format string, args ...any) {
+	t.Helper()
+	if requireSSHEnabled() {
+		t.Fatalf("BRANCHLINE_REQUIRE_SSH=1: "+format, args...)
+	}
+	t.Skipf(format, args...)
+}
+
+func requireSSHEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("BRANCHLINE_REQUIRE_SSH"))) {
+	case "1", "true", "yes":
+		return true
+	default:
+		return false
+	}
+}
+
+// startWatchSSHD runs an sshd under the shared sshdwatch supervisor so the
+// server cannot outlive the test process. logLevel is the sshd LogLevel and
+// extraLog, when not nil, receives a copy of everything sshd writes. It skips
+// (or fails under BRANCHLINE_REQUIRE_SSH=1) when no usable sshd is available.
+func startWatchSSHD(t *testing.T, logLevel string, extraLog io.Writer) *sshServer {
+	t.Helper()
 	if _, err := os.Stat("/usr/sbin/sshd"); err != nil {
-		t.Skip("no sshd on this machine")
+		skipOrFailSSH(t, "no sshd on this machine")
 	}
 	dir := t.TempDir()
 	for _, k := range []string{"host", "user"} {
@@ -46,35 +79,44 @@ func startSSHD(t *testing.T) *sshServer {
 
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		t.Skipf("cannot listen here: %v", err)
+		skipOrFailSSH(t, "cannot listen here: %v", err)
 	}
 	port := l.Addr().(*net.TCPAddr).Port
 	_ = l.Close()
 	cfg := fmt.Sprintf("Port %d\nListenAddress 127.0.0.1\nHostKey %s\nAuthorizedKeysFile %s\nPidFile %s\n"+
-		"StrictModes no\nUsePAM no\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nLogLevel ERROR\n",
-		port, filepath.Join(dir, "host"), filepath.Join(dir, "authorized_keys"), filepath.Join(dir, "pid"))
+		"StrictModes no\nUsePAM no\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nLogLevel %s\n",
+		port, filepath.Join(dir, "host"), filepath.Join(dir, "authorized_keys"), filepath.Join(dir, "pid"), logLevel)
 	must(t, os.WriteFile(filepath.Join(dir, "sshd_config"), []byte(cfg), 0o600))
 
 	var log strings.Builder
-	cmd := exec.Command("/usr/sbin/sshd", "-D", "-e", "-f", filepath.Join(dir, "sshd_config"))
-	cmd.Stdout, cmd.Stderr = &log, &log
-	if err := cmd.Start(); err != nil {
-		t.Skipf("sshd: %v", err)
+	out := io.Writer(&log)
+	if extraLog != nil {
+		out = io.MultiWriter(&log, extraLog)
 	}
-	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
+	proc, err := sshdwatch.Start(dir, filepath.Join(dir, "watchdog.pid"), out, "/usr/sbin/sshd", "-D", "-e", "-f", filepath.Join(dir, "sshd_config"))
+	if err != nil {
+		skipOrFailSSH(t, "sshd: %v", err)
+	}
+	t.Cleanup(proc.Stop)
 
 	wrapper := filepath.Join(dir, "ssh")
 	script := "#!/bin/sh\nexec /usr/bin/ssh -F /dev/null -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \"$@\"\n"
 	must(t, os.WriteFile(wrapper, []byte(script), 0o755))
 
 	for i := 0; ; i++ {
-		c, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+		select {
+		case <-proc.Exited():
+			skipOrFailSSH(t, "sshd exited before accepting connections: %s", log.String())
+		default:
+		}
+		c, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 100*time.Millisecond)
 		if err == nil {
 			_ = c.Close()
 			break
 		}
 		if i == 50 {
-			t.Skipf("sshd did not start: %s", log.String())
+			proc.Stop()
+			skipOrFailSSH(t, "sshd did not accept connections: %s", log.String())
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
