@@ -174,6 +174,87 @@ exit 1
 	}
 }
 
+// If another writer creates the target file or its .pub between the initial
+// existence check and keygen finishing, Generate never deletes or overwrites
+// that file, whether keygen fails or succeeds.
+func TestSSHKeyGenerateConcurrentTargetPreserved(t *testing.T) {
+	realKeygen := keygenPath(t)
+	dir := t.TempDir()
+
+	// Case 1: another writer creates the target private key while keygen runs
+	// and fails; cleanup removes only the temporary generation files.
+	failRace := filepath.Join(t.TempDir(), "failrace")
+	failTarget := filepath.Join(dir, "raced_fail")
+	failScript := "#!/bin/sh\n" +
+		"printf 'external priv' > " + shellSingleQuote(failTarget) + "\n" +
+		"echo 'simulated keygen error' >&2\n" +
+		"exit 1\n"
+	if err := os.WriteFile(failRace, []byte(failScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Generate(context.Background(), failRace, dir, "raced_fail", "c"); err == nil {
+		t.Fatal("Generate with failing racing keygen succeeded")
+	}
+	if got := fileContent(t, failTarget); got != "external priv" {
+		t.Fatalf("concurrently created file = %q, want 'external priv'", got)
+	}
+
+	// Case 2: another writer creates the target private key while keygen
+	// succeeds; Generate fails with ErrExists and leaves both target files safe.
+	privRace := filepath.Join(t.TempDir(), "privrace")
+	privTarget := filepath.Join(dir, "raced_priv")
+	privScript := "#!/bin/sh\n" +
+		"printf 'keep priv' > " + shellSingleQuote(privTarget) + "\n" +
+		"exec " + shellSingleQuote(realKeygen) + " \"$@\"\n"
+	if err := os.WriteFile(privRace, []byte(privScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Generate(context.Background(), privRace, dir, "raced_priv", "c"); !errors.Is(err, ErrExists) {
+		t.Fatalf("Generate racing on private key: %v, want ErrExists", err)
+	}
+	if got := fileContent(t, privTarget); got != "keep priv" {
+		t.Fatalf("concurrently created private key = %q, want 'keep priv'", got)
+	}
+	if _, err := os.Lstat(privTarget + ".pub"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("public key appeared despite private key collision: %v", err)
+	}
+
+	// Case 3: another writer creates the target .pub while keygen succeeds;
+	// Generate fails with ErrExists, keeps the .pub, and rolls back the private key.
+	pubRace := filepath.Join(t.TempDir(), "pubrace")
+	pubTarget := filepath.Join(dir, "raced_pub.pub")
+	pubScript := "#!/bin/sh\n" +
+		"printf 'keep pub' > " + shellSingleQuote(pubTarget) + "\n" +
+		"exec " + shellSingleQuote(realKeygen) + " \"$@\"\n"
+	if err := os.WriteFile(pubRace, []byte(pubScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Generate(context.Background(), pubRace, dir, "raced_pub", "c"); !errors.Is(err, ErrExists) {
+		t.Fatalf("Generate racing on public key: %v, want ErrExists", err)
+	}
+	if got := fileContent(t, pubTarget); got != "keep pub" {
+		t.Fatalf("concurrently created public key = %q, want 'keep pub'", got)
+	}
+	if _, err := os.Lstat(filepath.Join(dir, "raced_pub")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("private key was not rolled back after .pub collision: %v", err)
+	}
+
+	// No temporary generation directories remain in dir.
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".sshkey-gen-") {
+			t.Errorf("leftover temporary directory %q in %s", e.Name(), dir)
+		}
+	}
+}
+
+func shellSingleQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
 // A canceled context stops generation before anything is written.
 func TestSSHKeyGenerateCanceled(t *testing.T) {
 	root := t.TempDir()

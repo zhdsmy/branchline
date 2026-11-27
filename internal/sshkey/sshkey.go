@@ -167,43 +167,66 @@ func Generate(ctx context.Context, keygen, dir, name, comment string) (Key, erro
 	if err := ctx.Err(); err != nil {
 		return Key{}, err
 	}
+	absPriv, err := filepath.Abs(priv)
+	if err != nil {
+		return Key{}, err
+	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return Key{}, fmt.Errorf("cannot create the folder %q: %v", dir, err)
 	}
 
-	// Neither file existed above, so removing them after a failure deletes
-	// only what this run created. Standard input is the null device: no
-	// prompt of ssh-keygen can block, and a canceled context kills it.
-	removeNew := func() {
-		// A removal failure leaves nothing worse than ssh-keygen did.
-		_ = os.Remove(priv)
-		_ = os.Remove(pub)
+	// Generate into a private temporary directory inside dir (same mount),
+	// then publish each file with os.Link so a concurrent writer creating
+	// the target name can neither be overwritten nor deleted on cleanup.
+	// Standard input is the null device: no prompt of ssh-keygen can block,
+	// and a canceled context kills it.
+	tmpDir, err := os.MkdirTemp(dir, ".sshkey-gen-*")
+	if err != nil {
+		return Key{}, fmt.Errorf("cannot create a temporary folder in %q: %v", dir, err)
 	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	tmpPriv := filepath.Join(tmpDir, name)
+	tmpPub := tmpPriv + ".pub"
 	var stderr bytes.Buffer
-	cmd := exec.CommandContext(ctx, keygen, "-q", "-t", "ed25519", "-N", "", "-C", comment, "-f", priv)
+	cmd := exec.CommandContext(ctx, keygen, "-q", "-t", "ed25519", "-N", "", "-C", comment, "-f", tmpPriv)
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		removeNew()
 		if msg := strings.TrimSpace(stderr.String()); msg != "" {
 			return Key{}, fmt.Errorf("ssh-keygen did not create the key (%v): %s", err, msg)
 		}
 		return Key{}, fmt.Errorf("ssh-keygen did not create the key: %v", err)
 	}
 
-	st, err := os.Stat(priv)
+	st, err := os.Lstat(tmpPriv)
 	if err != nil {
-		removeNew()
 		return Key{}, fmt.Errorf("ssh-keygen did not create the private key %q", priv)
 	}
+	if !st.Mode().IsRegular() {
+		return Key{}, fmt.Errorf("the new private key %q is not a regular file", priv)
+	}
 	if st.Mode().Perm() != 0o600 {
-		removeNew()
 		return Key{}, fmt.Errorf("the new private key %q has permissions %o instead of 600", priv, st.Mode().Perm())
 	}
-	key, err := Open(priv)
+	key, err := Open(tmpPriv)
 	if err != nil {
-		removeNew()
 		return Key{}, err
 	}
+
+	if err := os.Link(tmpPriv, priv); err != nil {
+		if errors.Is(err, fs.ErrExist) {
+			return Key{}, fmt.Errorf("%w: %q", ErrExists, priv)
+		}
+		return Key{}, fmt.Errorf("cannot install the private key %q: %v", priv, err)
+	}
+	if err := os.Link(tmpPub, pub); err != nil {
+		_ = os.Remove(priv)
+		if errors.Is(err, fs.ErrExist) {
+			return Key{}, fmt.Errorf("%w: %q", ErrExists, pub)
+		}
+		return Key{}, fmt.Errorf("cannot install the public key %q: %v", pub, err)
+	}
+	key.Path = absPriv
 	return key, nil
 }
 
