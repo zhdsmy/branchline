@@ -67,7 +67,8 @@ func (r *Repo) checkout(rev string, force bool) error {
 	if force {
 		args = append(args, "-f")
 	}
-	args = append(args, rev, "--")
+	args = withEndOfOptions(args, rev)
+	args = append(args, "--")
 	_, err := r.run(quick, args...)
 	return err
 }
@@ -83,7 +84,8 @@ func (r *Repo) CheckoutRemote(remoteBranch string) error {
 	if _, err := r.run(quick, "rev-parse", "--verify", "--quiet", "refs/heads/"+local); err == nil {
 		return r.Checkout(local)
 	}
-	_, err := r.run(quick, "checkout", "-b", local, "--track", remoteBranch, "--")
+	args := withEndOfOptions([]string{"checkout", "-b", local, "--track"}, remoteBranch)
+	_, err := r.run(quick, append(args, "--")...)
 	return err
 }
 
@@ -108,11 +110,13 @@ func (r *Repo) CreateBranchForce(name, rev string, checkout, force bool) error {
 		if force {
 			args = append(args, "-f")
 		}
-		args = append(args, "-b", name, rev, "--")
+		args = append(args, "-b", name)
+		args = withEndOfOptions(args, rev)
+		args = append(args, "--")
 		_, err := r.run(quick, args...)
 		return err
 	}
-	_, err := r.run(quick, "branch", name, rev)
+	_, err := r.run(quick, withDashdash([]string{"branch"}, name, rev)...)
 	return err
 }
 
@@ -122,13 +126,13 @@ func (r *Repo) DeleteBranch(name string, force bool) error {
 	if force {
 		flag = "-D"
 	}
-	_, err := r.run(quick, "branch", flag, name)
+	_, err := r.run(quick, withDashdash([]string{"branch", flag}, name)...)
 	return err
 }
 
 // RenameBranch renames a local branch.
 func (r *Repo) RenameBranch(old, name string) error {
-	_, err := r.run(quick, "branch", "-m", old, name)
+	_, err := r.run(quick, withDashdash([]string{"branch", "-m"}, old, name)...)
 	return err
 }
 
@@ -139,7 +143,7 @@ func (r *Repo) TrackBranch(local, remoteBranch string) error {
 	if local == "" || !strings.Contains(remoteBranch, "/") {
 		return fmt.Errorf("tracking needs a local branch and a remote branch")
 	}
-	_, err := r.run(quick, "branch", "--set-upstream-to", remoteBranch, local)
+	_, err := r.run(quick, withDashdash([]string{"branch", "--set-upstream-to", remoteBranch}, local)...)
 	return err
 }
 
@@ -151,23 +155,23 @@ func (r *Repo) Reset(rev, mode string) error {
 	default:
 		return fmt.Errorf("unknown reset mode %q", mode)
 	}
-	_, err := r.run(quick, "reset", "--"+mode, rev, "--")
+	_, err := r.run(quick, append(withEndOfOptions([]string{"reset", "--" + mode}, rev), "--")...)
 	return err
 }
 
 // CreateTag tags rev, annotated when message is not empty.
 func (r *Repo) CreateTag(name, rev, message string) error {
 	if message == "" {
-		_, err := r.run(quick, "tag", name, rev)
+		_, err := r.run(quick, withDashdash([]string{"tag"}, name, rev)...)
 		return err
 	}
-	_, err := r.runInput(quick, []byte(message), "tag", "-a", "-F", "-", name, rev)
+	_, err := r.runInput(quick, []byte(message), withDashdash([]string{"tag", "-a", "-F", "-"}, name, rev)...)
 	return err
 }
 
 // DeleteTag deletes a local tag.
 func (r *Repo) DeleteTag(name string) error {
-	_, err := r.run(quick, "tag", "-d", name)
+	_, err := r.run(quick, withDashdash([]string{"tag", "-d"}, name)...)
 	return err
 }
 
@@ -214,7 +218,9 @@ func (r *Repo) CheckoutRemoteAs(remoteBranch, local string, force bool) error {
 	if force {
 		args = append(args, "-f")
 	}
-	_, err := r.run(quick, append(args, "-b", local, "--track", remoteBranch, "--")...)
+	args = append(args, "-b", local, "--track")
+	args = withEndOfOptions(args, remoteBranch)
+	_, err := r.run(quick, append(args, "--")...)
 	return err
 }
 
@@ -260,13 +266,13 @@ func (r *Repo) RenameRemoteBranch(local, upstream, newName string) error {
 	if !ok || remote == "" || old == "" || newName == "" || local == "" {
 		return fmt.Errorf("renaming a remote branch needs the local branch, its upstream and a name")
 	}
-	if _, err := r.run(slow, "push", "--set-upstream", remote, "refs/heads/"+local+":refs/heads/"+newName); err != nil {
+	if _, err := r.run(slow, withDashdash([]string{"push", "--set-upstream"}, remote, "refs/heads/"+local+":refs/heads/"+newName)...); err != nil {
 		return err
 	}
 	if old == newName {
 		return nil
 	}
-	_, err := r.run(slow, "push", remote, "--delete", "refs/heads/"+old)
+	_, err := r.run(slow, withDashdash([]string{"push", "--delete"}, remote, "refs/heads/"+old)...)
 	return err
 }
 
@@ -332,6 +338,8 @@ func (r *Repo) StartBranch(name, at, fetchRemote string, force bool) error {
 	if force {
 		args = append(args, "-f")
 	}
-	_, err := r.run(quick, append(args, "--no-track", "-b", name, at, "--")...)
+	args = append(args, "--no-track", "-b", name)
+	args = withEndOfOptions(args, at)
+	_, err := r.run(quick, append(args, "--")...)
 	return err
 }

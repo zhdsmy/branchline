@@ -53,13 +53,13 @@ func (r *Repo) MergeWith(rev string, style MergeStyle) error {
 	default:
 		return fmt.Errorf("unknown merge type")
 	}
-	_, err := r.run(quick, append(args, rev)...)
+	_, err := r.run(quick, withDashdash(args, rev)...)
 	return err
 }
 
 // Rebase rebases the current branch onto rev.
 func (r *Repo) Rebase(rev string) error {
-	_, err := r.run(quick, "rebase", rev)
+	_, err := r.run(quick, withDashdash([]string{"rebase"}, rev)...)
 	return err
 }
 
@@ -118,6 +118,9 @@ func replayArgs(command, hash string, o ReplayOptions) ([]string, error) {
 	if o.Mainline > 0 {
 		args = append(args, "-m", strconv.Itoa(o.Mainline))
 	}
+	if leadingDash(hash) {
+		args = append(args, "--")
+	}
 	return append(args, hash), nil
 }
 
@@ -165,7 +168,7 @@ func (r *Repo) Skip(state string) error {
 
 // CommitsBetween counts the commits tip has that base does not.
 func (r *Repo) CommitsBetween(base, tip string) (int, error) {
-	out, err := r.run(quick, "rev-list", "--count", base+".."+tip)
+	out, err := r.run(quick, withEndOfOptions([]string{"rev-list", "--count"}, base+".."+tip)...)
 	if err != nil {
 		return 0, err
 	}

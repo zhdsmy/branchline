@@ -24,7 +24,7 @@ func (r *Repo) FastForward(rev string) error {
 	if rev == "" {
 		return fmt.Errorf("fast-forward needs a revision")
 	}
-	_, err := r.run(quick, "merge", "--ff-only", rev)
+	_, err := r.run(quick, withDashdash([]string{"merge", "--ff-only"}, rev)...)
 	return err
 }
 

@@ -113,7 +113,12 @@ func (r *Repo) log(o LogOptions) ([]Commit, error) {
 	case o.Reflog:
 		args = append(args, "-g", "--all")
 	case len(o.Revs) > 0:
-		args = append(args, o.Revs...)
+		// withEndOfOptions puts the revisions behind --end-of-options when
+		// one starts with "-": the caller picks or types them, and such a
+		// revision must not become an option of git log. The pseudo-options
+		// of the other cases (--all, --branches...) are options and stay
+		// ahead of the separator.
+		args = withEndOfOptions(args, o.Revs...)
 	case o.All:
 		args = append(args, "--all")
 	default:

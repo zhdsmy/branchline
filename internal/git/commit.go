@@ -68,6 +68,6 @@ func (r *Repo) LastMessage() (string, error) {
 
 // Message returns the full message of one commit.
 func (r *Repo) Message(rev string) (string, error) {
-	out, err := r.run(quick, "log", "-1", "--format=%B", rev)
+	out, err := r.run(quick, withEndOfOptions([]string{"log", "-1", "--format=%B"}, rev)...)
 	return strings.TrimRight(string(out), "\n"), err
 }
