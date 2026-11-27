@@ -282,11 +282,18 @@ func TestDiffOptionsWrapLinesWithoutReload(t *testing.T) {
 
 	before := longHeight()
 	loadedKey := h.app.changesView.diff.loadedKey
+	stateBefore := h.app.changesView.diff.state
+	if stateBefore == nil {
+		t.Fatal("open diff missing its rendered state before toggling wrap")
+	}
 	if btn := diffOptionsButton(t, h, "Wrap Lines"); btn.Checked {
 		t.Fatalf("Wrap Lines starts %+v, want off", btn)
 	}
 
 	mustClick(t, h, "Wrap Lines")
+	if h.app.changesView.diff.loading {
+		t.Fatal("wrapping started a diff reload")
+	}
 	h.drain()
 
 	if btn := diffOptionsButton(t, h, "Wrap Lines"); !btn.Checked {
@@ -304,9 +311,18 @@ func TestDiffOptionsWrapLinesWithoutReload(t *testing.T) {
 	if h.app.changesView.diff.loadedKey != loadedKey {
 		t.Fatal("wrapping reloaded the diff: the loaded request key changed")
 	}
+	if h.app.changesView.diff.state != stateBefore {
+		t.Fatal("wrapping replaced the diff state: the diff was reloaded")
+	}
 
 	mustClick(t, h, "Wrap Lines")
+	if h.app.changesView.diff.loading {
+		t.Fatal("unwrapping started a diff reload")
+	}
 	h.drain()
+	if h.app.changesView.diff.state != stateBefore {
+		t.Fatal("unwrapping replaced the diff state: the diff was reloaded")
+	}
 	if got := longHeight(); got != before {
 		t.Fatalf("unwrapped long row height = %.1f, want the original %.1f", got, before)
 	}
@@ -568,6 +584,118 @@ func TestDiffOptionsEntireFileLoopbackSSH(t *testing.T) {
 	for _, row := range []string{"row 01", "row 16"} {
 		if got[row] {
 			t.Fatalf("changes-only diff over SSH still shows %q away from the change", row)
+		}
+	}
+}
+
+// When saving the context line count fails, stepping up or down keeps the
+// previous count, skips reloading the diff, and surfaces the failure toast.
+func TestDiffOptionsContextSaveFailure(t *testing.T) {
+	repo := newGitRepo(t, "diffopts-ctx-savefail")
+	writeRowsFixture(t, repo, 16)
+
+	storeDir := t.TempDir()
+	t.Cleanup(func() {
+		if err := os.Chmod(storeDir, 0o755); err != nil {
+			t.Errorf("restore store dir permissions: %v", err)
+		}
+	})
+	s, err := store.Open(filepath.Join(storeDir, "repositories.json"))
+	if err != nil {
+		t.Fatalf("open test store: %v", err)
+	}
+	q := newUIQueue()
+	t.Cleanup(q.releaseAllAndWait)
+	a := newApp(s)
+	a.postFn = q.post
+	a.spawnFn = q.spawn
+	h := &testHarness{
+		t:     t,
+		app:   a,
+		store: s,
+		ui:    ui.NewTester(a.view, 1200, 800),
+		queue: q,
+	}
+	h.ui.Frame()
+	h.openRepo(repo.StoreRepo())
+	h.drain()
+
+	mustClick(t, h, "Unstaged rows.txt")
+	h.drain()
+	mustClick(t, h, "Show Entire File")
+	h.drain()
+
+	if err := os.Chmod(storeDir, 0o555); err != nil {
+		t.Fatalf("make store dir read-only: %v", err)
+	}
+	stateBefore := h.app.changesView.diff.state
+	loadedKey := h.app.changesView.diff.loadedKey
+
+	for _, name := range []string{"Increase Context Lines", "Decrease Context Lines"} {
+		mustClick(t, h, name)
+		if got := h.app.session.DiffContextLines(); got != 3 {
+			t.Fatalf("context lines after failed %s = %d, want 3", name, got)
+		}
+		if h.app.changesView.diff.loading {
+			t.Fatalf("diff reload started after failed %s", name)
+		}
+		if h.app.changesView.diff.loadedKey != loadedKey || h.app.changesView.diff.state != stateBefore {
+			t.Fatalf("diff state changed after failed %s", name)
+		}
+	}
+	if !h.ui.HasText("Cannot save settings") {
+		t.Fatalf("save failure toast missing; texts=%q", h.ui.Texts())
+	}
+}
+
+// An existing settings file written before the diff toolbar choices existed
+// defaults to the entire file, 3 context lines, and no wrapping without
+// migration.
+func TestDiffOptionsLegacySettingsDefaultEntireFile(t *testing.T) {
+	repo := newGitRepo(t, "diffopts-legacy")
+	writeRowsFixture(t, repo, 16)
+
+	storePath := filepath.Join(t.TempDir(), "repositories.json")
+	legacyJSON := `{"settingsSaved":true,"settings":{"dateOrder":true}}`
+	if err := os.WriteFile(storePath, []byte(legacyJSON), 0o600); err != nil {
+		t.Fatalf("write legacy settings file: %v", err)
+	}
+	s, err := store.Open(storePath)
+	if err != nil {
+		t.Fatalf("open legacy store: %v", err)
+	}
+	q := newUIQueue()
+	t.Cleanup(q.releaseAllAndWait)
+	a := newApp(s)
+	a.postFn = q.post
+	a.spawnFn = q.spawn
+	h := &testHarness{
+		t:     t,
+		app:   a,
+		store: s,
+		ui:    ui.NewTester(a.view, 1200, 800),
+		queue: q,
+	}
+	h.ui.Frame()
+	h.openRepo(repo.StoreRepo())
+	h.drain()
+
+	mustClick(t, h, "Unstaged rows.txt")
+	h.drain()
+
+	if btn := diffOptionsButton(t, h, "Show Entire File"); !btn.Checked {
+		t.Fatalf("legacy settings Show Entire File = %+v, want on by default", btn)
+	}
+	if got := h.app.session.DiffContextLines(); got != 3 {
+		t.Fatalf("legacy settings context lines = %d, want 3", got)
+	}
+	if h.app.session.DiffWrap() {
+		t.Fatal("legacy settings started with wrap on")
+	}
+	got := diffFixtureLines(h.ui)
+	for _, row := range []string{"row 01", "row 16"} {
+		if !got[row] {
+			t.Fatalf("legacy settings entire-file diff missing %q: %v", row, got)
 		}
 	}
 }
