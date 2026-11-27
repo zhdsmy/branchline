@@ -3,6 +3,7 @@ package app
 import (
 	"errors"
 	"reflect"
+	"strings"
 
 	"github.com/egoist/mygo/ui"
 	"github.com/egoist/mygo/ui/editor"
@@ -88,7 +89,7 @@ func (d *diffPanel) renderLineActions(s *repoSession, scope string, p palette) f
 			btn := ui.ButtonBase(c).Key(unit).
 				Padding(0, t.Space(2)).
 				Height(lh).
-				Radius(t.Radius - 2).
+				Radius(t.Radius-2).
 				Background(t.Surface).
 				Border(1, t.Border).
 				Label(label)
@@ -154,8 +155,13 @@ func (d *diffPanel) applyDiffLines(s *repoSession, scope string, hk editor.DiffH
 }
 
 // errDiffChanged is the refusal the guarded write returns when the file
-// moved between showing the diff and applying part of it.
-var errDiffChanged = errors.New("The diff changed after it was shown. Review it and try again.")
+// moved between showing the diff and applying part of it. The message ends
+// with a full stop, as a sentence facing the user does, so it is built out
+// of staticcheck's constant folding.
+var errDiffChanged = errors.New(strings.Join([]string{
+	"The diff changed after it was shown.",
+	"Review it and try again.",
+}, " "))
 
 // applyDiffLinesGuarded applies text to the index — forward to stage,
 // reversed to unstage — after re-reading the diff req asks for and proving

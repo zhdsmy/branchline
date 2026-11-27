@@ -267,11 +267,11 @@ func orderUnstagePieces(pieces []patchPiece) []patchPiece {
 		minus, plus = nil, nil
 	}
 	for _, p := range pieces {
-		switch {
-		case p.orig == ' ':
+		switch p.orig {
+		case ' ':
 			flush()
 			out = append(out, p)
-		case p.orig == '-':
+		case '-':
 			minus = append(minus, p)
 		default:
 			// Additions unstage takes out or leaves: the additions it takes
