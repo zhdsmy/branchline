@@ -284,6 +284,7 @@ func Run() error {
 		})
 		mainApp = a
 		mygo.App.OnQuit(a.closeSyncUI)
+		startAutoRefresh(a)
 		a.openStartupRepo()
 	})
 	mygo.App.OnActivate(func(bool) {

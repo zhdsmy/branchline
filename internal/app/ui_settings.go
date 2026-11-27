@@ -1,10 +1,14 @@
 package app
 
 import (
+	"errors"
 	"sort"
+	"strconv"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
+
+	"github.com/zhdsmy/branchline/internal/store"
 )
 
 // settingsPageDef describes one page of the Settings window: its identity,
@@ -71,6 +75,12 @@ type settingsState struct {
 	appearance, appearanceApplied string
 	dateOrder, dateOrderApplied   bool
 	fetchTags, fetchTagsApplied   bool
+
+	// The automatic refresh controls follow the same triple as the other
+	// choices; the interval's values are the input's text, since a draft
+	// that fails validation must survive for editing instead of reverting.
+	refreshAuto, refreshAutoApplied         bool
+	refreshInterval, refreshIntervalApplied string
 
 	fontSize, fontSizeApplied       float64
 	tabWidth, tabWidthApplied       int
@@ -249,6 +259,15 @@ func (a *app) syncGeneralSettings() {
 	syncSettingsChoice(&s.appearance, &s.appearanceApplied, a.store.Appearance())
 	syncSettingsChoice(&s.dateOrder, &s.dateOrderApplied, prefs.DateOrder)
 	syncSettingsChoice(&s.fetchTags, &s.fetchTagsApplied, prefs.FetchTags)
+	syncSettingsChoice(&s.refreshAuto, &s.refreshAutoApplied, !prefs.DisableStatusUpdate)
+	syncSettingsChoice(&s.refreshInterval, &s.refreshIntervalApplied, refreshIntervalText(prefs))
+}
+
+// refreshIntervalText is the interval input's text for a saved value: the
+// effective seconds the refresh counts down, where a stored zero — never
+// chosen — reads as the default of 60.
+func refreshIntervalText(prefs store.Settings) string {
+	return strconv.Itoa(refreshIntervalSeconds(prefs))
 }
 
 // settingsGeneralPage renders the General page: the appearance, the commit
@@ -285,6 +304,31 @@ func (a *app) settingsGeneralPage(c *ui.Context, p palette) {
 		a.redraw()
 		return nil
 	})
+	saveSettingsChoice(s, "refreshAuto", &s.refreshAuto, &s.refreshAutoApplied, func(on bool) error {
+		cur := a.store.Settings()
+		cur.DisableStatusUpdate = !on
+		if err := a.store.SetSettings(cur); err != nil {
+			return err
+		}
+		// The watch follows the setting at once: off ends the watch of the
+		// open repository, on starts one for it; the interval counts from
+		// the next tick with whatever value is saved then.
+		syncAutoRefreshWatch(a, autoRefresh(a))
+		a.redraw()
+		return nil
+	})
+	saveSettingsChoice(s, "refreshInterval", &s.refreshInterval, &s.refreshIntervalApplied, func(text string) error {
+		n, err := parseSettingsInt(text)
+		if err != nil {
+			return err
+		}
+		if n < 10 || n > 3600 {
+			return errRefreshIntervalRange
+		}
+		cur := a.store.Settings()
+		cur.StatusUpdateSeconds = n
+		return a.store.SetSettings(cur)
+	})
 
 	ui.Form(c, func() {
 		ui.Field(c, "Appearance", func() {
@@ -310,5 +354,15 @@ func (a *app) settingsGeneralPage(c *ui.Context, p palette) {
 		ui.Field(c, "Tags", func() {
 			ui.Checkbox(c, &s.fetchTags, "Fetch all tags").Label("Fetch all tags")
 		}).Error(s.errs["fetchTags"])
+		ui.Field(c, "Automatic Refresh", func() {
+			ui.Checkbox(c, &s.refreshAuto, "Refresh repository status automatically").Label("Refresh repository status automatically")
+		}).Error(s.errs["refreshAuto"])
+		ui.Field(c, "Refresh Interval", func() {
+			ui.TextInput(c.Key("refresh-interval"), &s.refreshInterval).Width(72).Label("Refresh interval (seconds)").Disabled(!s.refreshAuto)
+		}).Error(s.errs["refreshInterval"])
 	})
 }
+
+// errRefreshIntervalRange is what the refresh interval input reports for a
+// number outside the range it accepts.
+var errRefreshIntervalRange = errors.New("enter a number from 10 to 3600 seconds")
