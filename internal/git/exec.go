@@ -205,7 +205,7 @@ func (l *LocalExecutor) Run(ctx context.Context, stdin []byte, args ...string) (
 			if env, err := l.AskPass.Env(); err == nil {
 				cmd.Env = append(cmd.Env, env...)
 				sess := l.AskPass.session(creds)
-				out, err := runAskContext(ctx, cmd, stdin, args, func(pipe, prompt string, _ bool) error {
+				out, err := runAskContext(ctx, cmd, stdin, args, nil, configureGitCancel, func(pipe, prompt string, _ bool) error {
 					answer, ok := sess.ask(prompt)
 					return deliverPipe(pipe, replyLine(answer, ok))
 				})
@@ -213,7 +213,7 @@ func (l *LocalExecutor) Run(ctx context.Context, stdin []byte, args ...string) (
 				return out, err
 			}
 		}
-		return runContext(ctx, cmd, stdin, args)
+		return runContext(ctx, cmd, stdin, args, nil, configureGitCancel)
 	})
 }
 
@@ -390,9 +390,16 @@ func (s *SSHExecutor) Run(ctx context.Context, stdin []byte, args ...string) ([]
 		if prog == "" {
 			prog = sshProgram()
 		}
-		cmd := exec.CommandContext(ctx, prog, s.SSHArgs(s.remoteCommand(ctx.Value(preparedEditorsKey{}) == true, args...))...)
+		// The shell names its process group before anything else, and
+		// canceling sends TERM to the group the number names. The prefix
+		// sits outside remoteCommand, whose exact shape is part of the
+		// tests.
+		remote := pgidPrefix + s.remoteCommand(ctx.Value(preparedEditorsKey{}) == true, args...)
+		cmd := exec.CommandContext(ctx, prog, s.SSHArgs(remote)...)
 		cmd.Env = s.env()
-		out, err := s.runContext(ctx, cmd, stdin, args, s.credentials(args))
+		pw := newPgidWriter()
+		cancel := func(c *exec.Cmd) { configureSSHCancel(c, s, pw) }
+		out, err := s.runContext(ctx, cmd, stdin, args, s.credentials(args), pw, cancel)
 		var ge *Error
 		if errors.As(err, &ge) && ge.ExitCode == 255 {
 			// ssh itself failed: say so, as git never exits with 255.
@@ -495,17 +502,33 @@ func RemotePath(p string) string {
 	return ShellQuote(p)
 }
 
-func runContext(ctx context.Context, cmd *exec.Cmd, stdin []byte, args []string) ([]byte, error) {
+func runContext(ctx context.Context, cmd *exec.Cmd, stdin []byte, args []string, pw *pgidWriter, cancel configureCancel) ([]byte, error) {
+	if cancel != nil {
+		cancel(cmd)
+	}
 	var stderr bytes.Buffer
-	return runTo(ctx, cmd, stdin, args, &stderr, stderr.String)
+	var w io.Writer = &stderr
+	if pw != nil {
+		pw.chain(&stderr)
+		w = pw
+	}
+	return runTo(ctx, cmd, stdin, args, w, func() string {
+		if pw != nil {
+			pw.finish()
+		}
+		return stderr.String()
+	})
 }
 
 // runAskContext runs cmd, handing each question to answer. When an
 // answer cannot reach the pipe, the script keeps waiting on it and the
 // command would only end with its timeout, so the command is ended at
 // once, the way a cancellation ends it, and the error says why.
-func runAskContext(ctx context.Context, cmd *exec.Cmd, stdin []byte, args []string, answer func(pipe, prompt string, remote bool) error) ([]byte, error) {
+func runAskContext(ctx context.Context, cmd *exec.Cmd, stdin []byte, args []string, pw *pgidWriter, cancel configureCancel, answer func(pipe, prompt string, remote bool) error) ([]byte, error) {
 	configureShellCancel(cmd)
+	if cancel != nil {
+		cancel(cmd)
+	}
 	var mu sync.Mutex
 	var fail error
 	var done bool
@@ -529,7 +552,17 @@ func runAskContext(ctx context.Context, cmd *exec.Cmd, stdin []byte, args []stri
 			end(fmt.Errorf("could not deliver the answer to the password prompt: %s", RedactText(err.Error())))
 		}
 	}}
-	out, err := runTo(ctx, cmd, stdin, args, w, w.text)
+	var stderrW io.Writer = w
+	stderrText := w.text
+	if pw != nil {
+		pw.chain(w)
+		stderrW = pw
+		stderrText = func() string {
+			pw.finish()
+			return w.text()
+		}
+	}
+	out, err := runTo(ctx, cmd, stdin, args, stderrW, stderrText)
 	mu.Lock()
 	done = true
 	delivery := fail
