@@ -3,7 +3,6 @@ package app
 import (
 	"fmt"
 	"strings"
-	"sync"
 
 	"github.com/egoist/mygo/ui"
 
@@ -53,8 +52,8 @@ func interactiveRebaseFoldChains(rows []*interactiveRebaseRow) []interactiveReba
 // rebase message editing: the full original messages of the commits the plan
 // rewrites or folds, read asynchronously off the UI thread, the user's custom
 // drafts keyed by the full hash of the chain parent they belong to, and the
-// message editor's open target. It lives in its own map outside the form
-// state, so the two lifecycles never share a struct.
+// message editor's open target. It lives in its own feature state outside the
+// form state, so the two lifecycles never share a struct.
 type interactiveRebaseMessagesState struct {
 	repoGen uint64
 
@@ -69,11 +68,6 @@ type interactiveRebaseMessagesState struct {
 	editDirty   bool
 }
 
-var interactiveRebaseMessagesStates = struct {
-	sync.Mutex
-	m map[*app]*interactiveRebaseMessagesState
-}{m: map[*app]*interactiveRebaseMessagesState{}}
-
 // interactiveRebaseMessages returns the app's message state, resetting it
 // wholesale when the repository generation moved past it: original messages
 // key on commit hashes of the old repository and drafts on its plan rows, so
@@ -81,17 +75,13 @@ var interactiveRebaseMessagesStates = struct {
 // repository is invalidated with it, and its late callback can never land in
 // the next repository's cache.
 func interactiveRebaseMessages(a *app) *interactiveRebaseMessagesState {
-	interactiveRebaseMessagesStates.Lock()
-	defer interactiveRebaseMessagesStates.Unlock()
-	ms := interactiveRebaseMessagesStates.m[a]
-	if ms == nil {
-		ms = &interactiveRebaseMessagesState{
+	ms := featureState(a, func() *interactiveRebaseMessagesState {
+		return &interactiveRebaseMessagesState{
 			originals: map[string]string{},
 			failed:    map[string]bool{},
 			drafts:    map[string]string{},
 		}
-		interactiveRebaseMessagesStates.m[a] = ms
-	}
+	})
 	if gen := a.session.Generation(); ms.repoGen != gen {
 		if ms.reading {
 			a.session.cancelRead("ir-msg")
