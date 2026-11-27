@@ -290,7 +290,7 @@ func (a *app) addLocalRepo(st *reposUIState) {
 		if err != nil || dir == "" {
 			return
 		}
-		repo := git.New(store.Repo{Kind: store.Local, Path: dir}.ExecutorWith(prefs.GitPath, prefs.Trace(), prefs.EnvPath))
+		repo := git.New(store.Repo{Kind: store.Local, Path: dir}.ExecutorFor(prefs))
 		top, topErr := repo.TopLevel()
 		a.post(func() {
 			if isNotRepository(topErr) {
@@ -557,7 +557,7 @@ func (a *app) checkSSHForm(st *reposUIState, add bool) {
 	var repo *git.Repo
 	if a.openRepoFn == nil && a.store != nil {
 		prefs := a.store.Settings()
-		repo = git.New(r.ExecutorWith(prefs.GitPath, prefs.Trace(), prefs.EnvPath))
+		repo = git.New(r.ExecutorFor(prefs))
 	} else {
 		repo = a.buildGitRepo(r)
 	}

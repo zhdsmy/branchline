@@ -249,9 +249,22 @@ type Layout struct {
 	FileHistoryColumns map[string]float32 `json:"fileHistoryColumns,omitempty"`
 }
 
-// Executor returns what runs git in the repository.
+// Executor returns what runs git in the repository, with the default
+// toolchain settings: the git of PATH, no traces, no extra SSH keys.
 func (r Repo) Executor() git.Executor {
-	return r.ExecutorWith("", git.Trace{}, "")
+	return r.ExecutorFor(Settings{})
+}
+
+// ExecutorFor returns what runs git in the repository with the toolchain
+// the settings name: the custom git program, the trace switches, the PATH
+// choice, and the active SSH keys offered to every remote using SSH. An
+// SSH repository with its own identity key keeps it instead of the active
+// keys, as the executor already prefers it.
+func (r Repo) ExecutorFor(s Settings) git.Executor {
+	if r.Kind == SSH {
+		return &git.SSHExecutor{Host: r.Host, User: r.User, Port: r.Port, Identity: r.Identity, Dir: r.Path, Trace: s.Trace(), Path: git.PathMode(s.EnvPath), SSHKeys: slices.Clone(s.SSHKeys)}
+	}
+	return &git.LocalExecutor{Dir: r.Path, Git: s.GitPath, Trace: s.Trace(), Path: git.PathMode(s.EnvPath), SSHKeys: slices.Clone(s.SSHKeys)}
 }
 
 // ExecutorWith returns what runs git. gitPath replaces the git program of
@@ -570,11 +583,11 @@ type Settings struct {
 	// choices the settings offer. Anything else reads back as 0.
 	DiffTabWidth  int      `json:"diffTabWidth,omitempty"`
 	SourceFolders []string `json:"sourceFolders,omitempty"`
-	// SSHKeys are the private key files marked active in Configure SSH
 	// SSHKeyFiles are keys opened from outside ~/.ssh, kept in the list
 	// when they are not active.
 	SSHKeyFiles []string `json:"sshKeyFiles,omitempty"`
-	// Keys; git and ssh offer them in every repository.
+	// SSHKeys are the private key files marked active in the SSH Keys
+	// settings; git and ssh offer them in every repository.
 	SSHKeys         []string `json:"sshKeys,omitempty"`
 	GitHubAvatars   bool     `json:"githubAvatars,omitempty"`
 	CommitPrompt    string   `json:"commitPrompt,omitempty"`
