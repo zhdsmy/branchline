@@ -19,6 +19,8 @@
       "Bash(docker network prune:*)",
       "Bash(docker builder prune:*)",
       "Bash(kiri:*)",
+      "Bash(pkill:*)",
+      "Bash(killall:*)",
       "Bash(launchctl:*)",
       "Bash(defaults write:*)",
       "Bash(tccutil:*)",
