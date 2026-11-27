@@ -1,6 +1,9 @@
 package app
 
 import (
+	"fmt"
+	"strings"
+
 	"github.com/egoist/mygo/ui"
 
 	"github.com/zhdsmy/branchline/internal/git"
@@ -45,16 +48,19 @@ func (r changesRow) key() changesRowKey {
 }
 
 // changesListCache derives everything the Local Changes file pane computes
-// from one snapshot: the status signature syncChangesRepoState compares,
-// the conflicted/ordinary split of the unstaged files, the row sequence of
-// the virtual list, and path indexes that replace the linear scans the
-// selection lookup and the conflict rows ran every frame. The derivation is
-// valid only for the exact snapshot slices it was built from: a snapshot
-// reload replaces the slices wholesale rather than mutating them in place,
-// so sharing a backing array and length with the current snapshot is proof
-// the contents are unchanged, and any new read misses and recomputes.
-// Keeping the source slices in the cache keeps their backing arrays alive,
-// so a new snapshot can never reuse a cached array's address.
+// from one snapshot and one filter text: the status signature
+// syncChangesRepoState compares, the conflicted/ordinary split of the
+// unstaged files, the filtered file lists of the three sections, the row
+// sequence of the virtual list, and path indexes that replace the linear
+// scans the selection lookup and the conflict rows ran every frame. The
+// derivation is valid only for the exact snapshot slices it was built from:
+// a snapshot reload replaces the slices wholesale rather than mutating them
+// in place, so sharing a backing array and length with the current snapshot
+// is proof the contents are unchanged, and any new read misses and
+// recomputes. Keeping the source slices in the cache keeps their backing
+// arrays alive, so a new snapshot can never reuse a cached array's address.
+// The signature, the split and the path indexes do not depend on the
+// filter; only the shown lists and the row sequence do.
 type changesListCache struct {
 	valid bool
 
@@ -62,16 +68,20 @@ type changesListCache struct {
 	unstaged  []git.FileChange
 	staged    []git.FileChange
 	conflicts []git.ConflictStage
+	filter    string
 
-	signature      string
-	conflicted     []git.FileChange
-	ordinary       []git.FileChange
-	rows           []changesRow
-	unstagedByPath map[string]git.FileChange
-	unstagedByOrig map[string]git.FileChange
-	stagedByPath   map[string]git.FileChange
-	stagedByOrig   map[string]git.FileChange
-	stageByPath    map[string]git.ConflictStage
+	signature       string
+	conflicted      []git.FileChange
+	ordinary        []git.FileChange
+	shownConflicted []git.FileChange
+	shownOrdinary   []git.FileChange
+	shownStaged     []git.FileChange
+	rows            []changesRow
+	unstagedByPath  map[string]git.FileChange
+	unstagedByOrig  map[string]git.FileChange
+	stagedByPath    map[string]git.FileChange
+	stagedByOrig    map[string]git.FileChange
+	stageByPath     map[string]git.ConflictStage
 }
 
 // invalidate drops the cached derivation, for example when the repository
@@ -82,7 +92,11 @@ func (c *changesListCache) invalidate() {
 
 // lookup returns the derivation for st, building it when the snapshot
 // slices it was derived from are gone. Head movement alone also rebuilds:
-// the signature covers it for amend prefill and staged diffs.
+// the signature covers it for amend prefill and staged diffs. A rebuild
+// keeps the filter of the previous derivation: the signature, split and
+// path indexes lookup callers read are the same for every filter, and the
+// filter-sensitive rows are consumed only through lookupFiltered, which
+// rebuilds again when the filter changed.
 func (c *changesListCache) lookup(st git.Status) *changesListCache {
 	if c.valid &&
 		c.head == st.Head &&
@@ -91,17 +105,67 @@ func (c *changesListCache) lookup(st git.Status) *changesListCache {
 		sameBackingSlice(c.conflicts, st.Conflicts) {
 		return c
 	}
-	c.build(st)
+	c.build(st, c.filter)
 	return c
 }
 
-// build recomputes every derived value from st.
-func (c *changesListCache) build(st git.Status) {
+// lookupFiltered returns the derivation for st under the given raw filter
+// text, rebuilding when either the snapshot or the normalized filter moved
+// on since the last build. Typing, staging and reloading recompute the row
+// sequence once; the frames in between reuse it.
+func (c *changesListCache) lookupFiltered(st git.Status, rawFilter string) *changesListCache {
+	filter := normalizeChangesFilter(rawFilter)
+	cached := c.lookup(st)
+	if cached.filter == filter {
+		return cached
+	}
+	c.build(st, filter)
+	return c
+}
+
+// normalizeChangesFilter is the matching form of the raw text typed into
+// the filter box: surrounding space gone, case folded. An empty result
+// means no filter.
+func normalizeChangesFilter(raw string) string {
+	return strings.ToLower(strings.TrimSpace(raw))
+}
+
+// changeMatchesFilter reports whether f stays in the list under the
+// normalized filter: a case-insensitive substring of its path or, for a
+// rename, of the path it was renamed from.
+func changeMatchesFilter(f git.FileChange, filter string) bool {
+	if filter == "" {
+		return true
+	}
+	if strings.Contains(strings.ToLower(f.Path), filter) {
+		return true
+	}
+	return f.OrigPath != "" && strings.Contains(strings.ToLower(f.OrigPath), filter)
+}
+
+// filterFileChanges is files reduced to the entries the normalized filter
+// keeps, in their original order. Without a filter it is files itself.
+func filterFileChanges(files []git.FileChange, filter string) []git.FileChange {
+	if filter == "" {
+		return files
+	}
+	var shown []git.FileChange
+	for _, f := range files {
+		if changeMatchesFilter(f, filter) {
+			shown = append(shown, f)
+		}
+	}
+	return shown
+}
+
+// build recomputes every derived value from st and the normalized filter.
+func (c *changesListCache) build(st git.Status, filter string) {
 	c.valid = true
 	c.head = st.Head
 	c.unstaged = st.Unstaged
 	c.staged = st.Staged
 	c.conflicts = st.Conflicts
+	c.filter = filter
 
 	c.signature = changesStatusSignature(st)
 	c.conflicted, c.ordinary = splitConflictedChanges(st.Unstaged)
@@ -127,28 +191,32 @@ func (c *changesListCache) build(st git.Status) {
 		c.stageByPath[cs.Path] = cs
 	}
 
-	rows := make([]changesRow, 0, len(st.Unstaged)+len(st.Staged)+7)
-	if len(c.conflicted) > 0 {
+	c.shownConflicted = filterFileChanges(c.conflicted, filter)
+	c.shownOrdinary = filterFileChanges(c.ordinary, filter)
+	c.shownStaged = filterFileChanges(st.Staged, filter)
+
+	rows := make([]changesRow, 0, len(c.shownOrdinary)+len(c.shownConflicted)+len(c.shownStaged)+7)
+	if len(c.shownConflicted) > 0 {
 		rows = append(rows, changesRow{kind: changesRowConflictHeader})
-		for _, f := range c.conflicted {
+		for _, f := range c.shownConflicted {
 			rows = append(rows, changesRow{kind: changesRowConflicted, file: f})
 		}
 		rows = append(rows, changesRow{kind: changesRowDividerConflict})
 	}
 	rows = append(rows, changesRow{kind: changesRowUnstagedHeader})
-	if len(c.ordinary) == 0 {
+	if len(c.shownOrdinary) == 0 {
 		rows = append(rows, changesRow{kind: changesRowUnstagedEmpty})
 	} else {
-		for _, f := range c.ordinary {
+		for _, f := range c.shownOrdinary {
 			rows = append(rows, changesRow{kind: changesRowUnstaged, file: f})
 		}
 	}
 	rows = append(rows, changesRow{kind: changesRowDividerUnstaged})
 	rows = append(rows, changesRow{kind: changesRowStagedHeader})
-	if len(st.Staged) == 0 {
+	if len(c.shownStaged) == 0 {
 		rows = append(rows, changesRow{kind: changesRowStagedEmpty})
 	} else {
-		for _, f := range st.Staged {
+		for _, f := range c.shownStaged {
 			rows = append(rows, changesRow{kind: changesRowStaged, file: f})
 		}
 	}
@@ -210,9 +278,14 @@ func (a *app) changesFilesList(c *ui.Context, cache *changesListCache) {
 // kind the cache recorded.
 func (a *app) changesListRow(c *ui.Context, cache *changesListCache, row changesRow) {
 	p := a.pal
+	filtered := cache.filter != ""
 	switch row.kind {
 	case changesRowConflictHeader:
-		a.changesConflictHeader(c, len(cache.conflicted))
+		if filtered {
+			a.changesConflictHeaderFiltered(c, len(cache.shownConflicted), len(cache.conflicted))
+		} else {
+			a.changesConflictHeader(c, len(cache.conflicted))
+		}
 	case changesRowConflicted:
 		a.changesConflictRow(c, row.file, cache, p)
 	case changesRowDividerConflict, changesRowDividerUnstaged:
@@ -222,16 +295,27 @@ func (a *app) changesListRow(c *ui.Context, cache *changesListCache, row changes
 			ui.Box(c).Height(6).FillWidth()
 		})
 	case changesRowUnstagedHeader:
-		a.changesFileSectionHeader(c, false, cache.ordinary)
+		a.changesFileSectionHeader(c, false, cache.shownOrdinary, len(cache.ordinary), filtered)
 	case changesRowUnstaged:
 		a.changesFileRow(c, row.file, false)
 	case changesRowUnstagedEmpty:
-		a.changesFileEmptyHint(c, false)
+		a.changesFileEmptyHint(c, false, filtered && len(cache.ordinary) > 0)
 	case changesRowStagedHeader:
-		a.changesFileSectionHeader(c, true, cache.staged)
+		a.changesFileSectionHeader(c, true, cache.shownStaged, len(cache.staged), filtered)
 	case changesRowStaged:
 		a.changesFileRow(c, row.file, true)
 	case changesRowStagedEmpty:
-		a.changesFileEmptyHint(c, true)
+		a.changesFileEmptyHint(c, true, filtered && len(cache.staged) > 0)
 	}
+}
+
+// changesConflictHeaderFiltered renders the title row of the Conflicted
+// section while a filter is active, counting the files the filter keeps
+// against all conflicted ones. Without a filter the section header is
+// changesConflictHeader.
+func (a *app) changesConflictHeaderFiltered(c *ui.Context, shown, total int) {
+	p := a.pal
+	ui.Row(c.Key("changes-section-header-conflicted")).Height(30).FillWidth().Padding(0, 2).Gap(6).AlignItems(ui.Center).Children(func() {
+		ui.Text(c, fmt.Sprintf("Conflicted (%d of %d)", shown, total)).FontSize(12).FontWeight(650).TextColor(p.danger).SingleLine()
+	})
 }

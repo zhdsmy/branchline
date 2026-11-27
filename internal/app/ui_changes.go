@@ -45,6 +45,11 @@ type changesState struct {
 
 	diff diffPanel
 
+	// filter is the raw text of the filter box above the file list. The
+	// derivation keeps its normalized form, so the matching never depends
+	// on case or surrounding space.
+	filter string
+
 	// list is the place of the virtual file list, and listCache the
 	// derivation of the current snapshot's status the list and the
 	// selection lookups share. Both are owned by the UI thread.
@@ -209,6 +214,7 @@ func (a *app) resetChangesForRepo() {
 	s.amendErr = ""
 	s.diff.Clear(a.session, changesDiffScope)
 	s.repoGen = a.session.Generation()
+	s.filter = ""
 	s.list = ui.ListState{}
 	s.listCache.invalidate()
 }
@@ -491,40 +497,122 @@ func (a *app) changesPage(c *ui.Context) {
 func (a *app) changesFilesPane(c *ui.Context) {
 	p := a.pal
 	st := a.session.Snapshot().Status
-	cache := a.changesView.listCache.lookup(st)
+	s := &a.changesView
 
 	ui.Column(c.Key("changes-files")).Fill().MinWidth(0).FillHeight().Background(p.bg).Children(func() {
+		a.changesFilterRow(c)
+		ui.Box(c).Height(1).FillWidth().Background(p.hairline)
+		// The input above has already committed this frame's typing into
+		// s.filter, so the derivation the list draws matches what the box
+		// shows.
+		cache := s.listCache.lookupFiltered(st, s.filter)
+		a.pruneFilteredSelection(cache)
 		a.changesFilesList(c, cache)
 		ui.Box(c).Height(1).FillWidth().Background(p.hairline)
 		a.commitBox(c, st)
 	})
 }
 
+// changesFilterRow renders the filter box above the file list: a
+// full-width input whose text the three sections filter by, with a button
+// clearing it while it holds any text.
+func (a *app) changesFilterRow(c *ui.Context) {
+	s := &a.changesView
+	ui.Row(c.Key("changes-filter")).FillWidth().Padding(8, 12, 6, 12).Gap(6).AlignItems(ui.Center).Children(func() {
+		ui.TextInput(c.Key("changes-filter-input"), &s.filter).
+			Grow(1).
+			Placeholder("Filter").
+			Label("Filter Changes")
+		if s.filter != "" {
+			if ui.Button(c.Key("changes-filter-clear"), "Clear").Label("Clear Filter").FontSize(11).Padding(2, 6).Clicked() {
+				s.filter = ""
+			}
+		}
+	})
+}
+
+// pruneFilteredSelection drops the selection when the filter hides the
+// selected file, so the diff panel returns to its unselected placeholder
+// rather than showing a file the list no longer offers. The lookup is two
+// map probes a frame: the per-file work happened once, when the snapshot
+// or the filter changed.
+func (a *app) pruneFilteredSelection(cache *changesListCache) {
+	s := &a.changesView
+	if !s.selected || cache.filter == "" {
+		return
+	}
+	var f git.FileChange
+	var ok bool
+	if s.selectedStaged {
+		f, ok = cache.lookupStaged(s.selectedPath)
+	} else {
+		f, ok = cache.lookupUnstaged(s.selectedPath)
+	}
+	if !ok {
+		return
+	}
+	if changeMatchesFilter(f, cache.filter) {
+		return
+	}
+	s.selectedPath = ""
+	s.selectedStaged = false
+	s.selected = false
+	s.diff.Clear(a.session, changesDiffScope)
+}
+
 // changesFileSectionHeader renders the title row of the Unstaged or Staged
 // section: its file count and the bulk action buttons of the section.
-func (a *app) changesFileSectionHeader(c *ui.Context, staged bool, files []git.FileChange) {
+// files is what the section shows, total the files it holds without the
+// filter. While the filter is active the count reads "(shown of total)"
+// and the bulk buttons act on, and speak of, the shown files alone; a
+// section the unfiltered status leaves empty keeps its plain "(0)".
+func (a *app) changesFileSectionHeader(c *ui.Context, staged bool, files []git.FileChange, total int, filtered bool) {
 	p := a.pal
 	title := "Unstaged"
 	if staged {
 		title = "Staged"
 	}
+	count := fmt.Sprintf("%s (%d)", title, len(files))
+	if filtered && total > 0 {
+		count = fmt.Sprintf("%s (%d of %d)", title, len(files), total)
+	}
 
 	ui.Row(c.Key("changes-section-header-"+title)).Height(30).FillWidth().Padding(0, 2).Gap(6).AlignItems(ui.Center).Children(func() {
-		ui.Text(c, fmt.Sprintf("%s (%d)", title, len(files))).FontSize(12).FontWeight(650).TextColor(p.muted).SingleLine()
+		ui.Text(c, count).FontSize(12).FontWeight(650).TextColor(p.muted).SingleLine()
 		ui.Spacer(c)
 		if staged {
-			if ui.Button(c.Key("unstage-all"), "Unstage All").Label("Unstage All").FontSize(11).Padding(2, 6).Disabled(a.session.Busy() || len(files) == 0).Clicked() {
-				a.unstageChanges(nil, true)
+			verb := "Unstage All"
+			if filtered {
+				verb = "Unstage Shown"
+			}
+			if ui.Button(c.Key("unstage-all"), verb).Label(verb).FontSize(11).Padding(2, 6).Disabled(a.session.Busy() || len(files) == 0).Clicked() {
+				if filtered {
+					a.unstageChanges(unstageBulkPaths(files), false)
+				} else {
+					a.unstageChanges(nil, true)
+				}
 			}
 		} else {
-			if ui.Button(c.Key("discard-all"), "Discard All…").Label("Discard All").FontSize(11).Padding(2, 6).Disabled(a.session.Busy() || len(files) == 0).Clicked() {
+			discardLabel := "Discard All"
+			discardText := "Discard All…"
+			if filtered {
+				discardLabel = "Discard Shown"
+				discardText = "Discard Shown…"
+			}
+			if ui.Button(c.Key("discard-all"), discardText).Label(discardLabel).FontSize(11).Padding(2, 6).Disabled(a.session.Busy() || len(files) == 0).Clicked() {
 				a.askDiscardChanges(files)
 			}
-			if ui.Button(c.Key("stage-all"), "Stage All").Label("Stage All").FontSize(11).Padding(2, 6).Disabled(a.session.Busy() || len(files) == 0).Clicked() {
-				if a.session.Snapshot().Status.Conflicted() {
+			stageLabel := "Stage All"
+			if filtered {
+				stageLabel = "Stage Shown"
+			}
+			if ui.Button(c.Key("stage-all"), stageLabel).Label(stageLabel).FontSize(11).Padding(2, 6).Disabled(a.session.Busy() || len(files) == 0).Clicked() {
+				if filtered || a.session.Snapshot().Status.Conflicted() {
 					// Conflicted files must never be swept into the index by
 					// a bulk stage: stage only the paths of this section,
-					// which holds the non-conflicted files.
+					// which holds the non-conflicted files. A filter hides
+					// the rest of the section too, so a shown-files stage
+					// takes the same explicit path list.
 					paths := make([]string, 0, len(files))
 					for _, f := range files {
 						if f.Status != 'U' {
@@ -540,16 +628,34 @@ func (a *app) changesFileSectionHeader(c *ui.Context, staged bool, files []git.F
 	})
 }
 
+// unstageBulkPaths lists the paths a bulk unstage of files passes to Git.
+// A staged rename moves back only when its source path is unstaged with
+// it, as the per-row Unstage button already does.
+func unstageBulkPaths(files []git.FileChange) []string {
+	paths := make([]string, 0, len(files))
+	for _, f := range files {
+		paths = append(paths, f.Path)
+		if f.Status == 'R' && f.OrigPath != "" && f.OrigPath != f.Path {
+			paths = append(paths, f.OrigPath)
+		}
+	}
+	return paths
+}
+
 // changesFileEmptyHint renders the rounded placeholder of an empty Unstaged
-// or Staged section.
-func (a *app) changesFileEmptyHint(c *ui.Context, staged bool) {
+// or Staged section. filteredOut is set when the section holds files the
+// filter hides: saying the working tree is clean would be wrong, so the
+// hint speaks of the filter instead.
+func (a *app) changesFileEmptyHint(c *ui.Context, staged bool, filteredOut bool) {
 	p := a.pal
 	title := "Unstaged"
 	if staged {
 		title = "Staged"
 	}
 	empty := "Working tree is clean"
-	if staged {
+	if filteredOut {
+		empty = "No matching files"
+	} else if staged {
 		empty = "No staged changes"
 	} else if len(a.session.Snapshot().Status.Staged) > 0 || a.session.Snapshot().Status.Conflicted() {
 		empty = "No unstaged changes"
