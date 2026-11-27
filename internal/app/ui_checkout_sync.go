@@ -125,7 +125,7 @@ func (a *app) checkoutSyncDialog(c *ui.Context) {
 	if !st.open {
 		return
 	}
-	ui.Modal(c.Key("checkout-sync-modal"), &st.open, func() {
+	_, cancelled, confirmed := dialogFrame(c, p, "checkout-sync-modal", &st.open, "Checkout and Sync", 460, func() {
 		// Enter submits exactly like the Checkout button, and not at all while
 		// the button is disabled. Focused controls keep their own keys first:
 		// Enter on the open Action drop-down chooses its highlighted action
@@ -135,32 +135,29 @@ func (a *app) checkoutSyncDialog(c *ui.Context) {
 				a.submitCheckoutSync()
 			}
 		})
-		ui.Column(c.Key("checkout-sync-body")).Width(460).Padding(18, 18, 14, 18).Gap(10).Children(func() {
-			ui.Text(c, "Checkout and Sync").FontSize(17).FontWeight(650).TextColor(p.text)
-			ui.Field(c, "Branch:", func() {
-				ui.Text(c, st.branch).Font("monospace").FontSize(12).TextColor(p.text).SingleLine().Ellipsis("…")
-			})
-			ui.Field(c, "Upstream:", func() {
-				ui.Text(c, st.upstream).Font("monospace").FontSize(12).TextColor(p.text).SingleLine().Ellipsis("…")
-			})
-			ui.Field(c, "Action:", func() {
-				ui.Select(c.Key("checkout-sync-action"), &st.action, checkoutSyncActionTitles()).FillWidth().Label("Action")
-			})
-			ui.Text(c, checkoutSyncNote(st.action, st.branch, st.upstream)).FontSize(12).TextColor(p.muted).MaxWidth(424)
-			if st.action == "Reset" {
-				ui.Text(c, "Commits on '"+st.branch+"' that '"+st.upstream+"' does not have will no longer be on any branch. Local changes are discarded unless stashed.").FontSize(12).TextColor(p.danger).MaxWidth(424)
-			}
-			ui.Checkbox(c.Key("checkout-sync-stash"), &st.stash, "Stash and reapply local changes").Label("Stash and reapply local changes")
-			ui.Row(c.Key("checkout-sync-actions")).Gap(8).Justify(ui.End).Children(func() {
-				if ui.Button(c.Key("checkout-sync-cancel"), "Cancel").Label("Cancel").Clicked() {
-					a.closeCheckoutSync()
-				}
-				if ui.PrimaryButton(c.Key("checkout-sync-confirm"), "Checkout").Label("Confirm Checkout and Sync").AutoFocus().Disabled(a.checkoutSyncBusy()).Clicked() {
-					a.submitCheckoutSync()
-				}
-			})
+		ui.Field(c, "Branch:", func() {
+			ui.Text(c, st.branch).Font("monospace").FontSize(12).TextColor(p.text).SingleLine().Ellipsis("…")
 		})
-	})
+		ui.Field(c, "Upstream:", func() {
+			ui.Text(c, st.upstream).Font("monospace").FontSize(12).TextColor(p.text).SingleLine().Ellipsis("…")
+		})
+		ui.Field(c, "Action:", func() {
+			ui.Select(c.Key("checkout-sync-action"), &st.action, checkoutSyncActionTitles()).FillWidth().Label("Action")
+		})
+		ui.Text(c, checkoutSyncNote(st.action, st.branch, st.upstream)).FontSize(12).TextColor(p.muted).MaxWidth(424)
+		if st.action == "Reset" {
+			ui.Text(c, "Commits on '"+st.branch+"' that '"+st.upstream+"' does not have will no longer be on any branch. Local changes are discarded unless stashed.").FontSize(12).TextColor(p.danger).MaxWidth(424)
+		}
+		ui.Checkbox(c.Key("checkout-sync-stash"), &st.stash, "Stash and reapply local changes").Label("Stash and reapply local changes")
+	},
+		dialogAction{key: "checkout-sync-cancel", text: "Cancel", label: "Cancel"},
+		dialogAction{key: "checkout-sync-confirm", text: "Checkout", label: "Confirm Checkout and Sync", disabled: a.checkoutSyncBusy(), autoFocus: true})
+	if cancelled {
+		a.closeCheckoutSync()
+	}
+	if confirmed {
+		a.submitCheckoutSync()
+	}
 	if !st.open {
 		a.closeCheckoutSync()
 	}

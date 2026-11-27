@@ -175,37 +175,34 @@ func (a *app) mergeDialog(c *ui.Context) {
 		into = "HEAD (detached)"
 	}
 
-	ui.Modal(c.Key("merge-modal"), &st.open, func() {
-		ui.Column(c.Key("merge-modal-body")).Width(460).Padding(18, 18, 14, 18).Gap(10).Children(func() {
-			ui.Text(c, "Merge").FontSize(17).FontWeight(650).TextColor(p.text)
-			ui.Field(c, "Merge:", func() {
-				ui.Text(c, st.sourceLabel).FontSize(12).TextColor(p.text).SingleLine().Ellipsis("…")
-			})
-			ui.Field(c, "Into:", func() {
-				ui.Text(c, into).FontSize(12).TextColor(p.text)
-			})
-			ui.RadioGroup(c, func() {
-				for _, m := range mergeStyleChoices {
-					ui.Radio(c, &st.style, m.style, m.label)
-				}
-			}).Label("Merge Type")
-			ui.Text(c, mergeStyleNote(st.style)).FontSize(12).TextColor(p.muted)
-			switch st.predictState {
-			case "conflicts":
-				ui.Text(c, "Merge will cause conflicts").FontSize(12).TextColor(p.danger)
-			case "clean":
-				ui.Text(c, "Merge can be done without conflicts").FontSize(12).TextColor(p.muted)
-			}
-			ui.Row(c.Key("merge-modal-actions")).Gap(8).Justify(ui.End).Children(func() {
-				if ui.Button(c.Key("merge-cancel"), "Cancel").Label("Cancel").Clicked() {
-					a.closeMergeDialog()
-				}
-				if ui.PrimaryButton(c.Key("merge-confirm"), "Confirm Merge").Label("Confirm Merge").Disabled(a.session.Busy()).Clicked() {
-					a.submitMerge()
-				}
-			})
+	_, cancelled, confirmed := dialogFrame(c, p, "merge-modal", &st.open, "Merge", 460, func() {
+		ui.Field(c, "Merge:", func() {
+			ui.Text(c, st.sourceLabel).FontSize(12).TextColor(p.text).SingleLine().Ellipsis("…")
 		})
-	})
+		ui.Field(c, "Into:", func() {
+			ui.Text(c, into).FontSize(12).TextColor(p.text)
+		})
+		ui.RadioGroup(c, func() {
+			for _, m := range mergeStyleChoices {
+				ui.Radio(c, &st.style, m.style, m.label)
+			}
+		}).Label("Merge Type")
+		ui.Text(c, mergeStyleNote(st.style)).FontSize(12).TextColor(p.muted)
+		switch st.predictState {
+		case "conflicts":
+			ui.Text(c, "Merge will cause conflicts").FontSize(12).TextColor(p.danger)
+		case "clean":
+			ui.Text(c, "Merge can be done without conflicts").FontSize(12).TextColor(p.muted)
+		}
+	},
+		dialogAction{key: "merge-cancel", text: "Cancel", label: "Cancel"},
+		dialogAction{key: "merge-confirm", text: "Confirm Merge", label: "Confirm Merge", disabled: a.session.Busy()})
+	if cancelled {
+		a.closeMergeDialog()
+	}
+	if confirmed {
+		a.submitMerge()
+	}
 	if !st.open {
 		a.closeMergeDialog()
 	}

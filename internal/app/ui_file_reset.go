@@ -264,25 +264,23 @@ func (a *app) fileResetModal(c *ui.Context) {
 		return
 	}
 	title := fileResetTitle(st.mode)
-	if ui.Modal(c.Key("file-reset-modal"), &st.open, func() {
-		ui.Column(c.Key("file-reset-modal-body")).Width(460).Padding(18, 18, 14, 18).Gap(10).Children(func() {
-			ui.Text(c, title).FontSize(17).FontWeight(650).TextColor(p.text)
-			for _, line := range fileResetBodyLines(st) {
-				ui.Text(c, line).FontSize(13).TextColor(p.muted).MaxWidth(420)
-			}
-			if dirty := fileResetDirtyPaths(st.local); len(dirty) > 0 {
-				ui.Text(c, "Uncommitted changes to "+strings.Join(dirty, ", ")+" will be lost.").FontSize(13).TextColor(p.danger).MaxWidth(420)
-			}
-			ui.Row(c.Key("file-reset-modal-actions")).Gap(8).Justify(ui.End).Children(func() {
-				if ui.Button(c.Key("file-reset-cancel"), "Cancel").Label("Cancel").Clicked() {
-					a.closeFileResetModal()
-				}
-				if ui.PrimaryButton(c.Key("file-reset-confirm"), "Reset").Label("Confirm Reset").Disabled(a.session.Busy()).Clicked() {
-					a.submitFileReset()
-				}
-			})
-		})
-	}).Dismissed() {
+	dismissed, cancelled, confirmed := dialogFrame(c, p, "file-reset-modal", &st.open, title, 460, func() {
+		for _, line := range fileResetBodyLines(st) {
+			ui.Text(c, line).FontSize(13).TextColor(p.muted).MaxWidth(420)
+		}
+		if dirty := fileResetDirtyPaths(st.local); len(dirty) > 0 {
+			ui.Text(c, "Uncommitted changes to "+strings.Join(dirty, ", ")+" will be lost.").FontSize(13).TextColor(p.danger).MaxWidth(420)
+		}
+	},
+		dialogAction{key: "file-reset-cancel", text: "Cancel", label: "Cancel"},
+		dialogAction{key: "file-reset-confirm", text: "Reset", label: "Confirm Reset", disabled: a.session.Busy()})
+	if cancelled {
+		a.closeFileResetModal()
+	}
+	if confirmed {
+		a.submitFileReset()
+	}
+	if dismissed {
 		a.closeFileResetModal()
 	}
 }

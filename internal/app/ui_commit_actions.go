@@ -155,38 +155,35 @@ func (a *app) resetModal(c *ui.Context) {
 	}
 	confirmDisabled := a.session.Busy() || (st.resetMode == "hard" && !st.resetHardAgreed)
 
-	ui.Modal(c.Key("commit-reset-modal"), &st.resetOpen, func() {
-		ui.Column(c.Key("commit-reset-modal-body")).Width(460).Padding(18, 18, 14, 18).Gap(10).Children(func() {
-			ui.Text(c, title).FontSize(17).FontWeight(650).TextColor(p.text)
-			ui.Field(c, "Branch:", func() {
-				ui.Text(c, branchLabel).Font("monospace").FontSize(12).TextColor(p.text)
-			})
-			ui.Field(c, "Move to:", func() {
-				ui.Text(c, st.resetTarget.Short()+" "+st.resetTarget.Subject).FontSize(12).TextColor(p.text).SingleLine().Ellipsis("…")
-			})
-			ui.RadioGroup(c, func() {
-				for _, m := range resetModeDescriptions {
-					ui.Radio(c, &st.resetMode, m.mode, m.label)
-				}
-			}).Label("Reset Type")
-			noteColor := p.muted
-			if st.resetMode == "hard" {
-				noteColor = p.danger
-			}
-			ui.Text(c, resetModeNote(st.resetMode)).FontSize(12).TextColor(noteColor)
-			if st.resetMode == "hard" {
-				ui.Checkbox(c.Key("reset-hard-agree"), &st.resetHardAgreed, "I understand, discard all local changes")
-			}
-			ui.Row(c.Key("commit-reset-modal-actions")).Gap(8).Justify(ui.End).Children(func() {
-				if ui.Button(c.Key("reset-cancel"), "Cancel").Label("Cancel").Clicked() {
-					a.closeResetModal()
-				}
-				if ui.PrimaryButton(c.Key("reset-confirm"), "Confirm Reset").Label("Confirm Reset").Disabled(confirmDisabled).Clicked() {
-					a.submitReset()
-				}
-			})
+	_, cancelled, confirmed := dialogFrame(c, p, "commit-reset-modal", &st.resetOpen, title, 460, func() {
+		ui.Field(c, "Branch:", func() {
+			ui.Text(c, branchLabel).Font("monospace").FontSize(12).TextColor(p.text)
 		})
-	})
+		ui.Field(c, "Move to:", func() {
+			ui.Text(c, st.resetTarget.Short()+" "+st.resetTarget.Subject).FontSize(12).TextColor(p.text).SingleLine().Ellipsis("…")
+		})
+		ui.RadioGroup(c, func() {
+			for _, m := range resetModeDescriptions {
+				ui.Radio(c, &st.resetMode, m.mode, m.label)
+			}
+		}).Label("Reset Type")
+		noteColor := p.muted
+		if st.resetMode == "hard" {
+			noteColor = p.danger
+		}
+		ui.Text(c, resetModeNote(st.resetMode)).FontSize(12).TextColor(noteColor)
+		if st.resetMode == "hard" {
+			ui.Checkbox(c.Key("reset-hard-agree"), &st.resetHardAgreed, "I understand, discard all local changes")
+		}
+	},
+		dialogAction{key: "reset-cancel", text: "Cancel", label: "Cancel"},
+		dialogAction{key: "reset-confirm", text: "Confirm Reset", label: "Confirm Reset", disabled: confirmDisabled})
+	if cancelled {
+		a.closeResetModal()
+	}
+	if confirmed {
+		a.submitReset()
+	}
 	if !st.resetOpen {
 		a.closeResetModal()
 	}
