@@ -2,6 +2,7 @@ package app
 
 import (
 	"crypto/subtle"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -32,7 +33,10 @@ func stubPickCloneFolder(t *testing.T, fn func() (string, error)) {
 // machine's real configuration: no system or global gitconfig, and an empty
 // credential helper list, so nothing reads or writes the user's keychain.
 // The starting assertion proves the guard itself works: credential.helper
-// reads empty in exactly the environment the clone workers inherit.
+// reads empty in exactly the environment the clone workers inherit. The two
+// acceptable answers of git config --get-all are an empty line with exit
+// code 0, or no output with exit code 1; anything else means the guard did
+// not apply.
 func blockCredentialHelpers(t *testing.T) {
 	t.Helper()
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
@@ -44,8 +48,14 @@ func blockCredentialHelpers(t *testing.T) {
 	cmd := exec.Command("git", "config", "--get-all", "credential.helper")
 	cmd.Env = os.Environ()
 	out, err := cmd.Output()
-	if err == nil && strings.TrimSpace(string(out)) != "" {
+	if strings.TrimSpace(string(out)) != "" {
 		t.Fatalf("credential helper guard failed: credential.helper = %q", out)
+	}
+	if err != nil {
+		var ee *exec.ExitError
+		if !errors.As(err, &ee) || ee.ExitCode() != 1 {
+			t.Fatalf("git config --get-all credential.helper: unexpected error %v (output %q)", err, out)
+		}
 	}
 }
 
@@ -77,18 +87,36 @@ func replaceField(t *testing.T, h *testHarness, name, text string) {
 	h.ui.Frame()
 }
 
-// waitForFile polls for path to exist, with a bound. The clone worker's
-// blocking-git test needs the clone mid-flight before canceling it; there is
-// no worker callback to wait on because the fake git never finishes.
+// waitForFile polls for path to exist, bounded to the same 10 seconds the UI
+// queue allows. The clone worker's blocking-git test needs the clone
+// mid-flight before canceling it; there is no worker callback to wait on
+// because the fake git never finishes.
 func waitForFile(t *testing.T, path string) {
 	t.Helper()
-	for i := 0; i < 200; i++ {
+	for i := 0; i < 1000; i++ {
 		if _, err := os.Stat(path); err == nil {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for %s", path)
+}
+
+// waitQueueIdle waits until the UI queue has no active worker: a worker whose
+// completion is already queued is done, so the test can deterministically
+// close the dialog before the completion runs.
+func waitQueueIdle(t *testing.T, h *testHarness) {
+	t.Helper()
+	for i := 0; i < 1000; i++ {
+		h.queue.mu.Lock()
+		active := h.queue.active
+		h.queue.mu.Unlock()
+		if active == 0 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("timed out waiting for the UI queue to go idle")
 }
 
 // newBareCloneSource builds a bare remote repository of the working repo f
@@ -443,20 +471,14 @@ func TestCloneInvalidURLShowsError(t *testing.T) {
 	h.ui.Frame()
 }
 
-// Canceling mid-clone stops git and removes the folder the clone had
-// started: the dialog closes, no process of the fake git survives, and the
-// dropped completion neither errors a reopened dialog nor opens anything.
-func TestCloneCancelRemovesPartialClone(t *testing.T) {
-	root := t.TempDir()
-	parent := filepath.Join(root, "code")
-	if err := os.Mkdir(parent, 0o755); err != nil {
-		t.Fatalf("mkdir parent: %v", err)
-	}
-
-	// The fake git makes the clone's target folder, writes its pid into the
-	// parent folder for the assertion, and execs a sleep so that canceling
-	// kills the very process without leaving a shell's child behind. Anything
-	// but a clone hands through to the real git.
+// writeBlockingFakeGit writes a fake git program standing in for a slow
+// network clone: for clone invocations it makes the clone's target folder,
+// writes its pid to pidFile through a temporary file and an atomic rename —
+// so the pid file never reads empty or partial — and execs a sleep, which
+// canceling kills without leaving a shell's child behind. Anything but a
+// clone hands through to the real git. It returns the program's path.
+func writeBlockingFakeGit(t *testing.T, root, pidFile string) string {
+	t.Helper()
 	realGit, err := exec.LookPath("git")
 	if err != nil {
 		t.Fatalf("git on PATH: %v", err)
@@ -468,101 +490,136 @@ func TestCloneCancelRemovesPartialClone(t *testing.T) {
 		"# -C is the executor's directory; the clone's folder is the last argument.\n" +
 		"dir=\"\"\nprev=\"\"\nlast=\"\"\nfor a do\n  case $prev in -C) dir=$a ;; esac\n  prev=$a\n  last=$a\ndone\n" +
 		"cd \"$dir\" || exit 1\n" +
-		"mkdir -p \"$last\"\necho $$ > \"" + filepath.Join(parent, "clone.pid") + "\"\nexec sleep 47\n"
+		"mkdir -p \"$last\"\n" +
+		"printf '%s\\n' \"$$\" > " + shellQ(pidFile+".tmp") + " && mv -f " + shellQ(pidFile+".tmp") + " " + shellQ(pidFile) + "\n" +
+		"exec sleep 47\n"
 	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake git: %v", err)
 	}
+	return fake
+}
 
-	h := newTestApp(t)
-	closeSync(t, h)
+// readNumericPID reads a pid file written by the fake git and validates it
+// holds digits only, so it can safely interpolate into the probe command.
+func readNumericPID(t *testing.T, pidFile string) string {
+	t.Helper()
+	b, err := os.ReadFile(pidFile)
+	if err != nil {
+		t.Fatalf("read clone pid: %v", err)
+	}
+	pid := strings.TrimSpace(string(b))
+	for _, r := range pid {
+		if r < '0' || r > '9' {
+			t.Fatalf("clone pid %q is not numeric", pid)
+		}
+	}
+	if pid == "" {
+		t.Fatalf("clone pid file %s is empty", pidFile)
+	}
+	return pid
+}
+
+// assertProcessGone reports the process is reaped: no sleep of the canceled
+// clone survives the worker.
+func assertProcessGone(t *testing.T, pid string) {
+	t.Helper()
+	out, err := exec.Command("sh", "-c", "kill -0 "+pid+" 2>/dev/null && echo alive || echo gone").Output()
+	if err != nil || strings.TrimSpace(string(out)) != "gone" {
+		t.Fatalf("clone process %s = %q err %v, want gone", pid, out, err)
+	}
+}
+
+// useFakeGitPath points the app's git program setting at fake.
+func useFakeGitPath(t *testing.T, h *testHarness, fake string) {
+	t.Helper()
 	prefs := h.store.Settings()
 	prefs.GitPath = fake
 	if err := h.store.SetSettings(prefs); err != nil {
 		t.Fatalf("save settings: %v", err)
 	}
+}
 
-	openCloneDialog(t, h)
-	h.ui.Type("https://example.com/slow/repo.git")
-	h.ui.Frame()
-	replaceField(t, h, "Parent Folder", parent)
-	if err := h.ui.Click("Clone"); err != nil {
-		t.Fatalf("click Clone: %v", err)
+// Canceling mid-clone — with Cancel or with Escape — stops git and removes
+// the folder the clone had started: the dialog closes, no process of the
+// fake git survives, and the dropped completion neither errors a reopened
+// dialog nor opens anything.
+func TestCloneCancelRemovesPartialClone(t *testing.T) {
+	root := t.TempDir()
+	parent := filepath.Join(root, "code")
+	if err := os.Mkdir(parent, 0o755); err != nil {
+		t.Fatalf("mkdir parent: %v", err)
 	}
-	h.ui.Frame()
+	pidFile := filepath.Join(parent, "clone.pid")
+	fake := writeBlockingFakeGit(t, root, pidFile)
 
-	// The clone is mid-flight: the busy state shows and Cancel is offered.
+	h := newTestApp(t)
+	closeSync(t, h)
+	useFakeGitPath(t, h, fake)
+
+	// startBlockingClone drives the dialog into a mid-flight clone and waits
+	// until the fake git reported itself: the pid file appears only after the
+	// target folder exists, and its content is complete because the script
+	// publishes it with an atomic rename.
+	startBlockingClone := func(url, target string) {
+		t.Helper()
+		openCloneDialog(t, h)
+		h.ui.Type(url)
+		h.ui.Frame()
+		replaceField(t, h, "Parent Folder", parent)
+		if err := h.ui.Click("Clone"); err != nil {
+			t.Fatalf("click Clone: %v", err)
+		}
+		h.ui.Frame()
+		waitForFile(t, pidFile)
+		if _, err := os.Stat(target); err != nil {
+			t.Fatalf("the mid-flight clone has no target folder %s: %v", target, err)
+		}
+		if !h.ui.HasText("Cloning…") {
+			t.Fatalf("busy indicator missing mid-clone; texts=%q", h.ui.Texts())
+		}
+		if info, ok := h.ui.AccessByRole(ui.RoleButton, "Clone"); !ok || !info.Disabled {
+			t.Fatalf("Clone mid-clone = %+v (found %v), want disabled", info, ok)
+		}
+	}
+
+	// assertCanceledClone asserts the dialog closed, the partial folder is
+	// gone, the fake git is reaped and nothing was saved or opened.
+	assertCanceledClone := func(target string) {
+		t.Helper()
+		if h.app.cloneUI().open {
+			t.Fatal("dialog stayed open after canceling the clone")
+		}
+		if _, err := os.Stat(target); !os.IsNotExist(err) {
+			t.Fatalf("the canceled clone left its folder: err %v", err)
+		}
+		assertProcessGone(t, readNumericPID(t, pidFile))
+		if len(h.store.Repos()) != 0 {
+			t.Fatalf("store gained an entry: %+v", h.store.Repos())
+		}
+		if h.app.session.HasRepo() {
+			t.Fatal("a repository opened from the canceled clone")
+		}
+	}
+
 	target := filepath.Join(parent, "repo")
-	waitForFile(t, target)
-	if !h.ui.HasText("Cloning…") {
-		t.Fatalf("busy indicator missing mid-clone; texts=%q", h.ui.Texts())
-	}
-	if info, ok := h.ui.AccessByRole(ui.RoleButton, "Clone"); !ok || !info.Disabled {
-		t.Fatalf("Clone mid-clone = %+v (found %v), want disabled", info, ok)
-	}
-	pidBytes, err := os.ReadFile(filepath.Join(parent, "clone.pid"))
-	if err != nil {
-		t.Fatalf("read clone pid: %v", err)
-	}
-
+	startBlockingClone("https://example.com/slow/repo.git", target)
 	if err := h.ui.Click("Cancel"); err != nil {
 		t.Fatalf("click Cancel mid-clone: %v", err)
 	}
 	h.ui.Frame()
 	h.drain()
+	assertCanceledClone(target)
 
-	if h.app.cloneUI().open {
-		t.Fatal("dialog stayed open after Cancel")
-	}
-	if _, err := os.Stat(target); !os.IsNotExist(err) {
-		t.Fatalf("the canceled clone left its folder: err %v", err)
-	}
-	// The killed git is reaped with the worker: no sleep survives.
-	pidStr := strings.TrimSpace(string(pidBytes))
-	if pidStr == "" {
-		t.Fatal("empty clone pid")
-	}
-	if out, err := exec.Command("sh", "-c", "kill -0 "+pidStr+" 2>/dev/null && echo alive || echo gone").Output(); err != nil || strings.TrimSpace(string(out)) != "gone" {
-		t.Fatalf("clone process %s = %q err %v, want gone", pidStr, out, err)
-	}
-	if len(h.store.Repos()) != 0 {
-		t.Fatalf("store gained an entry: %+v", h.store.Repos())
-	}
-	if h.app.session.HasRepo() {
-		t.Fatal("a repository opened from the canceled clone")
-	}
-
-	// Escape cancels the same way: no leftover folder, no leftover process.
-	if err := os.Remove(filepath.Join(parent, "clone.pid")); err != nil {
+	// Escape cancels the same way.
+	if err := os.Remove(pidFile); err != nil {
 		t.Fatalf("remove first clone pid file: %v", err)
 	}
-	openCloneDialog(t, h)
-	h.ui.Type("https://example.com/slow/repo2.git")
-	h.ui.Frame()
-	replaceField(t, h, "Parent Folder", parent)
-	if err := h.ui.Click("Clone"); err != nil {
-		t.Fatalf("click Clone for Escape cancel: %v", err)
-	}
-	h.ui.Frame()
 	target2 := filepath.Join(parent, "repo2")
-	waitForFile(t, target2)
+	startBlockingClone("https://example.com/slow/repo2.git", target2)
 	h.ui.Key(0, ui.KeyEscape)
 	h.ui.Frame()
 	h.drain()
-
-	if h.app.cloneUI().open {
-		t.Fatal("dialog stayed open after Escape")
-	}
-	if _, err := os.Stat(target2); !os.IsNotExist(err) {
-		t.Fatalf("the Escape-canceled clone left its folder: err %v", err)
-	}
-	pidBytes, err = os.ReadFile(filepath.Join(parent, "clone.pid"))
-	if err != nil {
-		t.Fatalf("read second clone pid: %v", err)
-	}
-	pidStr = strings.TrimSpace(string(pidBytes))
-	if out, err := exec.Command("sh", "-c", "kill -0 "+pidStr+" 2>/dev/null && echo alive || echo gone").Output(); err != nil || strings.TrimSpace(string(out)) != "gone" {
-		t.Fatalf("Escape-canceled clone process %s = %q err %v, want gone", pidStr, out, err)
-	}
+	assertCanceledClone(target2)
 }
 
 // With UpdateSubmodules on, the clone initializes the repository's
@@ -657,6 +714,140 @@ func TestCloneParentTildeExpansion(t *testing.T) {
 	}
 }
 
+// The clone entry is available while the open repository is busy: with a
+// fetch running behind the worker gate, the dialog opens from the switcher
+// and the clone completes independently of the repository session.
+func TestCloneWorksWhileRepositoryBusy(t *testing.T) {
+	root := t.TempDir()
+	bare := filepath.Join(root, "up.git")
+	wantHead := newBareCloneSource(t, "up", bare)
+	parent := filepath.Join(root, "code")
+	if err := os.Mkdir(parent, 0o755); err != nil {
+		t.Fatalf("mkdir parent: %v", err)
+	}
+
+	// A busy repository: a local checkout with a bare remote mid-fetch.
+	repo := newGitRepo(t, "busyrepo")
+	repo.CommitFile("a.txt", "one\n", "initial commit")
+	repo.AddBareRemote("origin")
+
+	h := newTestApp(t)
+	closeSync(t, h)
+	h.openRepo(repo.StoreRepo())
+	h.drain()
+
+	h.queue.PauseWorkers()
+	if err := h.ui.Click("Fetch"); err != nil {
+		t.Fatalf("click Fetch: %v", err)
+	}
+	h.ui.Frame()
+	fetchWorker := h.queue.WaitWorker(t)
+	if !h.app.session.Busy() {
+		t.Fatal("repository not busy with the gated fetch")
+	}
+
+	// The switcher entry opens the clone dialog regardless.
+	openCloneDialog(t, h)
+	h.ui.Type(bare)
+	h.ui.Frame()
+	replaceField(t, h, "Parent Folder", parent)
+	if err := h.ui.Click("Clone"); err != nil {
+		t.Fatalf("click Clone while the repository is busy: %v", err)
+	}
+	h.ui.Frame()
+	cloneWorker := h.queue.WaitWorker(t)
+	h.queue.ReleaseWorker(cloneWorker)
+	h.queue.ReleaseWorker(fetchWorker)
+	h.queue.ResumeWorkers()
+	h.drain()
+
+	if h.app.cloneUI().open || h.app.cloneUI().err != "" {
+		t.Fatalf("clone failed or dialog open: err %q", h.app.cloneUI().err)
+	}
+	target := filepath.Join(parent, "up")
+	got := strings.TrimSpace(runGitCommand(t, target, "rev-parse", "HEAD"))
+	if got != wantHead {
+		t.Fatalf("clone HEAD = %q, want %q", got, wantHead)
+	}
+	if meta := h.app.session.Meta(); meta.Path != target {
+		t.Fatalf("session path = %q, want %q", meta.Path, target)
+	}
+	if repos := h.store.Repos(); len(repos) != 2 {
+		t.Fatalf("store repos = %+v, want the clone plus the busy repository", repos)
+	}
+}
+
+// A parent folder of exactly "/" keeps its leading slash in the "Clones
+// into" preview instead of collapsing into the bare folder name. The input
+// never clones there: the assertion covers the preview line only.
+func TestCloneTargetDisplayRootParent(t *testing.T) {
+	h := newTestApp(t)
+	closeSync(t, h)
+	openCloneDialog(t, h)
+	h.ui.Type("https://example.com/owner/repo.git")
+	h.ui.Frame()
+	replaceField(t, h, "Parent Folder", "/")
+	if !h.ui.HasText("Clones into /repo") {
+		t.Fatalf("preview missing the root parent; texts=%q", h.ui.Texts())
+	}
+	h.ui.Key(0, ui.KeyEscape)
+	h.ui.Frame()
+}
+
+// A failed clone of a URL carrying a plaintext password never shows the
+// password: the dialog error is the redacted form, and no text on screen
+// contains it. The fake git fails every clone with git's own wording, the
+// URL quoted into stderr exactly as real git prints it.
+func TestCloneErrorRedactsURLPassword(t *testing.T) {
+	root := t.TempDir()
+	parent := filepath.Join(root, "code")
+	if err := os.Mkdir(parent, 0o755); err != nil {
+		t.Fatalf("mkdir parent: %v", err)
+	}
+	const password = "clonesecretpw"
+	url := "https://cloneuser:" + password + "@example.com/repo.git"
+
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatalf("git on PATH: %v", err)
+	}
+	fake := filepath.Join(root, "fakegit")
+	script := "#!/bin/sh\n" +
+		"isclone=\"\"\nfor a do [ \"$a\" = clone ] && isclone=yes; done\n" +
+		"if [ -z \"$isclone\" ]; then exec " + shellQ(realGit) + " \"$@\"; fi\n" +
+		"url=\"\"\nprev=\"\"\nfor a do\n  case $prev in --) [ -z \"$url\" ] && url=$a ;; esac\n  prev=$a\ndone\n" +
+		"# git prints the failing URL — userinfo and all — into the fatal line.\n" +
+		"echo \"fatal: unable to access '$url/': The requested URL returned error: 403\" >&2\n" +
+		"exit 128\n"
+	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake git: %v", err)
+	}
+
+	h := newTestApp(t)
+	closeSync(t, h)
+	useFakeGitPath(t, h, fake)
+	openCloneDialog(t, h)
+	cloningInto(t, h, url, parent)
+
+	st := h.app.cloneUI()
+	if !st.open {
+		t.Fatal("dialog closed on the failed clone")
+	}
+	if st.err == "" {
+		t.Fatal("no error shown for the failed clone")
+	}
+	if strings.Contains(st.err, password) {
+		t.Fatalf("dialog error leaks the URL password: %q", st.err)
+	}
+	for _, text := range h.ui.Texts() {
+		if strings.Contains(text, password) {
+			t.Fatalf("on-screen text leaks the URL password: %q", text)
+		}
+	}
+	h.ui.Key(0, ui.KeyEscape)
+	h.ui.Frame()
+}
+
 // The parent folder of a successful clone is the next dialog's default; a
 // clone also works while another repository is open.
 func TestCloneRemembersLastParent(t *testing.T) {
@@ -736,9 +927,12 @@ func TestCloneRemembersLastParent(t *testing.T) {
 	}
 }
 
-// Closing the dialog mid-clone and reopening it discards the old worker's
-// completion: it never closes the reopened dialog, never publishes its
-// outcome there, and never opens the clone.
+// Closing the dialog and reopening it discards the old worker's completion —
+// even when the old clone finished before the close, so its result is a
+// genuine error or a success rather than the cancellation the close itself
+// causes. A stale error completion neither publishes into the reopened dialog
+// nor clears the busy state of the clone running there, and a stale success
+// completion never closes the dialog or opens the clone.
 func TestCloneDiscardStaleResultAfterReopen(t *testing.T) {
 	root := t.TempDir()
 	bare := filepath.Join(root, "up.git")
@@ -748,18 +942,160 @@ func TestCloneDiscardStaleResultAfterReopen(t *testing.T) {
 		t.Fatalf("mkdir parent: %v", err)
 	}
 
+	t.Run("stale error does not disturb a busy reopened clone", func(t *testing.T) {
+		// A subdirectory per phase keeps the fake git's pid files apart.
+		phase := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(phase, "code"), 0o755); err != nil {
+			t.Fatalf("mkdir phase parent: %v", err)
+		}
+		phaseParent := filepath.Join(phase, "code")
+		pidFile := filepath.Join(phaseParent, "clone.pid")
+		fake := writeBlockingFakeGit(t, phase, pidFile)
+
+		h := newTestApp(t)
+		closeSync(t, h)
+
+		// Start a clone that fails fast — a missing source path — and let the
+		// worker finish. The completion is queued but not run: the dialog is
+		// still open while git's error outcome is already decided. This clone
+		// uses the real git; the blocking fake git is installed only for the
+		// second clone below.
+		openCloneDialog(t, h)
+		h.ui.Type(filepath.Join(phase, "no-such-source"))
+		h.ui.Frame()
+		replaceField(t, h, "Parent Folder", phaseParent)
+		if err := h.ui.Click("Clone"); err != nil {
+			t.Fatalf("click Clone: %v", err)
+		}
+		h.ui.Frame()
+		waitQueueIdle(t, h)
+
+		// Close the dialog and reopen it. The close cancels the finished
+		// worker's context — harmlessly, its clone already returned a genuine
+		// error before that — and the reopened dialog starts a fresh draft.
+		h.ui.Key(0, ui.KeyEscape)
+		h.ui.Frame()
+		if h.app.cloneUI().open {
+			t.Fatal("Escape left the dialog open")
+		}
+		openCloneDialog(t, h)
+		if got := h.app.cloneUI().url; got != "" {
+			t.Fatalf("reopened dialog kept the old URL %q", got)
+		}
+
+		// Start a second clone in the reopened dialog, this one blocking
+		// mid-flight behind the fake git.
+		useFakeGitPath(t, h, fake)
+		h.ui.Type("https://example.com/slow/repo.git")
+		h.ui.Frame()
+		replaceField(t, h, "Parent Folder", phaseParent)
+		if err := h.ui.Click("Clone"); err != nil {
+			t.Fatalf("click Clone in reopened dialog: %v", err)
+		}
+		h.ui.Frame()
+		waitForFile(t, pidFile)
+		st := h.app.cloneUI()
+		if !st.busy || st.cancel == nil {
+			t.Fatal("reopened dialog is not busy with the blocking clone")
+		}
+
+		// Run the stale error completion now: it must neither publish its
+		// error nor clear the busy state and cancel handle of the new clone.
+		h.queue.RunNext(t)
+		h.ui.Frame()
+		st = h.app.cloneUI()
+		if !st.busy || st.cancel == nil {
+			t.Fatalf("stale completion cleared the new clone's busy state: busy %v cancel %v", st.busy, st.cancel != nil)
+		}
+		if st.err != "" {
+			t.Fatalf("stale completion published its error into the reopened dialog: %q", st.err)
+		}
+		if !st.open {
+			t.Fatal("stale completion closed the reopened dialog")
+		}
+
+		// The new clone still really cancels: the busy state was genuinely
+		// its own.
+		if err := h.ui.Click("Cancel"); err != nil {
+			t.Fatalf("click Cancel in reopened dialog: %v", err)
+		}
+		h.ui.Frame()
+		h.drain()
+		if _, err := os.Stat(filepath.Join(phaseParent, "repo")); !os.IsNotExist(err) {
+			t.Fatalf("the canceled clone left its folder: err %v", err)
+		}
+		if len(h.store.Repos()) != 0 {
+			t.Fatalf("store gained an entry: %+v", h.store.Repos())
+		}
+	})
+
+	t.Run("stale success neither opens nor closes", func(t *testing.T) {
+		h := newTestApp(t)
+		closeSync(t, h)
+
+		// A successful clone finishing before the dialog closes. waitQueueIdle
+		// guarantees the worker completed — the clone on disk is real — while
+		// its completion callback is still queued.
+		openCloneDialog(t, h)
+		h.ui.Type(bare)
+		h.ui.Frame()
+		replaceField(t, h, "Parent Folder", parent)
+		if err := h.ui.Click("Clone"); err != nil {
+			t.Fatalf("click Clone: %v", err)
+		}
+		h.ui.Frame()
+		waitQueueIdle(t, h)
+		if _, err := os.Stat(filepath.Join(parent, "up", ".git")); err != nil {
+			t.Fatalf("the finished clone is not on disk: %v", err)
+		}
+
+		// Close and reopen before the completion runs.
+		h.ui.Key(0, ui.KeyEscape)
+		h.ui.Frame()
+		openCloneDialog(t, h)
+		if got := h.app.cloneUI().url; got != "" {
+			t.Fatalf("reopened dialog kept the old URL %q", got)
+		}
+
+		// The stale success completion must not open the clone, close the
+		// reopened dialog, or touch the store.
+		h.drain()
+		st := h.app.cloneUI()
+		if !st.open {
+			t.Fatal("stale success completion closed the reopened dialog")
+		}
+		if st.err != "" {
+			t.Fatalf("stale success completion published an error: %q", st.err)
+		}
+		if h.app.session.HasRepo() {
+			t.Fatal("stale success completion opened the clone")
+		}
+		if len(h.store.Repos()) != 0 {
+			t.Fatalf("store gained an entry: %+v", h.store.Repos())
+		}
+		h.ui.Key(0, ui.KeyEscape)
+		h.ui.Frame()
+	})
+}
+
+// A folder picker finishing after the dialog closed and reopened never
+// publishes its folder into the new draft: the completion carries the
+// generation of the dialog it was started in.
+func TestCloneFolderPickerDiscardsStaleResult(t *testing.T) {
+	var picked func() (string, error)
+	stubPickCloneFolder(t, func() (string, error) { return picked() })
+	chosen := filepath.Join(t.TempDir(), "latepick")
+	picked = func() (string, error) { return chosen, nil }
+
 	h := newTestApp(t)
 	closeSync(t, h)
 	openCloneDialog(t, h)
-	h.ui.Type(bare)
-	h.ui.Frame()
-	replaceField(t, h, "Parent Folder", parent)
 
-	// Start the clone behind the paused worker gate, then close the dialog
-	// before the worker ever runs.
+	// Start the picker behind the worker gate, close the dialog before it
+	// runs, and reopen a fresh draft.
 	h.queue.PauseWorkers()
-	if err := h.ui.Click("Clone"); err != nil {
-		t.Fatalf("click Clone: %v", err)
+	if err := h.ui.Click("Choose…"); err != nil {
+		t.Fatalf("click Choose: %v", err)
 	}
 	h.ui.Frame()
 	worker := h.queue.WaitWorker(t)
@@ -767,35 +1103,32 @@ func TestCloneDiscardStaleResultAfterReopen(t *testing.T) {
 	h.ui.Frame()
 	h.queue.ResumeWorkers()
 
-	if h.app.cloneUI().open {
-		t.Fatal("Escape left the dialog open")
-	}
-
-	// Reopen: the draft is fresh. Let the old worker finish; canceling its
-	// context makes the clone fail fast, and its completion must not publish
-	// into the reopened dialog.
 	openCloneDialog(t, h)
-	if got := h.app.cloneUI().url; got != "" {
-		t.Fatalf("reopened dialog kept the old URL %q", got)
+	draftParent := h.app.cloneUI().parent
+	// The fresh draft starts at the home or remembered folder, never the
+	// folder the picker has not even returned yet.
+	if draftParent == chosen {
+		t.Fatalf("reopened dialog already holds the picker folder %q", chosen)
 	}
 	h.queue.ReleaseWorker(worker)
 	h.drain()
 
-	st := h.app.cloneUI()
-	if !st.open {
-		t.Fatal("stale completion closed the reopened dialog")
+	if got := h.app.cloneUI().parent; got != draftParent {
+		t.Fatalf("stale picker completion changed the parent to %q, want %q", got, draftParent)
 	}
-	if st.err != "" {
-		t.Fatalf("stale completion published an error: %q", st.err)
+	if h.app.cloneUI().parent == chosen {
+		t.Fatalf("stale picker completion published %q into the reopened dialog", chosen)
 	}
-	if st.busy {
-		t.Fatal("reopened dialog stayed busy")
+
+	// The picker still works in the new dialog: the same folder arrives when
+	// the dialog is the one the picker was started from.
+	if err := h.ui.Click("Choose…"); err != nil {
+		t.Fatalf("click Choose again: %v", err)
 	}
-	if h.app.session.HasRepo() {
-		t.Fatal("the discarded clone opened a repository")
-	}
-	if len(h.store.Repos()) != 0 {
-		t.Fatalf("store gained an entry: %+v", h.store.Repos())
+	h.ui.Frame()
+	h.drain()
+	if got := h.app.cloneUI().parent; got != chosen {
+		t.Fatalf("parent after a live Choose = %q, want %q", got, chosen)
 	}
 	h.ui.Key(0, ui.KeyEscape)
 	h.ui.Frame()

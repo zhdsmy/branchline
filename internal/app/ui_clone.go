@@ -174,11 +174,14 @@ func (a *app) cloneModal(c *ui.Context) {
 // cloneTargetDisplay is the "Clones into" preview line: the parent folder and
 // the folder name joined, however partial the draft still is.
 func cloneTargetDisplay(parent, name string) string {
-	parent = strings.TrimRight(parent, "/")
-	if parent == "" {
+	trimmed := strings.TrimRight(parent, "/")
+	if trimmed == "" {
+		if parent != "" {
+			return "/" + name
+		}
 		return name
 	}
-	return parent + "/" + name
+	return trimmed + "/" + name
 }
 
 // cloneDisabled reports the three cases the Clone button stays disabled: no
@@ -237,16 +240,17 @@ func (a *app) runClone(st *cloneUIState) {
 	if a.store != nil {
 		prefs = a.store.Settings()
 	}
-	ask := syncStateFor(a).ask
+	st2 := syncStateFor(a)
+	ask := st2.ask
 
 	ctx, cancel := context.WithCancel(context.Background())
 	st.busy, st.cancel, st.err = true, cancel, ""
 	st.gen++
 	gen := st.gen
 
-	st2 := syncStateFor(a)
 	st2.syncWorkerStarted()
 	a.spawn(func() {
+		defer cancel()
 		defer st2.syncWorkerDone()
 		err := cloneInto(ctx, url, parentInput, name, prefs, ask)
 		a.post(func() {
