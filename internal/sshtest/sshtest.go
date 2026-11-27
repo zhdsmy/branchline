@@ -75,6 +75,7 @@ type Target struct {
 	sshConfig       string
 	baseDir         string
 	authorizedKeys  string
+	oracleIdentity  string
 	controlPathsLog string
 	controlPaths    map[string]struct{}
 	cmd             *exec.Cmd
@@ -291,7 +292,25 @@ func (s *Target) RunGit(t testing.TB, remoteDir string, args ...string) string {
 		b.WriteByte(' ')
 		b.WriteString(git.ShellQuote(a))
 	}
-	return strings.TrimRight(s.RunShell(t, b.String()), "\r\n")
+	return strings.TrimRight(string(s.runOracle(t, b.String(), nil)), "\r\n")
+}
+
+// runOracle executes a POSIX /bin/sh script on the server for the helper
+// oracles (RunGit, TempDir, InitRepo, WriteFile, ReadFile). On loopback
+// targets the calls multiplex over a ControlMaster connection of their own —
+// never the one the code under test uses — so each helper call does not pay
+// a full SSH handshake while connection checks keep verifying real fresh
+// connections. Unlike RunShell it must not be used to verify raw
+// connectivity: a live master answers even when new connections would fail.
+func (s *Target) runOracle(t testing.TB, script string, stdin []byte) []byte {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	out, err := s.oracleExecutor().RunShellInput(ctx, "/bin/sh -c "+git.ShellQuote(script), stdin)
+	if err != nil {
+		t.Fatalf("sshtest oracle command failed: %v\nscript:\n%s\nstdout:\n%s", err, script, out)
+	}
+	return out
 }
 
 // TempDir creates a disposable directory directly under s.RootDir on the server
@@ -303,7 +322,7 @@ func (s *Target) TempDir(t testing.TB, prefix string) string {
 		t.Fatalf("sshtest TempDir(%q): %v", prefix, err)
 	}
 	tmpl := path.Join(s.RootDir, cleanPrefix+".XXXXXX")
-	dir := strings.TrimSpace(s.RunShell(t, "mktemp -d "+git.ShellQuote(tmpl)))
+	dir := strings.TrimSpace(string(s.runOracle(t, "mktemp -d "+git.ShellQuote(tmpl), nil)))
 	if path.Dir(dir) != s.RootDir || !strings.HasPrefix(path.Base(dir), cleanPrefix+".") {
 		t.Fatalf("sshtest TempDir: unexpected remote path %q (root %q)", dir, s.RootDir)
 	}
@@ -319,7 +338,7 @@ func (s *Target) TempDir(t testing.TB, prefix string) string {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		if _, err := s.probeExecutor().RunShell(ctx, "rm -rf -- "+git.ShellQuote(dir)); err != nil {
+		if _, err := s.oracleExecutor().RunShell(ctx, "rm -rf -- "+git.ShellQuote(dir)); err != nil {
 			t.Errorf("sshtest cleanup remote dir %s: %v", dir, err)
 		}
 	})
@@ -329,6 +348,11 @@ func (s *Target) TempDir(t testing.TB, prefix string) string {
 // InitRepo creates a disposable Git repository on the server on branch main
 // with an initial commit ("initial commit", containing a.txt = "one\n") and
 // isolated repo-local Git settings compatible with Git 2.25+.
+//
+// The repo-local settings are appended to .git/config in one write instead of
+// one git config process per key: Git merges repeated sections, and every
+// saved process spawn matters over SSH, where each helper call is a remote
+// command round-trip.
 func (s *Target) InitRepo(t testing.TB, name string) string {
 	t.Helper()
 	dir := s.TempDir(t, name)
@@ -337,20 +361,28 @@ export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 LC_ALL=C
 cd ` + git.ShellQuote(dir) + `
 git init -q
 git symbolic-ref HEAD refs/heads/main
-git config user.name 'Branchline Test'
-git config user.email 'test@branchline.invalid'
-git config commit.gpgsign false
-git config tag.gpgsign false
-git config core.hooksPath /dev/null
-git config core.autocrlf false
-git config gc.auto 0
-git config maintenance.auto false
+cat >> .git/config <<'EOF'
+[user]
+	name = Branchline Test
+	email = test@branchline.invalid
+[commit]
+	gpgsign = false
+[tag]
+	gpgsign = false
+[core]
+	hooksPath = /dev/null
+	autocrlf = false
+[gc]
+	auto = 0
+[maintenance]
+	auto = false
+EOF
 printf 'one\n' > a.txt
 chmod 644 a.txt
 git add a.txt
 git commit -q -m 'initial commit'
 `
-	s.RunShell(t, script)
+	s.runOracle(t, script, nil)
 	return dir
 }
 
@@ -367,11 +399,16 @@ export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 LC_ALL=C
 cd ` + git.ShellQuote(dir) + `
 git init -q --bare
 git symbolic-ref HEAD refs/heads/main
-git config core.hooksPath /dev/null
-git config gc.auto 0
-git config maintenance.auto false
+cat >> config <<'EOF'
+[core]
+	hooksPath = /dev/null
+[gc]
+	auto = 0
+[maintenance]
+	auto = false
+EOF
 `
-	s.RunShell(t, script)
+	s.runOracle(t, script, nil)
 	return dir
 }
 
@@ -385,7 +422,7 @@ func (s *Target) WriteFile(t testing.TB, remoteDir, relPath string, content []by
 	}
 	parent := path.Dir(full)
 	script := "set -eu\nmkdir -p -- " + git.ShellQuote(parent) + "\ncat > " + git.ShellQuote(full) + "\n"
-	s.RunShellInput(t, script, content)
+	s.runOracle(t, script, content)
 }
 
 // ReadFile reads the exact bytes of relPath inside remoteDir on the server.
@@ -395,7 +432,7 @@ func (s *Target) ReadFile(t testing.TB, remoteDir, relPath string) []byte {
 	if err != nil {
 		t.Fatalf("sshtest ReadFile(%q, %q): %v", remoteDir, relPath, err)
 	}
-	return s.RunShellInput(t, "cat -- "+git.ShellQuote(full), nil)
+	return s.runOracle(t, "cat -- "+git.ShellQuote(full), nil)
 }
 
 func (s *Target) probeExecutor() *git.SSHExecutor {
@@ -409,6 +446,35 @@ func (s *Target) probeExecutor() *git.SSHExecutor {
 		NoMultiplex:    true,
 		NoGlobalConfig: true,
 	}
+}
+
+// oracleExecutor is the multiplexed executor the helper oracles run through.
+//
+// The oracle deliberately must not share a ControlMaster with the executors
+// under test: reusing their master would let a connection check succeed
+// without the host key verification or authentication the check exists to
+// exercise. On loopback targets the oracle therefore authenticates with a
+// copy of the target's private key under a different path — same key
+// material, same server-side authorization, but a distinct ControlPath hash,
+// so oracle calls multiplex only among themselves, never with the code under
+// test. Targets without a loopback identity key keep fresh, unmultiplexed
+// oracle connections. The oracle ControlMaster socket is tracked and closed
+// during s's cleanup.
+func (s *Target) oracleExecutor() *git.SSHExecutor {
+	if s.Kind != KindLoopback || s.oracleIdentity == "" {
+		return s.probeExecutor()
+	}
+	ex := &git.SSHExecutor{
+		Host:           s.Host,
+		Port:           s.Port,
+		User:           s.User,
+		Identity:       s.oracleIdentity,
+		Dir:            s.RootDir,
+		SSH:            s.SSH,
+		NoGlobalConfig: true,
+	}
+	s.trackControlPath(ex.ControlPath())
+	return ex
 }
 
 func (s *Target) trackControlPath(cp string) {

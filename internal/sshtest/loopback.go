@@ -139,6 +139,16 @@ func startLoopback(t testing.TB, deps loopbackDeps) *Target {
 	if err := os.WriteFile(authKeys, userPub, 0o600); err != nil {
 		t.Fatalf("write authorized_keys: %v", err)
 	}
+
+	// The oracle helpers authenticate with a copy of the user key under a
+	// different path so their multiplexed ControlMaster never coincides with
+	// one the code under test builds from the target's own identity.
+	oracleKey := filepath.Join(baseDir, "oracle_ed25519")
+	if keyBytes, err := os.ReadFile(userKey); err != nil {
+		t.Fatalf("read user private key: %v", err)
+	} else if err := os.WriteFile(oracleKey, keyBytes, 0o600); err != nil {
+		t.Fatalf("write oracle key copy: %v", err)
+	}
 	hostPub, err := os.ReadFile(hostKey + ".pub")
 	if err != nil {
 		t.Fatalf("read host public key: %v", err)
@@ -285,6 +295,7 @@ func startLoopback(t testing.TB, deps loopbackDeps) *Target {
 			sshConfig:       sshConfig,
 			baseDir:         baseDir,
 			authorizedKeys:  authKeys,
+			oracleIdentity:  oracleKey,
 			controlPathsLog: controlPathsLog,
 			controlPaths:    make(map[string]struct{}),
 			cmd:             cmd,
