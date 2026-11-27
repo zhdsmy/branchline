@@ -26,12 +26,19 @@ const pgidMarker = "\x1ebranchline-pgid "
 // command starts.
 const pgidPrefix = "/bin/sh -c 'printf \"" + pgidMarker + "%s\\n\" \"$PPID\" >&2'; "
 
-// remoteGroupKill is the shell script that ends the process group the
-// command on the server named. It runs through /bin/sh like every other
-// script of the server: the kill of a login shell that is not POSIX needs
-// not understand process groups or the -- before one.
+// remoteGroupKillScript is the script that ends the process group the
+// command on the server named, in the form POSIX writes: the dash that is
+// /bin/sh on Debian and Ubuntu takes neither -- nor a negative pid after
+// the signal's other spellings, but takes both here.
+func remoteGroupKillScript(pg int) string {
+	return "kill -s TERM -- -" + strconv.Itoa(pg)
+}
+
+// remoteGroupKill is the kill for the server. It runs through /bin/sh like
+// every other script of the server: the kill of a login shell that is not
+// POSIX needs not understand process groups or the -- before one.
 func remoteGroupKill(pg int) string {
-	return remoteShellCommand("kill -TERM -- -" + strconv.Itoa(pg))
+	return remoteShellCommand(remoteGroupKillScript(pg))
 }
 
 // pgidScanCap bounds how many bytes of a possible marker the scanner holds

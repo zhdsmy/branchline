@@ -631,3 +631,59 @@ func TestCancelKillLoginShells(t *testing.T) {
 		})
 	}
 }
+
+// TestCancelKillPosixShells ends a process group through the shells a
+// server's /bin/sh can be: the kill script itself, without the wrapping,
+// as dash on Debian and Ubuntu, bash, zsh, ksh or BusyBox ash would run
+// it. The login shell test above covers the outer parsing; this one is
+// about what the inner shell makes of the kill.
+func TestCancelKillPosixShells(t *testing.T) {
+	type shell struct {
+		name string
+		args []string
+	}
+	var shells []shell
+	for _, path := range []string{"/bin/sh", "/bin/bash", "/bin/zsh", "/bin/dash", "/bin/ksh"} {
+		if _, err := os.Stat(path); err == nil {
+			shells = append(shells, shell{filepath.Base(path), []string{path, "-c"}})
+		}
+	}
+	if busybox, err := exec.LookPath("busybox"); err == nil {
+		shells = append(shells, shell{"busybox", []string{busybox, "sh", "-c"}})
+	}
+	for _, sh := range shells {
+		t.Run(sh.name, func(t *testing.T) {
+			env, home := shellEnv(t)
+			dir := t.TempDir()
+
+			bed := exec.Command("/bin/sleep", "30")
+			bed.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+			if err := bed.Start(); err != nil {
+				t.Fatal(err)
+			}
+			pg := bed.Process.Pid
+			t.Cleanup(func() {
+				_ = syscall.Kill(-pg, syscall.SIGKILL)
+				_ = bed.Wait()
+			})
+
+			args := append(append([]string{}, sh.args...), remoteGroupKillScript(pg))
+			cmd := exec.Command(args[0], args[1:]...)
+			cmd.Dir = dir
+			cmd.Env = env
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("%s: kill script: %v %s", sh.name, err, out)
+			}
+
+			deadline := time.Now().Add(5 * time.Second)
+			for groupAlive(pg) {
+				if time.Now().After(deadline) {
+					t.Fatalf("%s: process group %d still alive after the kill", sh.name, pg)
+				}
+				time.Sleep(50 * time.Millisecond)
+			}
+			dirEmpty(t, dir)
+			dirEmpty(t, home)
+		})
+	}
+}
