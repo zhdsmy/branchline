@@ -202,6 +202,7 @@ func (a *app) remoteRows(c *ui.Context, remote string, refs git.Refs) {
 		})
 		row.ContextMenu(func(m *ui.Menu) {
 			a.remoteBranchCheckoutMenuItems(m, rb)
+			a.remoteBranchPullMenuItems(m, rb)
 			a.remoteBranchMergeMenuItems(m, rb)
 			a.remoteBranchRebaseMenuItems(m, rb)
 			a.remoteBranchCreateMenuItems(m, rb)

@@ -37,6 +37,18 @@ func (a *app) remotesSectionContextMenu(m *ui.Menu) {
 	}
 }
 
+// tagsSectionContextMenu is the context menu of the Tags section header:
+// creating a tag is possible with the section collapsed, as it does not
+// depend on any row the collapse hides. The tag starts from the default
+// target — the commit selected on the History page, HEAD otherwise — exactly
+// as clicking the New Tag sidebar entry does.
+func (a *app) tagsSectionContextMenu(m *ui.Menu) {
+	disabled := !a.session.HasRepo() || a.session.Busy()
+	if m.Item("New Tag…").Disabled(disabled).Chosen() {
+		a.openNewTagDialog("")
+	}
+}
+
 // remoteFetchMenuItem is the first entry of a remote row's context menu:
 // fetching only that remote, downloading its new branches and pruning the
 // ones deleted there, never the other remotes the repository knows. The

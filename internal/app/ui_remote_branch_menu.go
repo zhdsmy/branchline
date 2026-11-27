@@ -193,6 +193,7 @@ func (a *app) remoteCheckoutSwitchesToExisting(full, name string) bool {
 // keeps the sidebar the single composition root of the refs dialogs.
 func (a *app) remoteBranchMenuDialogs(c *ui.Context) {
 	a.remoteBranchCheckoutDialog(c)
+	a.remoteBranchPullDialog(c)
 	a.remoteBranchDeleteDialog(c)
 }
 
