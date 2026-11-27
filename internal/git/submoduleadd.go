@@ -48,7 +48,11 @@ func (r *Repo) SubmoduleAddAt(url, folder string, recursive bool) error {
 		return err
 	}
 	if recursive {
-		_, err := r.run(slow, "-c", "protocol.file.allow=always", "submodule", "update", "--init", "--recursive", "--", folder)
+		// No protocol.file.allow override here: the nested submodules'
+		// URLs come from the added repository's .gitmodules, written by
+		// its author. Git refuses the file transport for them since
+		// 2.38.1 (CVE-2022-39253), and this step keeps that refusal.
+		_, err := r.run(slow, "submodule", "update", "--init", "--recursive", "--", folder)
 		return err
 	}
 	return nil

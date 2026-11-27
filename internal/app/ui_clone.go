@@ -289,7 +289,7 @@ func cloneInto(ctx context.Context, url, parentInput, name string, prefs store.S
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("cannot look at %s: %w", target, err)
 	}
-	ex := store.Repo{Kind: store.Local, Path: parent}.ExecutorWith(prefs.GitPath, prefs.Trace(), prefs.EnvPath)
+	ex := store.Repo{Kind: store.Local, Path: parent}.ExecutorFor(prefs)
 	if err := git.EnsureDir(ex); err != nil {
 		return err
 	}

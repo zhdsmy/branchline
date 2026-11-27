@@ -81,7 +81,7 @@ func (a *app) gitVersionBannerBox(c *ui.Context, probeErr error) {
 	ui.Column(c.Key("git-version-banner")).
 		FillWidth().
 		Padding(a.pageTopInset(c)+4, 24, 6, 24).
-		Role(ui.RoleStatus).
+		Role(ui.RoleAlert).
 		Label("Git Version Warning").
 		Children(func() {
 			ui.Row(c.Key("git-version-banner-row")).
@@ -124,8 +124,7 @@ func (a *app) gitVersionBannerButton(c *ui.Context, key, text, accessLabel strin
 		Radius(6).
 		AlignItems(ui.Center).
 		Label(accessLabel).
-		Disabled(disabled).
-		FocusRing(false)
+		Disabled(disabled)
 	fg := color
 	bg := color.Alpha(0.10)
 	if disabled {
