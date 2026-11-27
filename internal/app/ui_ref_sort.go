@@ -9,7 +9,6 @@ package app
 import (
 	"slices"
 	"strings"
-	"unsafe"
 
 	"github.com/egoist/mygo/ui"
 
@@ -208,10 +207,11 @@ func sortTags(tags []git.Tag, order string) []git.Tag {
 
 // sameBackingSlice reports whether x and y share one backing array and
 // length — the identity of the immutable snapshot slice, not just equal
-// contents. Retaining the source in the cache keeps its backing array
-// alive, so a new snapshot can never reuse the address of the cached one.
+// contents. Two empty slices count as the same: both sort to nothing.
+// Retaining the source in the cache keeps its backing array alive, so a
+// new snapshot can never reuse the address of the cached one.
 func sameBackingSlice[T any](x, y []T) bool {
-	return len(x) == len(y) && unsafe.SliceData(x) == unsafe.SliceData(y)
+	return len(x) == len(y) && (len(x) == 0 || &x[0] == &y[0])
 }
 
 // refSortCache is the one-entry cache of a sorted reference list: the
