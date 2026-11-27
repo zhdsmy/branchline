@@ -222,7 +222,7 @@ func (a *app) batchBranchDialogs(c *ui.Context) {
 			ui.Column(c.Key("batch-delete-rows")).FillWidth().Gap(6).Children(func() {
 				for i := range st.batchDelRows {
 					row := &st.batchDelRows[i]
-					ui.Row(c.Key("batch-del-row-"+row.name)).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
+					ui.Row(c.Key("batch-del-row-" + row.name)).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
 						ui.Checkbox(c.Key("batch-del-"+row.name), &row.checked, row.name)
 						if row.upstream != "" {
 							ui.Text(c, "→ "+row.upstream).FontSize(12).TextColor(p.muted).SingleLine().Ellipsis("…").Shrink(1).MinWidth(0)
