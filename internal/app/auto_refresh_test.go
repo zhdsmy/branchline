@@ -213,7 +213,7 @@ func openAutoRefreshRepo(t *testing.T, h *testHarness, rig *autoRefreshRig, meta
 	h.openRepo(meta)
 	h.drain()
 	tickAutoRefresh(t, h)
-	if rig.state.lastSuccess != rig.clock.now {
+	if !rig.state.lastSuccess.Equal(rig.clock.now) {
 		t.Fatalf("baseline check did not stamp the clock start: %v, want %v", rig.state.lastSuccess, rig.clock.now)
 	}
 	if err := h.app.session.LoadErr(); err != nil {
@@ -266,7 +266,7 @@ func buildAutoRefreshRepo(a *app, meta store.Repo) *git.Repo {
 // expects to check, so a stamp is proof a check ran and finished.
 func checkStamped(t *testing.T, rig *autoRefreshRig, what string) {
 	t.Helper()
-	if rig.state.lastSuccess != rig.clock.now {
+	if !rig.state.lastSuccess.Equal(rig.clock.now) {
 		t.Fatalf("%s: last successful check = %v, want the clock's %v — no check ran", what, rig.state.lastSuccess, rig.clock.now)
 	}
 }
@@ -292,7 +292,7 @@ func TestAutoRefreshIntervalBoundaryFromCompletion(t *testing.T) {
 	if counting.reads != 0 {
 		t.Fatalf("tick exactly 60s after completion ran %d git commands, want 0", counting.reads)
 	}
-	if rig.state.lastSuccess == rig.clock.now {
+	if rig.state.lastSuccess.Equal(rig.clock.now) {
 		t.Fatal("a check ran exactly 60s after completion — the boundary must be strict")
 	}
 
@@ -544,7 +544,7 @@ func TestAutoRefreshBusyWriteGatesChecks(t *testing.T) {
 	if counting.reads != 0 {
 		t.Fatalf("ticks inside the interval after the post-write check ran %d git commands, want 0", counting.reads)
 	}
-	if rig.state.lastSuccess == rig.clock.now {
+	if rig.state.lastSuccess.Equal(rig.clock.now) {
 		t.Fatal("a check re-stamped inside the interval — the refresh is looping")
 	}
 }
@@ -694,7 +694,7 @@ func TestAutoRefreshFailureBackoffSilent(t *testing.T) {
 	if counting.reads == 0 {
 		t.Fatal("the check that should fail never ran")
 	}
-	if rig.state.failedUntil != rig.clock.now.Add(time.Minute) {
+	if !rig.state.failedUntil.Equal(rig.clock.now.Add(time.Minute)) {
 		t.Fatalf("failure backoff = %v, want one minute past the failure %v", rig.state.failedUntil, rig.clock.now)
 	}
 	if err := h.app.session.ActionErr(); !errors.Is(err, wantErr) {
