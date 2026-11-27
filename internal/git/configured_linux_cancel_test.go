@@ -156,10 +156,7 @@ func TestConfiguredLinuxCancelClone(t *testing.T) {
 	}
 	t.Logf("cancel elapsed: %s", time.Since(cancelAt))
 
-	for {
-		if !linuxGroupAlive(scanProcesses(t, conn), pg) {
-			break
-		}
+	for linuxGroupAlive(scanProcesses(t, conn), pg) {
 		if time.Now().After(assert) {
 			t.Fatalf("process group %d still alive past the deadline", pg)
 		}
