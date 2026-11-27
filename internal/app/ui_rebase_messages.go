@@ -48,6 +48,61 @@ func interactiveRebaseFoldChains(rows []*interactiveRebaseRow) []interactiveReba
 	return chains
 }
 
+// irDerivedCache is the one-entry cache of everything the form derives from
+// the plan rows and the message state: the fold chains, the message targets,
+// the validation error and drop count of the plan, the blocker the start
+// button and the message panel read, and the original messages still to read.
+// A hit answers every one of them without scanning a single row.
+type irDerivedCache struct {
+	rows        []*interactiveRebaseRow
+	planVersion uint64
+	msgVersion  uint64
+	valid       bool
+
+	chains        []interactiveRebaseFoldChain
+	targets       map[string]interactiveRebaseFoldChain
+	problem       string
+	drops         int
+	msgLoading    bool
+	msgFailed     bool
+	msgValidation string
+	needed        []string
+}
+
+// irDerived returns the derived results of the current plan rows and message
+// state, computing them the first time this combination is asked for. The
+// key is the plan's mutation count, the rows backing array itself and the
+// message mutation count: an action or a move mutates rows in place and
+// counts on the plan version to invalidate, a wholesale replacement swaps the
+// backing array the comparison reads, and every message input mutation counts
+// on the message version. Retaining the rows in the cache keeps their backing
+// array alive, so a fresh plan read can never reuse its address. The zero
+// cache keyed by a nil rows slice is a correct hit: a form without a plan
+// derives nothing.
+func (st *interactiveRebaseUIState) irDerived(ms *interactiveRebaseMessagesState) *irDerivedCache {
+	c := &st.derived
+	if c.valid && c.planVersion == st.planVersion && c.msgVersion == ms.version && sameBackingSlice(c.rows, st.rows) {
+		return c
+	}
+	rows := st.rows
+	c.rows = rows
+	c.planVersion = st.planVersion
+	c.msgVersion = ms.version
+	c.chains = interactiveRebaseFoldChains(rows)
+	c.targets = interactiveRebaseMessageTargets(rows, c.chains)
+	c.problem = interactiveRebasePlanProblem(rows)
+	c.drops = 0
+	for _, row := range rows {
+		if row.action == "Drop" {
+			c.drops++
+		}
+	}
+	c.msgLoading, c.msgFailed, c.msgValidation = interactiveRebaseMessagesBlocker(rows, c.targets, ms)
+	c.needed = interactiveRebaseNeededMessages(rows, c.targets, ms)
+	c.valid = true
+	return c
+}
+
 // interactiveRebaseMessagesState is the per-app state of the interactive
 // rebase message editing: the full original messages of the commits the plan
 // rewrites or folds, read asynchronously off the UI thread, the user's custom
@@ -62,6 +117,13 @@ type interactiveRebaseMessagesState struct {
 	reading   bool
 	readErr   error
 	drafts    map[string]string
+
+	// version counts every mutation of the three message inputs — originals,
+	// failures and drafts — whether a map entry arrives, changes or is
+	// forgotten. Replacing the state wholesale needs no count: its content is
+	// the empty state the version zero already describes. Everything derived
+	// from these inputs keys on the count.
+	version uint64
 
 	editingHash string
 	editText    string
@@ -115,14 +177,14 @@ func (a *app) clearInteractiveRebaseMessages() {
 	a.session.cancelRead("ir-msg")
 }
 
-// interactiveRebaseMessageTargets collects the chains of rows whose execution
-// needs a full commit message: every chain whose parent is Reword, and every
-// chain carrying a squash member whose parent is not Edit — an Edit parent's
+// interactiveRebaseMessageTargets collects the chains whose execution needs
+// a full commit message: every chain whose parent is Reword, and every chain
+// carrying a squash member whose parent is not Edit — an Edit parent's
 // message is the user's to write at the stop, so its chain neither reads nor
 // compiles one. The result is keyed by the full hash of the chain parent.
-func interactiveRebaseMessageTargets(rows []*interactiveRebaseRow) map[string]interactiveRebaseFoldChain {
+func interactiveRebaseMessageTargets(rows []*interactiveRebaseRow, chains []interactiveRebaseFoldChain) map[string]interactiveRebaseFoldChain {
 	targets := map[string]interactiveRebaseFoldChain{}
-	for _, chain := range interactiveRebaseFoldChains(rows) {
+	for _, chain := range chains {
 		parent := rows[chain.parent]
 		if parent.action == "Reword" || (len(chain.squash) > 0 && parent.action != "Edit") {
 			targets[parent.hash] = chain
@@ -181,8 +243,8 @@ func interactiveRebaseChainMessage(rows []*interactiveRebaseRow, chain interacti
 // originals whose read failed, or a resolved message that trims to nothing.
 // The empty-message validation is the form's own error text, shown next to
 // the plan the user edits.
-func interactiveRebaseMessagesBlocker(rows []*interactiveRebaseRow, ms *interactiveRebaseMessagesState) (loading, failure bool, validation string) {
-	for hash, chain := range interactiveRebaseMessageTargets(rows) {
+func interactiveRebaseMessagesBlocker(rows []*interactiveRebaseRow, targets map[string]interactiveRebaseFoldChain, ms *interactiveRebaseMessagesState) (loading, failure bool, validation string) {
+	for hash, chain := range targets {
 		message, chainLoading, chainFailed := interactiveRebaseChainMessage(rows, chain, ms)
 		loading = loading || chainLoading
 		failure = failure || chainFailed
@@ -201,10 +263,10 @@ func interactiveRebaseMessagesBlocker(rows []*interactiveRebaseRow, ms *interact
 // minus what the cache already holds. Failed hashes stay out — re-reading
 // them on every render would spin on a persistent failure; the Retry Message
 // button forgets the failures first, and its read is this same one, re-run.
-func interactiveRebaseNeededMessages(rows []*interactiveRebaseRow, ms *interactiveRebaseMessagesState) []string {
+func interactiveRebaseNeededMessages(rows []*interactiveRebaseRow, targets map[string]interactiveRebaseFoldChain, ms *interactiveRebaseMessagesState) []string {
 	seen := map[string]bool{}
 	var needed []string
-	for hash, chain := range interactiveRebaseMessageTargets(rows) {
+	for hash, chain := range targets {
 		if _, drafted := ms.drafts[hash]; drafted {
 			continue
 		}
@@ -237,7 +299,7 @@ func ensureInteractiveRebaseMessages(a *app, st *interactiveRebaseUIState) {
 	if ms.reading || !st.open || st.loading || st.readErr != nil {
 		return
 	}
-	needed := interactiveRebaseNeededMessages(st.rows, ms)
+	needed := st.irDerived(ms).needed
 	if len(needed) == 0 {
 		return
 	}
@@ -288,6 +350,9 @@ func ensureInteractiveRebaseMessages(a *app, st *interactiveRebaseUIState) {
 		} else if len(ms.failed) == 0 {
 			ms.readErr = nil
 		}
+		// The batch mutated the originals and the failures; everything derived
+		// from the messages recomputes on the next frame.
+		ms.version++
 		// Pick up any rows that became target chains while this batch was in
 		// flight without waiting for another render pass.
 		ensureInteractiveRebaseMessages(a, st)
@@ -304,6 +369,9 @@ func (a *app) retryInteractiveRebaseMessages(st *interactiveRebaseUIState) {
 	ms := interactiveRebaseMessages(a)
 	ms.failed = map[string]bool{}
 	ms.readErr = nil
+	// Forgetting the failures admits their hashes into the needed set again:
+	// a mutation of the message inputs the derived results key on.
+	ms.version++
 	ensureInteractiveRebaseMessages(a, st)
 }
 
@@ -315,22 +383,13 @@ func (a *app) retryInteractiveRebaseMessages(st *interactiveRebaseUIState) {
 // marker once the chain holds a custom draft.
 func (a *app) interactiveRebaseRowMessageButton(c *ui.Context, p palette, st *interactiveRebaseUIState, display []*interactiveRebaseRow, pos int) {
 	row := display[pos]
-	chains := interactiveRebaseFoldChains(display)
-	eligible := false
-	if row.action == "Reword" {
-		eligible = true
-	} else {
-		for _, chain := range chains {
-			if display[chain.parent] == row && len(chain.squash) > 0 && row.action != "Edit" {
-				eligible = true
-				break
-			}
-		}
-	}
-	if !eligible {
+	ms := interactiveRebaseMessages(a)
+	// A row owns an editable message exactly when its hash keys a target
+	// chain: every Reword parent, and every squash-carrying chain parent but
+	// an Edit one — the very rows the derived cache's targets name.
+	if _, eligible := st.irDerived(ms).targets[row.hash]; !eligible {
 		return
 	}
-	ms := interactiveRebaseMessages(a)
 	text := "Edit Message"
 	if _, drafted := ms.drafts[row.hash]; drafted {
 		text += " •"
@@ -393,7 +452,8 @@ func (a *app) closeInteractiveRebaseMessageEditor() {
 func (a *app) interactiveRebaseMessagePanel(c *ui.Context, p palette, st *interactiveRebaseUIState) {
 	ms := interactiveRebaseMessages(a)
 	rows := st.rows
-	targets := interactiveRebaseMessageTargets(rows)
+	derived := st.irDerived(ms)
+	targets := derived.targets
 
 	// An editor whose row lost the message it edited collapses by itself: the
 	// action leaving Reword, the squash chain dissolving, or the parent
@@ -404,7 +464,7 @@ func (a *app) interactiveRebaseMessagePanel(c *ui.Context, p palette, st *intera
 		}
 	}
 
-	loading, failure, validation := interactiveRebaseMessagesBlocker(rows, ms)
+	loading, failure, validation := derived.msgLoading, derived.msgFailed, derived.msgValidation
 	switch {
 	case failure:
 		errText := "reading the commit messages failed"
@@ -475,11 +535,13 @@ func (a *app) interactiveRebaseMessagePanel(c *ui.Context, p palette, st *intera
 				}
 				ms.drafts[ms.editingHash] = ms.editText
 				ms.editDirty = true
+				ms.version++
 			} else {
 				// Typed back to the default, byte for byte: the chain holds no
 				// custom message anymore and follows the composition again.
 				delete(ms.drafts, ms.editingHash)
 				ms.editDirty = false
+				ms.version++
 			}
 		}
 
@@ -488,6 +550,7 @@ func (a *app) interactiveRebaseMessagePanel(c *ui.Context, p palette, st *intera
 				delete(ms.drafts, ms.editingHash)
 				ms.editText = defaultText
 				ms.editDirty = false
+				ms.version++
 			}
 			if ui.Button(c.Key("ir-msg-done"), "Done").Label("Done").FontSize(11).Padding(2, 6).Clicked() {
 				a.closeInteractiveRebaseMessageEditor()
