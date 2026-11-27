@@ -120,3 +120,45 @@ func TestDiffLinePatchDiscardSecondOfTwoHunks(t *testing.T) {
 		t.Fatalf("discard moved the index:\nbefore\n%q\nafter\n%q", before, got)
 	}
 }
+
+// Discarding only the deletion of an end-of-file replacement without final
+// newlines restores it as its own line: the no-newline marker must not glue
+// it onto the addition that became context, and the index never moves.
+func TestDiffLinePatchDiscardNoNewlineMinusOfReplacement(t *testing.T) {
+	repo := newGitRepo(t, "ld-noeol-minus")
+	repo.CommitFile("a.txt", "one\ntwo", "initial")
+	repo.WriteFile("a.txt", "one\nTWO")
+	r := linePatchRepo(repo)
+
+	fp := unstagedPatch(t, r, "a.txt", 3)
+	before := indexContent(t, repo, "a.txt")
+	discardLinesChosen(t, r, fp, chooseLines(t, fp, "-two"))
+
+	if got, want := readWorktreeFile(t, repo, "a.txt"), "one\ntwo\nTWO"; got != want {
+		t.Fatalf("worktree after discarding the deletion = %q, want %q", got, want)
+	}
+	if got := indexContent(t, repo, "a.txt"); got != before {
+		t.Fatalf("discard moved the index:\nbefore\n%q\nafter\n%q", before, got)
+	}
+}
+
+// Discarding only the deletion of the line appended after the file's last
+// line restores it as its own line: the reverse patch consumes the context
+// the addition became without gluing the lines, and the index never moves.
+func TestDiffLinePatchDiscardNoNewlineAppendedLine(t *testing.T) {
+	repo := newGitRepo(t, "ld-noeol-append")
+	repo.CommitFile("a.txt", "one\ntwo\nthree", "initial")
+	repo.WriteFile("a.txt", "one\ntwo")
+	r := linePatchRepo(repo)
+
+	fp := unstagedPatch(t, r, "a.txt", 3)
+	before := indexContent(t, repo, "a.txt")
+	discardLinesChosen(t, r, fp, chooseLines(t, fp, "-three"))
+
+	if got, want := readWorktreeFile(t, repo, "a.txt"), "one\ntwo\nthree"; got != want {
+		t.Fatalf("worktree after discarding the deletion = %q, want %q", got, want)
+	}
+	if got := indexContent(t, repo, "a.txt"); got != before {
+		t.Fatalf("discard moved the index:\nbefore\n%q\nafter\n%q", before, got)
+	}
+}

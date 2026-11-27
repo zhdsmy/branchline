@@ -847,7 +847,7 @@ func TestDiffLinePatchEligibilityMatrix(t *testing.T) {
 		{"modified unstaged", unstaged('M'), mod, true},
 		{"modified staged", staged('M'), mod, true},
 		{"untracked", unstaged('?'), add, true},
-		{"ignored", unstaged('!'), add, true},
+		{"ignored", unstaged('!'), add, false},
 		{"deleted unstaged", unstaged('D'), del, true},
 		{"added staged", staged('A'), add, true},
 		{"deleted staged", staged('D'), del, true},
@@ -860,6 +860,10 @@ func TestDiffLinePatchEligibilityMatrix(t *testing.T) {
 		{"ignore whitespace", diffRequest{Kind: diffUnstaged, File: git.FileChange{Path: "f.txt", Status: 'M'}, IgnoreSpace: true}, mod, false},
 		{"history kind", diffRequest{Kind: diffCommitFile, File: git.FileChange{Path: "f.txt", Status: 'M'}}, mod, false},
 		{"status disagrees with patch shape", unstaged('M'), add, false},
+		{"last line without newline at zero context", unstaged('M'), parseOnePatch(t, "diff --git a/f.txt b/f.txt\n--- a/f.txt\n+++ b/f.txt\n@@ -5 +5 @@ four\n-five\n\\ No newline at end of file\n+FIVE\n\\ No newline at end of file\n"), true},
+		{"last line without newline with context", unstaged('M'), parseOnePatch(t, "diff --git a/f.txt b/f.txt\n--- a/f.txt\n+++ b/f.txt\n@@ -2,3 +2,3 @@\n three\n four\n-five\n\\ No newline at end of file\n+FIVE\n\\ No newline at end of file\n"), true},
+		{"text reading like a gitlink line", unstaged('M'), parseOnePatch(t, "diff --git a/f.txt b/f.txt\n--- a/f.txt\n+++ b/f.txt\n@@ -1,3 +1,3 @@\n intro\n-Subproject commit 06e749269a4091b6105ad23eb5fe84b9aac3c375\n+Subproject commit 28a9ab74f0a3d0a12a283fc55d489706cafb22f2\n outro\n"), true},
+		{"one newline-less line changed reads as a link", unstaged('M'), parseOnePatch(t, "diff --git a/f.txt b/f.txt\n--- a/f.txt\n+++ b/f.txt\n@@ -1 +1 @@\n-old\n\\ No newline at end of file\n+new\n\\ No newline at end of file\n"), false},
 	}
 	for _, tc := range cases {
 		if got := diffLineActionsEligible(tc.req, tc.patch); got != tc.want {
@@ -1000,5 +1004,97 @@ func TestDiffLinePatchQuotedPath(t *testing.T) {
 	}
 	if got, want := indexContent(t, repo, `b\c.txt`), "y\n"; got != want {
 		t.Fatalf("index after staging through the backslash path = %q, want %q", got, want)
+	}
+}
+
+// An untracked file without a trailing newline stages its first line alone
+// as a creation of one newline-terminated line: the no-newline marker of
+// the dropped last line must not travel onto it.
+func TestDiffLinePatchUntrackedNoNewlineFirstLineOnly(t *testing.T) {
+	repo := newGitRepo(t, "lp-untracked-noeol-first")
+	repo.CommitFile("base.txt", "base\n", "initial")
+	repo.WriteFile("new.txt", "alpha\nbeta")
+	r := linePatchRepo(repo)
+
+	fp := unstagedPatchStatus(t, r, "new.txt", '?', 3)
+	text := stageLinesChosen(t, r, fp, chooseLines(t, fp, "+alpha"))
+
+	if !strings.Contains(text, "new file mode 100644\n") {
+		t.Fatalf("staging one line of an untracked file wrote no creation header:\n%s", text)
+	}
+	if strings.Contains(text, "\\ No newline") {
+		t.Fatalf("creation of a newline-terminated line carries a no-newline marker:\n%s", text)
+	}
+	if got := indexContent(t, repo, "new.txt"); got != "alpha\n" {
+		t.Fatalf("index after staging the first line = %q, want exactly alpha with newline", got)
+	}
+}
+
+// Staging part of a deletion of a file without a trailing newline leaves
+// the newline-less last line in the index exactly: the marker of the
+// dropped deletions must not glue it to a line before it.
+func TestDiffLinePatchDeletedNoNewlinePartial(t *testing.T) {
+	repo := newGitRepo(t, "lp-deleted-noeol")
+	repo.CommitFile("gone.txt", "alpha\nbeta\ngamma", "initial")
+	if err := os.Remove(filepath.Join(repo.Path(), "gone.txt")); err != nil {
+		t.Fatal(err)
+	}
+	r := linePatchRepo(repo)
+
+	fp := unstagedPatchStatus(t, r, "gone.txt", 'D', 3)
+	stageLinesChosen(t, r, fp, chooseLines(t, fp, "-alpha", "-beta"))
+
+	if got := indexContent(t, repo, "gone.txt"); got != "gamma" {
+		t.Fatalf("index after staging two deletions = %q, want exactly gamma without newline", got)
+	}
+}
+
+// A creation patch of a path needing quotes writes every header with the
+// prefix inside the C string and /dev/null plain, and the file stages.
+func TestDiffLinePatchUntrackedQuotedPath(t *testing.T) {
+	repo := newGitRepo(t, "lp-untracked-quoted")
+	repo.CommitFile("base.txt", "base\n", "initial")
+	repo.WriteFile(`a"b.txt`, "alpha\nbeta\n")
+	r := linePatchRepo(repo)
+
+	fp := unstagedPatchStatus(t, r, `a"b.txt`, '?', 3)
+	text := stageLinesChosen(t, r, fp, chooseLines(t, fp, "+alpha", "+beta"))
+
+	if !strings.Contains(text, `diff --git "a/a\"b.txt" "b/a\"b.txt"`) {
+		t.Fatalf("creation diff header not quoted with the prefixes inside:\n%s", text)
+	}
+	if !strings.Contains(text, "--- /dev/null\n") || !strings.Contains(text, `+++ "b/a\"b.txt"`) {
+		t.Fatalf("creation file headers wrong:\n%s", text)
+	}
+	if strings.Contains(text, `a/"a\"b.txt"`) || strings.Contains(text, `b/"a\"b.txt"`) {
+		t.Fatalf("prefix outside the quotes:\n%s", text)
+	}
+	if got := indexContent(t, repo, `a"b.txt`); got != "alpha\nbeta\n" {
+		t.Fatalf("index after staging through the quoted path = %q", got)
+	}
+}
+
+// A deletion patch of a path needing quotes writes every header with the
+// prefix inside the C string and /dev/null plain, and the entry leaves
+// the index.
+func TestDiffLinePatchDeletedQuotedPath(t *testing.T) {
+	repo := newGitRepo(t, "lp-deleted-quoted")
+	repo.CommitFile(`b\c.txt`, "alpha\nbeta\n", "initial")
+	if err := os.Remove(filepath.Join(repo.Path(), `b\c.txt`)); err != nil {
+		t.Fatal(err)
+	}
+	r := linePatchRepo(repo)
+
+	fp := unstagedPatchStatus(t, r, `b\c.txt`, 'D', 3)
+	text := stageLinesChosen(t, r, fp, chooseLines(t, fp, "-alpha", "-beta"))
+
+	if !strings.Contains(text, `diff --git "a/b\\c.txt" "b/b\\c.txt"`) {
+		t.Fatalf("deletion diff header not quoted with the prefixes inside:\n%s", text)
+	}
+	if !strings.Contains(text, `--- "a/b\\c.txt"`) || !strings.Contains(text, "+++ /dev/null\n") {
+		t.Fatalf("deletion file headers wrong:\n%s", text)
+	}
+	if out, err := tryGitCommand(repo.Path(), "ls-files", "--error-unmatch", "--", `b\c.txt`); err == nil {
+		t.Fatalf("index still holds the staged deletion: %s", out)
 	}
 }

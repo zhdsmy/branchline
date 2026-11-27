@@ -958,6 +958,32 @@ func TestDiffLinesDiscardCancelPaths(t *testing.T) {
 	if countGitApplies(cmdLog) != 1 {
 		t.Fatalf("confirmed discard ran %d applies, want 1", countGitApplies(cmdLog))
 	}
+
+	// Switching the repository answers the question with cancel: the file
+	// the question names is no longer the one the app shows. The probe runs
+	// last: the writes so far belong in the log, and the command log holds
+	// only so many records.
+	repo2 := newGitRepo(t, "dl-discard-cancel-other")
+	repo2.CommitFile("other.txt", "other\n", "initial")
+	// The probe above discarded one hunk; the question opens on the hunk
+	// that remains.
+	hoverDiffLine(t, h, ui.RoleInsertion, "TWELVE", true)
+	mustClick(t, h, "Discard Hunk")
+	h.ui.Frame()
+	if !h.ui.HasText("Discard this hunk of a.txt?") {
+		t.Fatalf("discard confirmation did not open; texts=%q", h.ui.Texts())
+	}
+	if countGitApplies(cmdLog) != 1 {
+		t.Fatal("opening the confirmation already ran git apply")
+	}
+	h.openRepo(repo2.StoreRepo())
+	h.drain()
+	if countGitApplies(cmdLog) != 1 {
+		t.Fatal("switching the repository ran git apply")
+	}
+	if h.ui.HasText("Discard this hunk of a.txt?") {
+		t.Fatalf("switching the repository left the confirmation open; texts=%q", h.ui.Texts())
+	}
 }
 
 // A file edited while the confirmation is open is never written: the
@@ -1157,5 +1183,91 @@ func TestDiffLinesUnstageStagedDeletionHunk(t *testing.T) {
 	}
 	if got := repo.Git("status", "--porcelain", "--", "gone.txt"); got != " D gone.txt\n" {
 		t.Fatalf("status after unstaging the deletion = %q, want only the unstaged deletion left", got)
+	}
+}
+
+// A file of several lines whose only change is the newline-less last line
+// is ordinary text the line actions may act on, however much its bare
+// zero-context diff reads like a symlink target change: the action bar
+// shows with context and without, and staging the hunk writes the index.
+func TestDiffLinesLastLineNoNewlineEligible(t *testing.T) {
+	repo := newGitRepo(t, "dl-noeol-eligible")
+	repo.CommitFile("a.txt", "one\ntwo\nthree\nfour\nfive", "initial")
+	repo.WriteFile("a.txt", "one\ntwo\nthree\nfour\nFIVE")
+
+	h := openChangesHarness(t, repo)
+	mustClick(t, h, "Unstaged a.txt")
+	h.drain()
+
+	hoverDiffLine(t, h, ui.RoleInsertion, "FIVE", true)
+	if _, ok := h.ui.AccessByRole(ui.RoleButton, "Stage Hunk"); !ok {
+		t.Fatalf("no Stage Hunk on a newline-less last-line change; texts=%q", h.ui.Texts())
+	}
+
+	// Down to zero lines of context, where the diff is exactly the bare
+	// pair of changed lines a symlink target change shows.
+	mustClick(t, h, "Show Entire File")
+	h.drain()
+	mustClick(t, h, "Decrease Context Lines")
+	h.drain()
+	mustClick(t, h, "Decrease Context Lines")
+	h.drain()
+	named := func(name string) bool {
+		for _, a := range h.ui.AccessAll() {
+			if a.Name == name {
+				return true
+			}
+		}
+		return false
+	}
+	if !named("FIVE") || !named("five") {
+		t.Fatalf("zero-context diff lost a changed line; texts=%q", h.ui.Texts())
+	}
+	if named("four") {
+		t.Fatalf("diff is not at zero context: a context line shows; texts=%q", h.ui.Texts())
+	}
+
+	hoverDiffLine(t, h, ui.RoleInsertion, "FIVE", true)
+	mustClick(t, h, "Stage Hunk")
+	h.drain()
+	if err := h.app.session.ActionErr(); err != nil {
+		t.Fatalf("stage hunk action error: %v", err)
+	}
+	if got, want := indexContent(t, repo, "a.txt"), "one\ntwo\nthree\nfour\nFIVE"; got != want {
+		t.Fatalf("index after staging the hunk at zero context = %q, want %q", got, want)
+	}
+}
+
+// A submodule moved and dirty shows no action bar: its diff is one
+// indivisible subproject-commit line, not text a partial patch may split.
+func TestDiffLinesIneligibleSubmodule(t *testing.T) {
+	// A submodule source with two commits, so the superproject's submodule
+	// can move off the commit it recorded.
+	src := newGitRepo(t, "dl-sub-src")
+	src.CommitFile("f", "x\n", "c1")
+	src.CommitFile("f", "y\n", "c2")
+
+	repo := newGitRepo(t, "dl-sub-outer")
+	repo.CommitFile("base.txt", "base\n", "initial")
+	repo.Git("-c", "protocol.file.allow=always", "submodule", "add", "--", src.Path(), "sub")
+	repo.Git("commit", "-m", "add submodule")
+
+	// Move the submodule back one commit and dirty it.
+	repo.Git("-C", filepath.Join(repo.Path(), "sub"), "checkout", "-q", "HEAD~1")
+	repo.WriteFile("sub/f", "y\ndirty\n")
+	moved := strings.TrimSpace(repo.Git("-C", filepath.Join(repo.Path(), "sub"), "rev-parse", "HEAD"))
+
+	h := openChangesHarness(t, repo)
+	mustClick(t, h, "Unstaged sub")
+	h.drain()
+	hoverDiffLine(t, h, ui.RoleInsertion, "Subproject commit "+moved+"-dirty", true)
+	for _, label := range []string{"Stage Hunk", "Stage Lines", "Discard Hunk", "Discard Lines"} {
+		if _, ok := h.ui.AccessByRole(ui.RoleButton, label); ok {
+			t.Fatalf("submodule change shows a %s button", label)
+		}
+	}
+	// The whole-file Stage button is unaffected.
+	if _, ok := h.ui.AccessByRole(ui.RoleButton, "Stage sub"); !ok {
+		t.Fatalf("whole-file Stage button missing for a submodule; texts=%q", h.ui.Texts())
 	}
 }

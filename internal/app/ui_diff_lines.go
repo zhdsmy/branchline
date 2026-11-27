@@ -28,7 +28,7 @@ func diffLineActionsEligible(req diffRequest, patch editor.FilePatch) bool {
 	switch req.Kind {
 	case diffUnstaged:
 		switch req.File.Status {
-		case 'M', '?', '!', 'D':
+		case 'M', '?', 'D':
 		default:
 			return false
 		}
@@ -49,7 +49,7 @@ func diffLineActionsEligible(req diffRequest, patch editor.FilePatch) bool {
 	// Anything else — a rename or copy pair, a mismatch between the row
 	// clicked and the diff read — is not the patch these actions mean.
 	switch req.File.Status {
-	case '?', '!', 'A':
+	case '?', 'A':
 		return patch.OldName == "" && patch.NewName == req.File.Path
 	case 'D':
 		return patch.NewName == "" && patch.OldName == req.File.Path
@@ -71,51 +71,48 @@ func diffPatchIsModeChange(patch editor.FilePatch) bool {
 // gitlink, neither of which a partial patch may act on. The diff of one
 // added or deleted names the mode; the diff of a symlink target change or
 // a moved submodule does not, but both are one indivisible line and git
-// renders that line in one shape: a single replacement run of the whole
-// file. A text file of one newline-less line changing reads the same and
-// is refused with them — acting on its only change whole is what the line
-// actions would do anyway. A gitlink's line names the subproject commit.
+// renders that line in one shape: a single hunk replacing exactly the
+// first line, one for one. Anything larger is ordinary text, however it
+// reads — a file of several lines whose only change is its newline-less
+// last line diffs to the same pair of lines with no context, and it is
+// text the actions may split. Within the shape, a gitlink's line names
+// the subproject commit, and a link target or a one-line text file ends
+// without a newline; the one-line text file reading the same as a link is
+// refused with it, acting on its only change whole being what the line
+// actions would do anyway.
 func diffPatchIsLinkOrGitlink(patch editor.FilePatch) bool {
 	for _, m := range []string{patch.OldMode, patch.NewMode} {
 		if m == "120000" || m == "160000" {
 			return true
 		}
 	}
+	if len(patch.Hunks) != 1 {
+		return false
+	}
+	h := patch.Hunks[0]
+	if h.OldStart != 1 || h.OldLines != 1 || h.NewStart != 1 || h.NewLines != 1 {
+		return false
+	}
+	allNoNewline := true
 	changed := 0
-	for _, h := range patch.Hunks {
-		for j, l := range h.Lines {
-			if l == "" || l[0] == '\\' {
-				continue
-			}
-			if l[0] != '-' && l[0] != '+' {
-				continue
-			}
-			changed++
-			if strings.HasPrefix(l[1:], "Subproject commit ") {
-				return true
-			}
-			// Every line of a link target or a gitlink ends the file
-			// without a newline; a replacement of ordinary lines does not.
-			if j+1 >= len(h.Lines) || !strings.HasPrefix(h.Lines[j+1], "\\") {
-				return false
-			}
+	for j, l := range h.Lines {
+		if l == "" || l[0] == '\\' {
+			continue
+		}
+		if l[0] != '-' && l[0] != '+' {
+			continue
+		}
+		changed++
+		if strings.HasPrefix(l[1:], "Subproject commit ") {
+			return true
+		}
+		// Every line of a link target ends the file without a newline; a
+		// line of ordinary text with the newline it ends in does not.
+		if j+1 >= len(h.Lines) || !strings.HasPrefix(h.Lines[j+1], "\\") {
+			allNoNewline = false
 		}
 	}
-	// One replacement of one line with no line of context beside it is the
-	// whole file in one line: a link, a gitlink, or the text file that
-	// reads the same.
-	if changed == 2 {
-		total := 0
-		for _, h := range patch.Hunks {
-			for _, l := range h.Lines {
-				if l != "" && l[0] != '\\' {
-					total++
-				}
-			}
-		}
-		return total == 2
-	}
-	return false
+	return changed == 2 && allNoNewline
 }
 
 // syncLineActions wires the diff viewer's line actions for the frame, or
