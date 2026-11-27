@@ -175,8 +175,9 @@ func Generate(ctx context.Context, keygen, dir, name, comment string) (Key, erro
 	// only what this run created. Standard input is the null device: no
 	// prompt of ssh-keygen can block, and a canceled context kills it.
 	removeNew := func() {
-		os.Remove(priv)
-		os.Remove(pub)
+		// A removal failure leaves nothing worse than ssh-keygen did.
+		_ = os.Remove(priv)
+		_ = os.Remove(pub)
 	}
 	var stderr bytes.Buffer
 	cmd := exec.CommandContext(ctx, keygen, "-q", "-t", "ed25519", "-N", "", "-C", comment, "-f", priv)
@@ -226,7 +227,7 @@ func firstLine(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	line, err := bufio.NewReader(f).ReadString('\n')
 	if err != nil && !errors.Is(err, io.EOF) {
 		return "", err
