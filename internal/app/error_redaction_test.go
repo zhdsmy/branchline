@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -50,13 +51,22 @@ func TestErrorRedactionPushHookCredentials(t *testing.T) {
 	}
 
 	// The original error must survive underneath: errors.As reaches the
-	// *git.Error, whose stderr still carries the unredacted hook output.
+	// *git.Error, whose stderr still carries the unredacted hook output,
+	// even when another caller wraps the redacted error again with %w.
 	var ge *git.Error
 	if !errors.As(err, &ge) {
 		t.Fatalf("errors.As lost the *git.Error under the redaction: %v (%T)", err, err)
 	}
 	if !strings.Contains(ge.Stderr, "secret-token") {
 		t.Fatalf("Stderr = %q, want the unredacted hook output", ge.Stderr)
+	}
+	wrapped := fmt.Errorf("push failed: %w", err)
+	if strings.Contains(wrapped.Error(), "secret-token") {
+		t.Fatalf("wrapped redacted error leaks the credential: %q", wrapped.Error())
+	}
+	var wrappedGE *git.Error
+	if !errors.As(wrapped, &wrappedGE) || wrappedGE != ge {
+		t.Fatalf("errors.As through fmt.Errorf(%%w) lost *git.Error: got %v, want %v", wrappedGE, ge)
 	}
 
 	// Nothing on screen or in the accessibility tree may carry the
