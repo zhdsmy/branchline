@@ -473,6 +473,21 @@ func TestCloneSSHDraftsPreviewAndDisabledStates(t *testing.T) {
 		t.Fatal("Clone disabled with a legal name again")
 	}
 
+	// An empty URL disables at SSH Server too.
+	replaceField(t, h, "Repository URL", "")
+	if cloneEnabled() {
+		t.Fatal("Clone enabled with an empty URL at SSH Server")
+	}
+	replaceField(t, h, "Repository URL", "https://example.com/owner/preview.git")
+	if !cloneEnabled() {
+		t.Fatal("Clone disabled with the URL back")
+	}
+
+	// The location choice is one named radio group.
+	if _, ok := h.ui.AccessByRole(ui.RoleRadioGroup, "Clone Location"); !ok {
+		t.Fatalf("no radio group named Clone Location; texts=%q", h.ui.Texts())
+	}
+
 	// Back to This Mac: the parent draft survived, and the server fields
 	// leave the dialog.
 	if err := h.ui.Click("This Mac"); err != nil {
