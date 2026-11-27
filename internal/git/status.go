@@ -11,9 +11,16 @@ func (r *Repo) Status() (Status, error) {
 }
 
 // StatusOpts returns the working tree. showIgnored also lists untracked
-// paths excluded by .gitignore, as git status --ignored=matching.
+// paths excluded by .gitignore, as git status --ignored=matching. The read
+// never runs the filter programs the repository defines: a status is the
+// app's own bookkeeping, not a user action. When the filters cannot even be
+// listed the read fails instead of running them unguarded.
 func (r *Repo) StatusOpts(showIgnored bool) (Status, error) {
-	args := []string{"status", "--porcelain=v2", "--branch", "-z", "--untracked-files=all"}
+	passive, err := r.passiveFilterConfig()
+	if err != nil {
+		return Status{}, fmt.Errorf("read repository filter configuration: %w", err)
+	}
+	args := append(append([]string{}, passive...), "status", "--porcelain=v2", "--branch", "-z", "--untracked-files=all")
 	if showIgnored {
 		args = append(args, "--ignored=matching")
 	}
@@ -22,7 +29,7 @@ func (r *Repo) StatusOpts(showIgnored bool) (Status, error) {
 		return Status{}, err
 	}
 	st := ParseStatus(out)
-	st.State = r.state()
+	st.State = r.statePassive(passive)
 	if st.State == "rebase" {
 		st.Stopped = r.rebaseStop(st.Conflicted())
 	}
@@ -160,9 +167,22 @@ func (r *Repo) hashText(text string) (string, error) {
 
 // state finds a merge, rebase, cherry-pick, revert or bisect in progress.
 // git status says which one. A leftover REBASE_HEAD is not enough: git keeps
-// that object after the rebase finishes.
+// that object after the rebase finishes. The status read is guarded against
+// the repository's own filters like every read the app runs on its own; a
+// failure to list them only loses the state, never runs them.
 func (r *Repo) state() string {
-	out, err := r.run(quick, "status", "--untracked-files=no")
+	passive, err := r.passiveFilterConfig()
+	if err != nil {
+		return ""
+	}
+	return r.statePassive(passive)
+}
+
+// statePassive is state for a caller that already listed the repository's
+// own filters, so one status read costs one listing instead of two.
+func (r *Repo) statePassive(passive []string) string {
+	args := append(append([]string{}, passive...), "status", "--untracked-files=no")
+	out, err := r.run(quick, args...)
 	if err != nil {
 		return ""
 	}

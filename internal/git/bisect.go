@@ -78,7 +78,12 @@ func (r *Repo) BisectProgress() (p BisectProgress, ok bool, err error) {
 	if err != nil {
 		return BisectProgress{}, false, err
 	}
-	start, err := r.run(quick, "status", "--untracked-files=no")
+	passive, err := r.passiveFilterConfig()
+	if err != nil {
+		return BisectProgress{}, false, fmt.Errorf("read repository filter configuration: %w", err)
+	}
+	startArgs := append(append([]string{}, passive...), "status", "--untracked-files=no")
+	start, err := r.run(quick, startArgs...)
 	if err != nil {
 		return BisectProgress{}, false, err
 	}
