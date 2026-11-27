@@ -39,6 +39,8 @@ func openRemoteBranchMenu(t *testing.T, h *testHarness, rb string) {
 	want := []string{
 		"Checkout…",
 		"-",
+		"Pull into 'main'…",
+		"-",
 		"Merge into 'main'…",
 		"Rebase 'main' on '" + rb + "'…",
 		"Interactively Rebase on '" + rb + "'…",
