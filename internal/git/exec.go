@@ -508,12 +508,16 @@ func runAskContext(ctx context.Context, cmd *exec.Cmd, stdin []byte, args []stri
 	configureShellCancel(cmd)
 	var mu sync.Mutex
 	var fail error
+	var done bool
 	end := func(err error) {
 		mu.Lock()
+		defer mu.Unlock()
 		if fail == nil {
 			fail = err
 		}
-		mu.Unlock()
+		if done {
+			return
+		}
 		if cmd.Cancel != nil {
 			_ = cmd.Cancel()
 		} else if cmd.Process != nil {
@@ -527,6 +531,7 @@ func runAskContext(ctx context.Context, cmd *exec.Cmd, stdin []byte, args []stri
 	}}
 	out, err := runTo(ctx, cmd, stdin, args, w, w.text)
 	mu.Lock()
+	done = true
 	delivery := fail
 	mu.Unlock()
 	if delivery != nil {

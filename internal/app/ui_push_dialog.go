@@ -5,20 +5,18 @@ import (
 	"fmt"
 	"slices"
 	"strings"
-	"sync"
 
 	"github.com/egoist/mygo/ui"
 
 	"github.com/zhdsmy/branchline/internal/git"
 )
 
-// pushDialogUIState is the per-app draft of the toolbar Push dialog: the
-// fields the user edits, the branch list, remote list, current branch and
+// pushDialogUIState is the Push dialog draft inside the app's sync state:
+// the fields the user edits, the branch list, remote list, current branch and
 // HEAD hash captured from the snapshot when the dialog opened, and the
-// repository generation they belong to. It lives outside the shared app
-// struct, keyed by the app instance, exactly as the other sync dialog states
-// do; a repository switch or close discards every captured value, so nothing
-// of the previous repository carries over.
+// repository generation they belong to. It lives in the sync state the
+// generation check already resets on a repository switch or close, so
+// nothing captured for one repository carries over to the next.
 type pushDialogUIState struct {
 	repoGen uint64
 
@@ -38,24 +36,13 @@ type pushDialogUIState struct {
 	expectHead       string
 }
 
-var pushDialogUIStates = struct {
-	sync.Mutex
-	m map[*app]*pushDialogUIState
-}{m: map[*app]*pushDialogUIState{}}
-
-// pushDialogUI returns the app's Push dialog state, creating it on first use
-// and discarding every open draft when the repository generation moved past
-// it: a switch or close makes the captured branches, remotes and HEAD
+// pushDialogUI returns the app's Push dialog state inside its sync state,
+// discarding every open draft when the repository generation moved past it:
+// a switch or close makes the captured branches, remotes and HEAD
 // meaningless, so the dialog of the previous repository never carries over.
 // It runs on the UI thread.
 func pushDialogUI(a *app) *pushDialogUIState {
-	pushDialogUIStates.Lock()
-	defer pushDialogUIStates.Unlock()
-	st := pushDialogUIStates.m[a]
-	if st == nil {
-		st = &pushDialogUIState{}
-		pushDialogUIStates.m[a] = st
-	}
+	st := &syncStateFor(a).pushDlg
 	if gen := a.session.Generation(); st.repoGen != gen {
 		st.repoGen = gen
 		st.clearPushDraft()

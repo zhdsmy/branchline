@@ -2,6 +2,7 @@ package app
 
 import (
 	"errors"
+	"fmt"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -28,6 +29,7 @@ type syncUIState struct {
 	lastRepoGen uint64
 	fetchDlg    fetchDialogState
 	pullDlg     pullDialogState
+	pushDlg     pushDialogUIState
 
 	// mu guards the lifecycle counters background workers and the quit-time
 	// teardown share. inflight counts running sync workers; closing is set by
@@ -133,11 +135,13 @@ func syncStateFor(a *app) *syncUIState {
 		st.lastRepoGen = gen
 		st.syncErr = ""
 		st.pass.cancelAll()
-		// The Fetch and Pull dialogs' captured remotes, branches and HEAD
-		// belong to the old repository: close them without fetching, pulling
-		// or remembering anything.
+		// The Fetch, Pull and Push dialogs' captured remotes, branches and HEAD
+		// belong to the old repository: close them without syncing or
+		// remembering anything.
 		st.fetchDlg = fetchDialogState{}
 		st.pullDlg = pullDialogState{}
+		st.pushDlg.clearPushDraft()
+		st.pushDlg.repoGen = gen
 	}
 	return st
 }
@@ -359,7 +363,7 @@ func (a *app) syncFetchOpts(opts git.FetchOptions) {
 				return err
 			}
 			if !slices.Contains(refs.Remotes, opts.Remote) {
-				return errors.New("The remote " + opts.Remote + " no longer exists.")
+				return fmt.Errorf("The remote %s no longer exists.", opts.Remote)
 			}
 		}
 		return repo.FetchOpts(opts)
