@@ -15,6 +15,25 @@ import (
 // first, because the shell writes it before the command starts.
 const pgidMarker = "\x1ebranchline-pgid "
 
+// pgidPrefix makes the server name its process group before anything else.
+// sshd hands the command to the login's shell, which need not be a POSIX
+// one: csh and tcsh would read `>&2` as redirecting both streams into a
+// file named 2, and fish rejects `$$` outright. Only /bin/sh sees the
+// printf, and the one argument it gets is a single quoted string with
+// nothing to expand in it, which every login shell parses alike. The sh is
+// a child of the login shell, the leader sshd made of the session's
+// process group, so the parent it names is the group of everything the
+// command starts.
+const pgidPrefix = "/bin/sh -c 'printf \"" + pgidMarker + "%s\\n\" \"$PPID\" >&2'; "
+
+// remoteGroupKill is the shell script that ends the process group the
+// command on the server named. It runs through /bin/sh like every other
+// script of the server: the kill of a login shell that is not POSIX needs
+// not understand process groups or the -- before one.
+func remoteGroupKill(pg int) string {
+	return remoteShellCommand("kill -TERM -- -" + strconv.Itoa(pg))
+}
+
 // pgidScanCap bounds how many bytes of a possible marker the scanner holds
 // back: the marker itself, the digits of a process group number, and the
 // newline. Anything longer turns out not to be the marker and passes on.
@@ -170,7 +189,7 @@ func (s *SSHExecutor) stopRemoteGroup(pg int) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), remoteKillTimeout)
 		defer cancel()
-		_, _ = s.RunShell(ctx, "kill -TERM -- -"+strconv.Itoa(pg))
+		_, _ = s.RunShell(ctx, remoteGroupKill(pg))
 	}()
 }
 

@@ -518,3 +518,116 @@ func markerBytes(pg int, text string) [][]byte {
 	}
 	return writes
 }
+
+// loginShells is every shell a login can be, each run with the marker
+// prefix and the kill the way the server would. fish joins in when the
+// machine has it.
+func loginShells(t *testing.T) []string {
+	t.Helper()
+	shells := []string{"/bin/sh", "/bin/bash", "/bin/zsh", "/bin/dash", "/bin/ksh", "/bin/tcsh", "/bin/csh"}
+	if fish, err := exec.LookPath("fish"); err == nil {
+		shells = append(shells, fish)
+	}
+	return shells
+}
+
+// shellEnv is a HOME of the test and nothing the user's files can leak
+// into: zsh reads ~/.zshenv and csh ~/.cshrc even for -c.
+func shellEnv(t *testing.T) (env []string, home string) {
+	t.Helper()
+	home = t.TempDir()
+	return []string{"HOME=" + home, "PATH=/usr/bin:/bin", "LC_ALL=C"}, home
+}
+
+// dirEmpty fails the test when anything landed in dir: a csh reading of
+// the prefix would leave a file named 2 behind.
+func dirEmpty(t *testing.T, dir string) {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("%s is not empty: %v", dir, entries)
+	}
+}
+
+// TestCancelMarkerLoginShells runs the marker prefix through every shell a
+// login can use: the process group it names is the shell itself, nothing
+// reaches the command's output, and nothing is written anywhere.
+func TestCancelMarkerLoginShells(t *testing.T) {
+	for _, shell := range loginShells(t) {
+		t.Run(filepath.Base(shell), func(t *testing.T) {
+			if _, err := os.Stat(shell); err != nil {
+				t.Skipf("no %s on this machine", shell)
+			}
+			env, home := shellEnv(t)
+			dir := t.TempDir()
+			cmd := exec.Command(shell, "-c", pgidPrefix+"true")
+			cmd.Dir = dir
+			cmd.Env = env
+			var out, downstream bytes.Buffer
+			cmd.Stdout = &out
+			pw := newPgidWriter()
+			pw.chain(&downstream)
+			cmd.Stderr = pw
+			if err := cmd.Run(); err != nil {
+				t.Fatalf("%s: %v", shell, err)
+			}
+			pw.finish()
+			if want := cmd.Process.Pid; pw.pgid() != want {
+				t.Errorf("%s: group %d, want the shell's own %d", shell, pw.pgid(), want)
+			}
+			if downstream.Len() != 0 {
+				t.Errorf("%s: downstream stderr %q, want empty", shell, downstream.Bytes())
+			}
+			if out.Len() != 0 {
+				t.Errorf("%s: stdout %q, want empty", shell, out.Bytes())
+			}
+			dirEmpty(t, dir)
+			dirEmpty(t, home)
+		})
+	}
+}
+
+// TestCancelKillLoginShells ends a process group through every shell a
+// login can use, with the exact command canceling sends to the server.
+func TestCancelKillLoginShells(t *testing.T) {
+	for _, shell := range loginShells(t) {
+		t.Run(filepath.Base(shell), func(t *testing.T) {
+			if _, err := os.Stat(shell); err != nil {
+				t.Skipf("no %s on this machine", shell)
+			}
+			env, home := shellEnv(t)
+			dir := t.TempDir()
+
+			bed := exec.Command("/bin/sleep", "30")
+			bed.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+			if err := bed.Start(); err != nil {
+				t.Fatal(err)
+			}
+			pg := bed.Process.Pid
+			t.Cleanup(func() {
+				_ = syscall.Kill(-pg, syscall.SIGKILL)
+				_ = bed.Wait()
+			})
+
+			cmd := exec.Command(shell, "-c", remoteGroupKill(pg))
+			cmd.Dir = dir
+			cmd.Env = env
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("%s: kill command: %v %s", shell, err, out)
+			}
+
+			deadline := time.Now().Add(5 * time.Second)
+			for groupAlive(pg) {
+				if time.Now().After(deadline) {
+					t.Fatalf("%s: process group %d still alive after the kill", shell, pg)
+				}
+				time.Sleep(50 * time.Millisecond)
+			}
+			dirEmpty(t, dir)
+			dirEmpty(t, home)
+		})
+	}
+}

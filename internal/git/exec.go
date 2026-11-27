@@ -390,13 +390,11 @@ func (s *SSHExecutor) Run(ctx context.Context, stdin []byte, args ...string) ([]
 		if prog == "" {
 			prog = sshProgram()
 		}
-		// The shell names its own process group before anything else: sshd
-		// starts each session in a new one, with the shell as its leader, so
-		// $$ is the group of everything the command starts. Canceling the
-		// command sends TERM to the group this number names. The prefix sits
-		// outside remoteCommand, whose exact shape is part of the tests.
-		remote := "printf '" + pgidMarker + "%s\\n' \"$$\" >&2; "
-		remote += s.remoteCommand(ctx.Value(preparedEditorsKey{}) == true, args...)
+		// The shell names its process group before anything else, and
+		// canceling sends TERM to the group the number names. The prefix
+		// sits outside remoteCommand, whose exact shape is part of the
+		// tests.
+		remote := pgidPrefix + s.remoteCommand(ctx.Value(preparedEditorsKey{}) == true, args...)
 		cmd := exec.CommandContext(ctx, prog, s.SSHArgs(remote)...)
 		cmd.Env = s.env()
 		pw := newPgidWriter()
