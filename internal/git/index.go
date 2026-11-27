@@ -11,8 +11,7 @@ func (r *Repo) Stage(paths ...string) error {
 	if len(paths) == 0 {
 		return nil
 	}
-	_, err := r.run(quick, append([]string{"add", "-A", "--"}, paths...)...)
-	return err
+	return r.runPathBatches([]string{"add", "-A", "--"}, paths)
 }
 
 // StageAll adds every change to the index.
@@ -28,11 +27,9 @@ func (r *Repo) Unstage(paths ...string) error {
 	}
 	if _, err := r.run(quick, "rev-parse", "--verify", "--quiet", "HEAD"); err != nil {
 		// Before the first commit there is no HEAD to restore from.
-		_, err := r.run(quick, append([]string{"rm", "--cached", "-r", "-q", "--"}, paths...)...)
-		return err
+		return r.runPathBatches([]string{"rm", "--cached", "-r", "-q", "--"}, paths)
 	}
-	_, err := r.run(quick, append([]string{"reset", "-q", "HEAD", "--"}, paths...)...)
-	return err
+	return r.runPathBatches([]string{"reset", "-q", "HEAD", "--"}, paths)
 }
 
 // UnstageAll empties the index of changes.
@@ -60,18 +57,18 @@ func (r *Repo) Discard(files ...FileChange) error {
 		}
 	}
 	if len(tracked) > 0 {
-		if _, err := r.run(quick, append([]string{"--literal-pathspecs", "checkout", "--"}, tracked...)...); err != nil {
+		if err := r.runPathBatches([]string{"--literal-pathspecs", "checkout", "--"}, tracked); err != nil {
 			return err
 		}
 	}
 	if len(untracked) > 0 {
-		if _, err := r.run(quick, append([]string{"--literal-pathspecs", "clean", "-f", "-q", "--"}, untracked...)...); err != nil {
+		if err := r.runPathBatches([]string{"--literal-pathspecs", "clean", "-f", "-q", "--"}, untracked); err != nil {
 			return err
 		}
 	}
 	if len(ignored) > 0 {
 		// -x is required: plain clean leaves paths excluded by .gitignore.
-		if _, err := r.run(quick, append([]string{"--literal-pathspecs", "clean", "-f", "-x", "-q", "--"}, ignored...)...); err != nil {
+		if err := r.runPathBatches([]string{"--literal-pathspecs", "clean", "-f", "-x", "-q", "--"}, ignored); err != nil {
 			return err
 		}
 	}
@@ -345,7 +342,5 @@ func (r *Repo) SetIndexFlag(flag IndexFlag, on bool, paths ...string) error {
 	default:
 		return fmt.Errorf("unknown index flag")
 	}
-	args := append([]string{"update-index", bit, "--"}, paths...)
-	_, err := r.run(quick, args...)
-	return err
+	return r.runPathBatches([]string{"update-index", bit, "--"}, paths)
 }
