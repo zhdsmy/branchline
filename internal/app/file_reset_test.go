@@ -121,7 +121,7 @@ func TestFileResetAtCommitRestoresModifiedFile(t *testing.T) {
 	}
 	menu := h.ui.Menu()
 	wantMenu := []string{
-		"File History…", "Blame…", "-",
+		"Open in External Diff Tool", "File History…", "Blame…", "-",
 		"Reset File to State at Commit…", "Reset File to State Before Commit…",
 	}
 	if !slices.Equal(menu, wantMenu) {
