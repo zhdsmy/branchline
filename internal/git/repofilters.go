@@ -37,18 +37,21 @@ func (r *Repo) passiveFilterConfig() ([]string, error) {
 }
 
 // repoDefinedFilters lists the names of the filters whose clean or process
-// command the repository defines or rewrites. A filter counts when the
-// effective value of either key differs from both the global and the system
-// value of the same key, or those scopes do not set it: a value equal to an
-// inherited one is the user's own configuration running as it would anywhere
-// and is left alone. The effective view resolves include and includeIf
-// directives of every scope, so a filter hidden behind [include] is found.
+// command the repository itself defines or rewrites: the keys of the
+// repository's own configuration whose values differ from both the global
+// and the system value of the same key, or which those scopes do not set.
+// A value equal to an inherited one is the user's own configuration running
+// as it would anywhere and is left alone. The repository's file is the
+// local scope — not the effective configuration, which would mistake the
+// user's inherited keys and executor-level overrides for the repository's
+// own — and every scope is read with include and includeIf directives
+// resolved, so a filter hidden behind [include] is found.
 func (r *Repo) repoDefinedFilters() ([]string, error) {
-	effective, err := r.filterConfigValues()
+	local, err := r.filterConfigValues("--local")
 	if err != nil {
 		return nil, err
 	}
-	if len(effective) == 0 {
+	if len(local) == 0 {
 		return nil, nil
 	}
 	global, err := r.filterConfigValues("--global")
@@ -60,7 +63,7 @@ func (r *Repo) repoDefinedFilters() ([]string, error) {
 		return nil, err
 	}
 	defined := map[string]bool{}
-	for key, value := range effective {
+	for key, value := range local {
 		name, ok := splitFilterKey(key)
 		if !ok {
 			continue
