@@ -647,6 +647,31 @@ func TestExternalDiffSettingsSaveFailureReverts(t *testing.T) {
 	if got := h.store.Settings().DiffTool; got != "Custom" {
 		t.Fatalf("the retry after restoring writability did not persist: DiffTool = %q", got)
 	}
+
+	// A typed custom path is its own control: with the directory read-only
+	// again its failed keystroke save reverts the input and shows the error
+	// under it.
+	seeded := "/usr/local/bin/seeded-diff"
+	typeInSettingsField(t, tt, "External Diff Tool Path", seeded)
+	tt.Frame()
+	if got := h.store.Settings().CustomDiff.Path; got != seeded {
+		t.Fatalf("setup: the seeded path did not persist: %q", got)
+	}
+	if err := os.Chmod(storeDir, 0o500); err != nil {
+		t.Fatalf("chmod store dir again: %v", err)
+	}
+	typeInSettingsField(t, tt, "External Diff Tool Path", seeded+"-edited")
+	tt.Frame()
+	if got := h.store.Settings().CustomDiff.Path; got != seeded {
+		t.Fatalf("failed keystroke save changed CustomDiff.Path to %q", got)
+	}
+	st := diffToolSettings(h.app)
+	if st.customDiffPath != seeded {
+		t.Fatalf("the reverted input holds %q, want the saved %q", st.customDiffPath, seeded)
+	}
+	if st.errs["customDiffPath"] == "" {
+		t.Fatal("the path input's failed save left no error under it")
+	}
 }
 
 // The Choose button of the custom diff row puts the picked program into the

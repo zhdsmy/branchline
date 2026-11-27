@@ -193,8 +193,9 @@ func (a *app) chooseCustomToolPath(st *diffToolSettingsState, key string, shown,
 
 // settingsDiffToolRows renders the external tool rows of the Diff page: one
 // pop-up per tool, revealing the program and arguments inputs of its Custom
-// choice.
-func (a *app) settingsDiffToolRows(c *ui.Context, key, selectLabel, pathKey, argsKey string, tool, path, pathApplied, args *string, argsPlaceholder string) {
+// choice. Each control shows the error of its own pending save, keyed as
+// saveDiffToolChoice records it.
+func (a *app) settingsDiffToolRows(c *ui.Context, key, selectLabel, pathKey, argsKey, errPathKey, errArgsKey string, tool, path, pathApplied, args *string, argsPlaceholder string) {
 	st := diffToolSettings(a)
 	ui.Field(c, selectLabel, func() {
 		ui.Select(c.Key(key), tool, exttool.Names()).Label(selectLabel)
@@ -206,13 +207,13 @@ func (a *app) settingsDiffToolRows(c *ui.Context, key, selectLabel, pathKey, arg
 		ui.Row(c.Key(key + "-path-row")).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
 			ui.TextInput(c.Key(pathKey), path).Grow(1).MinWidth(0).Font("monospace").Placeholder("/usr/local/bin/difftool").Label(selectLabel + " Path")
 			if ui.Button(c.Key(key+"-choose"), "Choose…").Label("Choose " + selectLabel + " Path").Clicked() {
-				a.chooseCustomToolPath(st, key, path, pathApplied)
+				a.chooseCustomToolPath(st, errPathKey, path, pathApplied)
 			}
 		})
-	}).Error(st.errs[key])
+	}).Error(st.errs[errPathKey])
 	ui.Field(c, "Arguments", func() {
 		ui.TextInput(c.Key(argsKey), args).FillWidth().Font("monospace").Placeholder(argsPlaceholder).Label(selectLabel + " Arguments")
-	}).Error(st.errs[key])
+	}).Error(st.errs[errArgsKey])
 }
 
 // settingsDiffPage renders the Diff page: the code font size, the tab width,
@@ -290,10 +291,10 @@ func (a *app) settingsDiffPage(c *ui.Context, p palette) {
 		ui.Field(c, "Whitespace", func() {
 			ui.Checkbox(c, &s.ignoreSpace, "Ignore whitespace changes").Label("Ignore whitespace changes")
 		}).Error(s.errs["ignoreSpace"])
-		a.settingsDiffToolRows(c, "diffTool", "External Diff Tool", "diff-custom-path", "diff-custom-args",
+		a.settingsDiffToolRows(c, "diffTool", "External Diff Tool", "diff-custom-path", "diff-custom-args", "customDiffPath", "customDiffArgs",
 			&st.diffTool, &st.customDiffPath, &st.customDiffPathApplied, &st.customDiffArgs,
 			`"$LOCAL" "$REMOTE"`)
-		a.settingsDiffToolRows(c, "mergeTool", "Merge Tool", "merge-custom-path", "merge-custom-args",
+		a.settingsDiffToolRows(c, "mergeTool", "Merge Tool", "merge-custom-path", "merge-custom-args", "customMergePath", "customMergeArgs",
 			&st.mergeTool, &st.customMergePath, &st.customMergePathApplied, &st.customMergeArgs,
 			`"$BASE" "$LOCAL" "$REMOTE" "$MERGED"`)
 	})
