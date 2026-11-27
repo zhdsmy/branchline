@@ -39,9 +39,21 @@ type historyDetailResult struct {
 	files  []git.FileChange
 }
 
+// historyPaneMode is what the detail pane shows for the current selection:
+// nothing, one commit's details, a two-commit comparison, or a placeholder
+// for three or more selected commits.
+type historyPaneMode uint8
+
+const (
+	historyNoSelection historyPaneMode = iota
+	historySingleCommit
+	historyCompare
+	historyMultiSelect
+)
+
 // historyState holds the History page state on app. All fields are
 // owned by the UI thread; background reads publish through sessionRead with
-// the fixed scopes "history-detail" and "history-diff".
+// the fixed scopes "history-detail", "history-compare" and "history-diff".
 type historyState struct {
 	// repoGen is the repository generation the state below belongs to. When
 	// session.Generation() moves past it the page resets itself.
@@ -49,7 +61,9 @@ type historyState struct {
 
 	// sel is the hash of the chosen commit, "" for none. commit is a copy of
 	// the chosen git.Commit captured on the UI thread (with cloned Parents),
-	// passed to background reads so workers never read live UI state.
+	// passed to background reads so workers never read live UI state. With
+	// several commits chosen, sel is the row the keys move from — the last
+	// commit the user acted on.
 	sel    string
 	commit git.Commit
 
@@ -59,6 +73,13 @@ type historyState struct {
 	detailErr     error
 
 	fileSel int
+
+	// mode is the detail pane's current mode; selection holds every chosen
+	// commit hash, as the list's multi-selection does. compare is the
+	// two-commit comparison state, meaningful only in historyCompare mode.
+	mode      historyPaneMode
+	selection ui.Selection[string]
+	compare   historyCompareState
 
 	diff diffPanel
 
@@ -147,6 +168,12 @@ func (a *app) historyCommitList(c *ui.Context, p palette) {
 		return "Commit " + cm.Short() + " " + cm.Subject
 	}
 	hv.list.Selected = &hv.listSel
+	// The list chooses several rows by their commit-hash keys: a click
+	// chooses one row, Cmd-click adds a row or takes it out, Shift-click
+	// chooses a range. MenuKeepsSelection keeps a right-click on a row from
+	// changing the choice: the menu acts on the row it was opened for.
+	hv.list.Selection = &hv.selection
+	hv.list.MenuKeepsSelection = true
 
 	ui.Column(c.Key("history-list")).Grow(1).FillWidth().MinHeight(0).Children(func() {
 		ui.Row(c.Key("history-list-header")).Height(30).FillWidth().PaddingX(14).Gap(10).AlignItems(ui.Center).Children(func() {
@@ -165,6 +192,12 @@ func (a *app) historyCommitList(c *ui.Context, p palette) {
 		listTheme.Accent = p.listSelected
 		listTheme.AccentText = p.onAccent
 		a.applyPendingHistoryReveal(snap)
+		// A Show in History reveal sets sel without touching the selection
+		// set; adopt it as the chosen rows. Only an empty selection adopts:
+		// a non-empty one is the user's and never yields to sel.
+		if hv.sel != "" && hv.selection.Len() == 0 {
+			hv.selection.Add(hv.sel)
+		}
 		ui.Themed(c.Key("history-list-theme"), &listTheme).
 			Grow(1).FillWidth().MinHeight(0).Background(ui.Transparent).
 			Children(func() {
@@ -174,32 +207,19 @@ func (a *app) historyCommitList(c *ui.Context, p palette) {
 						a.historyCommitRow(r.Context, p, r.Index, r.Selected(), snap.Commits[r.Index], snap.Graph, head, graphColW)
 					})
 				if list.Changed() {
+					// The user chose rows herself: a pending Show in History
+					// reveal must not take the selection back. The selection
+					// change itself is picked up by syncHistorySelection
+					// below, which reacts to the chosen rows no matter how
+					// they changed.
 					a.cancelPendingHistoryReveal()
-					if hv.listSel >= 0 && hv.listSel < len(snap.Commits) {
-						a.selectHistoryCommit(snap.Commits[hv.listSel])
-					}
 				}
 			})
-		// Keep hv.sel consistent with what the list shows as selected when the
-		// commits slice changes identity underneath (reloads, Load More).
-		if hv.sel == "" {
-			hv.listSel = -1
-		}
-		// The list's key-follow moves listSel with the chosen commit as rows
-		// come and go, and writes -1 when the commit is gone — an amend
-		// replacing it, or a branch deletion cutting it out of the walk. The
-		// detail pane must not keep showing a commit the list no longer has.
-		if hv.sel != "" && hv.listSel < 0 {
-			hv.sel = ""
-			hv.commit = git.Commit{}
-			hv.detailErr = nil
-			hv.detailLoading = false
-			hv.detail = git.CommitDetail{}
-			hv.files = nil
-			hv.fileSel = -1
-			a.session.cancelRead("history-detail")
-			hv.diff.Clear(a.session, "history-diff")
-		}
+		// Rows can change without any user input — a snapshot reload dropping
+		// an amended or rebased-away commit, Load More, a repository switch —
+		// so the detail pane is derived from the chosen rows on every frame,
+		// not only when the user clicks.
+		a.syncHistorySelection(snap)
 
 		if snap.More {
 			ui.Box(c).Height(1).FillWidth().Background(p.hairline).Shrink(0)
@@ -362,14 +382,25 @@ func (a *app) startHistoryDetailLoad(cm git.Commit) {
 }
 
 // historyDetailPane renders the bottom split: commit metadata plus the list
-// of changed files on the left, and the shared diff panel on the right.
+// of changed files on the left, and the shared diff panel on the right. With
+// two commits chosen the left column carries the comparison header and the
+// files changed between them; with three or more it shows a placeholder.
 func (a *app) historyDetailPane(c *ui.Context, p palette) {
 	hv := &a.historyView
 	ui.Row(c.Key("history-detail-pane")).Grow(1).FillWidth().MinHeight(0).Children(func() {
 		ui.Column(c.Key("history-detail-left")).Width(320).FillHeight().Shrink(0).Children(func() {
-			a.historyCommitInfo(c, p)
-			ui.Box(c).Height(1).FillWidth().Background(p.hairline).Shrink(0)
-			a.historyFileList(c, p)
+			switch hv.mode {
+			case historyCompare:
+				a.historyCompareInfo(c, p)
+				ui.Box(c).Height(1).FillWidth().Background(p.hairline).Shrink(0)
+				a.historyCompareFileList(c, p)
+			case historyMultiSelect:
+				a.historyMultiSelectInfo(c, p)
+			default:
+				a.historyCommitInfo(c, p)
+				ui.Box(c).Height(1).FillWidth().Background(p.hairline).Shrink(0)
+				a.historyFileList(c, p)
+			}
 		})
 		ui.Box(c).Width(1).FillHeight().Background(p.hairline).Shrink(0)
 		ui.Box(c.Key("history-detail-right")).Grow(1).FillHeight().MinWidth(0).Children(func() {
