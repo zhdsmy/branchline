@@ -27,20 +27,41 @@ func TestGitSSHDOrphanVictimHelper(t *testing.T) {
 		t.Skip("helper process for the orphan tests, not a standalone test")
 	}
 	srv := startSSHD(t)
+	jumpLog := filepath.Join(t.TempDir(), "jump-sshd.log")
+	jump := startJumpSSHD(t, srv.port, srv.identity, jumpLog)
 
 	// The sshd pid comes from the server's own PidFile rather than anything
 	// the launcher keeps in memory, so this helper reports the real sshd no
 	// matter how startSSHD starts it. The watchdog shell is the process group
 	// leader of the sshd it supervises, so the sshd's process group id is the
 	// watchdog pid.
-	pidFile := filepath.Join(srv.dir, "pid")
+	sshdPID := readOrphanSSHDpid(t, filepath.Join(srv.dir, "pid"))
+	jumpSSHDpid := readOrphanSSHDpid(t, filepath.Join(jump.dir, "pid"))
+	pgidOf := func(sshdPID int) int {
+		t.Helper()
+		pgid, err := syscall.Getpgid(sshdPID)
+		if err != nil {
+			t.Fatalf("process group of sshd pid %d: %v", sshdPID, err)
+		}
+		return pgid
+	}
+	fmt.Printf("GIT_ORPHAN_PIDS sshd=%d watchdog=%d jumpsshd=%d jumpwatchdog=%d\n",
+		sshdPID, pgidOf(sshdPID), jumpSSHDpid, pgidOf(jumpSSHDpid))
+	for {
+		time.Sleep(time.Hour)
+	}
+}
+
+// readOrphanSSHDpid polls a server's PidFile until it holds a usable pid.
+func readOrphanSSHDpid(t *testing.T, pidFile string) int {
+	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
-	var sshdPID int
+	var pid int
 	for {
 		data, err := os.ReadFile(pidFile)
 		if err == nil {
-			if _, scanErr := fmt.Sscanf(strings.TrimSpace(string(data)), "%d", &sshdPID); scanErr == nil && sshdPID > 0 {
-				break
+			if _, scanErr := fmt.Sscanf(strings.TrimSpace(string(data)), "%d", &pid); scanErr == nil && pid > 0 {
+				return pid
 			}
 		}
 		if time.Now().After(deadline) {
@@ -48,25 +69,26 @@ func TestGitSSHDOrphanVictimHelper(t *testing.T) {
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
-	watchdogPID, err := syscall.Getpgid(sshdPID)
-	if err != nil {
-		t.Fatalf("process group of sshd pid %d: %v", sshdPID, err)
-	}
-	fmt.Printf("GIT_ORPHAN_PIDS sshd=%d watchdog=%d\n", sshdPID, watchdogPID)
-	for {
-		time.Sleep(time.Hour)
-	}
+}
+
+// orphanVictimPIDs are the pids the victim helper reports: its two servers
+// and the watchdog supervising each of them.
+type orphanVictimPIDs struct {
+	sshd         int
+	watchdog     int
+	jumpSSHD     int
+	jumpWatchdog int
 }
 
 // TestGitSSHDOrphanSIGKILLedTestProcess verifies that when the test process
-// is killed with SIGKILL (so its cleanups never run), the sshd it started
-// through startSSHD and the supervising watchdog process both exit within 5
-// seconds.
+// is killed with SIGKILL (so its cleanups never run), the sshd servers it
+// started through startSSHD and startJumpSSHD and the supervising watchdog
+// processes all exit within 5 seconds.
 func TestGitSSHDOrphanSIGKILLedTestProcess(t *testing.T) {
 	if _, err := os.Stat("/usr/sbin/sshd"); err != nil {
 		skipOrFailSSH(t, "no sshd on this machine")
 	}
-	victim, sshdPID, watchdogPID := startGitOrphanVictim(t)
+	victim, pids := startGitOrphanVictim(t)
 	defer func() {
 		_ = victim.Process.Kill()
 		_ = victim.Wait()
@@ -77,16 +99,19 @@ func TestGitSSHDOrphanSIGKILLedTestProcess(t *testing.T) {
 	}
 	_ = victim.Wait()
 
-	waitGitProcessGone(t, "sshd", sshdPID, 5*time.Second)
-	waitGitProcessGone(t, "watchdog", watchdogPID, 5*time.Second)
-	waitGitGroupGone(t, watchdogPID, 5*time.Second)
+	waitGitProcessGone(t, "sshd", pids.sshd, 5*time.Second)
+	waitGitProcessGone(t, "watchdog", pids.watchdog, 5*time.Second)
+	waitGitProcessGone(t, "jump sshd", pids.jumpSSHD, 5*time.Second)
+	waitGitProcessGone(t, "jump watchdog", pids.jumpWatchdog, 5*time.Second)
+	waitGitGroupGone(t, pids.watchdog, 5*time.Second)
+	waitGitGroupGone(t, pids.jumpWatchdog, 5*time.Second)
 }
 
 // startGitOrphanVictim re-executes this test binary as a child running only
-// the victim helper, waits for it to report the sshd and watchdog pids on
-// stdout, and returns the child command and both pids. Only the child process
-// itself and the two pids it reported are ever signalled by this test.
-func startGitOrphanVictim(t *testing.T) (*exec.Cmd, int, int) {
+// the victim helper, waits for it to report the server and watchdog pids on
+// stdout, and returns the child command and those pids. Only the child
+// process itself and the pids it reported are ever signalled by this test.
+func startGitOrphanVictim(t *testing.T) (*exec.Cmd, orphanVictimPIDs) {
 	t.Helper()
 	cmd := exec.Command(os.Args[0], "-test.run", "^TestGitSSHDOrphanVictimHelper$")
 	cmd.Env = append(os.Environ(), orphanVictimEnv+"=1")
@@ -99,9 +124,8 @@ func startGitOrphanVictim(t *testing.T) (*exec.Cmd, int, int) {
 	}
 
 	type scanResult struct {
-		sshdPID     int
-		watchdogPID int
-		err         error
+		pids orphanVictimPIDs
+		err  error
 	}
 	resultCh := make(chan scanResult, 1)
 	go func() {
@@ -112,16 +136,16 @@ func startGitOrphanVictim(t *testing.T) (*exec.Cmd, int, int) {
 			if !strings.HasPrefix(line, "GIT_ORPHAN_PIDS ") {
 				continue
 			}
-			var sshdPID, watchdogPID int
-			if _, err := fmt.Sscanf(line, "GIT_ORPHAN_PIDS sshd=%d watchdog=%d", &sshdPID, &watchdogPID); err != nil {
+			var pids orphanVictimPIDs
+			if _, err := fmt.Sscanf(line, "GIT_ORPHAN_PIDS sshd=%d watchdog=%d jumpsshd=%d jumpwatchdog=%d",
+				&pids.sshd, &pids.watchdog, &pids.jumpSSHD, &pids.jumpWatchdog); err != nil {
 				res.err = fmt.Errorf("malformed pid line %q: %v", line, err)
 				break
 			}
-			res.sshdPID = sshdPID
-			res.watchdogPID = watchdogPID
+			res.pids = pids
 			break
 		}
-		if res.err == nil && res.sshdPID == 0 {
+		if res.err == nil && res.pids.sshd == 0 {
 			if err := scanner.Err(); err != nil {
 				res.err = fmt.Errorf("scan victim output: %v", err)
 			} else {
@@ -131,25 +155,29 @@ func startGitOrphanVictim(t *testing.T) (*exec.Cmd, int, int) {
 		resultCh <- res
 	}()
 
+	failVictim := func(format string, args ...any) {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		t.Fatalf(format, args...)
+	}
 	var res scanResult
 	select {
 	case res = <-resultCh:
 	case <-time.After(30 * time.Second):
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
-		t.Fatal("victim did not report pids within 30s")
+		failVictim("victim did not report pids within 30s")
 	}
 	if res.err != nil {
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
-		t.Fatalf("victim pid report: %v", res.err)
+		failVictim("victim pid report: %v", res.err)
 	}
-	if res.sshdPID <= 0 || res.watchdogPID <= 0 {
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
-		t.Fatalf("victim reported invalid pids sshd=%d watchdog=%d", res.sshdPID, res.watchdogPID)
+	for name, pid := range map[string]int{
+		"sshd": res.pids.sshd, "watchdog": res.pids.watchdog,
+		"jumpsshd": res.pids.jumpSSHD, "jumpwatchdog": res.pids.jumpWatchdog,
+	} {
+		if pid <= 0 {
+			failVictim("victim reported invalid %s pid %d in %+v", name, pid, res.pids)
+		}
 	}
-	return cmd, res.sshdPID, res.watchdogPID
+	return cmd, res.pids
 }
 
 // waitGitProcessGone polls until signalling pid with signal 0 reports ESRCH

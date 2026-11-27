@@ -227,7 +227,7 @@ func TestRealSSHServer(t *testing.T) {
 func startJumpSSHD(t *testing.T, targetPort int, identity string, logPath string) *sshServer {
 	t.Helper()
 	if _, err := os.Stat("/usr/sbin/sshd"); err != nil {
-		t.Skip("no sshd on this machine")
+		skipOrFailSSH(t, "no sshd on this machine")
 	}
 	dir := t.TempDir()
 	if out, err := exec.Command("ssh-keygen", "-q", "-t", "ed25519", "-C", "branchline-test", "-N", "", "-f", filepath.Join(dir, "host")).CombinedOutput(); err != nil {
@@ -235,7 +235,7 @@ func startJumpSSHD(t *testing.T, targetPort int, identity string, logPath string
 	}
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		t.Skipf("cannot listen here: %v", err)
+		skipOrFailSSH(t, "cannot listen here: %v", err)
 	}
 	port := l.Addr().(*net.TCPAddr).Port
 	_ = l.Close()
@@ -251,23 +251,16 @@ func startJumpSSHD(t *testing.T, targetPort int, identity string, logPath string
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	must(t, err)
 	t.Cleanup(func() { _ = logFile.Close() })
-	cmd := exec.Command("/usr/sbin/sshd", "-D", "-e", "-f", filepath.Join(dir, "sshd_config"))
-	cmd.Stdout, cmd.Stderr = logFile, logFile
-	if err := cmd.Start(); err != nil {
-		t.Skipf("sshd: %v", err)
+	// Its forwarding configuration differs enough from the shared launcher
+	// that the jump server starts through sshdwatch directly.
+	proc, err := sshdwatch.Start(dir, filepath.Join(dir, "watchdog.pid"), logFile, "/usr/sbin/sshd", "-D", "-e", "-f", filepath.Join(dir, "sshd_config"))
+	if err != nil {
+		skipOrFailSSH(t, "sshd: %v", err)
 	}
-	exited := make(chan struct{})
-	go func() {
-		_ = cmd.Wait()
-		close(exited)
-	}()
-	t.Cleanup(func() {
-		_ = cmd.Process.Kill()
-		<-exited
-	})
+	t.Cleanup(proc.Stop)
 	for i := 0; ; i++ {
 		select {
-		case <-exited:
+		case <-proc.Exited():
 			data, _ := os.ReadFile(logPath)
 			t.Fatalf("jump sshd exited before accepting connections: %s", data)
 		default:
@@ -279,6 +272,7 @@ func startJumpSSHD(t *testing.T, targetPort int, identity string, logPath string
 		}
 		time.Sleep(100 * time.Millisecond)
 		if i == 50 {
+			proc.Stop()
 			data, _ := os.ReadFile(logPath)
 			t.Fatalf("jump sshd did not accept connections: %s", data)
 		}
