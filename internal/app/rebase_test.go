@@ -1709,13 +1709,19 @@ func TestRebaseOntoBranchesLoopbackSSH(t *testing.T) {
 		t.Fatalf("remote feature.txt after rebase = %q, want feature work", string(got))
 	}
 
-	// Round 2: rebuild the divergence and rebase onto the remote-tracking
-	// branch origin/main.
-	srv.RunGit(t, repo.Path, "update-ref", "refs/heads/feature", featureTip)
-	srv.RunGit(t, repo.Path, "reset", "--hard", "-q", featureTip)
+	// Round 2: rebuild the divergence, give origin/main a commit ahead of
+	// Round 1's main tip, and rebase onto the remote-tracking branch
+	// origin/main. Using a distinct commit for origin/main guarantees a new
+	// replayed commit hash even when both rebases complete within the same
+	// second, and proves the rebase targeted origin/main rather than main.
+	srv.RunGit(t, repo.Path, "checkout", "-q", "main")
+	originMainTip := remoteCommitFile(t, srv, repo.Path, "origin-main.txt", "origin main work\n", "origin main work")
 	bareDir := srv.InitBareRepo(t, "origin")
 	srv.RunGit(t, repo.Path, "remote", "add", "origin", bareDir)
 	srv.RunGit(t, repo.Path, "push", "-q", "origin", "main")
+	srv.RunGit(t, repo.Path, "reset", "--hard", "-q", mainTip)
+	srv.RunGit(t, repo.Path, "checkout", "-q", "feature")
+	srv.RunGit(t, repo.Path, "reset", "--hard", "-q", featureTip)
 	h.app.session.Reload()
 	h.drain()
 	if got := h.app.session.Snapshot().Refs.Remote; len(got) == 0 {
@@ -1745,8 +1751,8 @@ func TestRebaseOntoBranchesLoopbackSSH(t *testing.T) {
 	if newTip2 == featureTip || newTip2 == newTip {
 		t.Fatalf("remote feature did not move onto origin/main: %q", newTip2)
 	}
-	if parent := strings.TrimSpace(srv.RunGit(t, repo.Path, "rev-parse", "feature^")); parent != mainTip {
-		t.Fatalf("remote replayed parent onto origin/main = %q, want %q", parent, mainTip)
+	if parent := strings.TrimSpace(srv.RunGit(t, repo.Path, "rev-parse", "feature^")); parent != originMainTip {
+		t.Fatalf("remote replayed parent onto origin/main = %q, want %q", parent, originMainTip)
 	}
 }
 
