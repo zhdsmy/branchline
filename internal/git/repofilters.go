@@ -41,17 +41,30 @@ func (r *Repo) passiveFilterConfig() ([]string, error) {
 // repository's own configuration whose values differ from both the global
 // and the system value of the same key, or which those scopes do not set.
 // A value equal to an inherited one is the user's own configuration running
-// as it would anywhere and is left alone. The repository's file is the
-// local scope — not the effective configuration, which would mistake the
-// user's inherited keys and executor-level overrides for the repository's
-// own — and every scope is read with include and includeIf directives
-// resolved, so a filter hidden behind [include] is found.
+// as it would anywhere and is left alone. The repository's files are the
+// local and the worktree scopes — not the effective configuration, which
+// would mistake the user's inherited keys and executor-level overrides for
+// the repository's own — and every scope is read with include and includeIf
+// directives resolved, so a filter hidden behind [include] is found. The
+// worktree scope is the local file unless the repository opts into
+// extensions.worktreeConfig, so the union never duplicates it.
 func (r *Repo) repoDefinedFilters() ([]string, error) {
 	local, err := r.filterConfigValues("--local")
 	if err != nil {
 		return nil, err
 	}
-	if len(local) == 0 {
+	worktree, err := r.filterConfigValues("--worktree")
+	if err != nil {
+		return nil, err
+	}
+	repo := local
+	if repo == nil && len(worktree) > 0 {
+		repo = map[string]string{}
+	}
+	for key, value := range worktree {
+		repo[key] = value
+	}
+	if len(repo) == 0 {
 		return nil, nil
 	}
 	global, err := r.filterConfigValues("--global")
@@ -63,7 +76,7 @@ func (r *Repo) repoDefinedFilters() ([]string, error) {
 		return nil, err
 	}
 	defined := map[string]bool{}
-	for key, value := range local {
+	for key, value := range repo {
 		name, ok := splitFilterKey(key)
 		if !ok {
 			continue

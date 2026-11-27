@@ -343,6 +343,40 @@ func TestUntrustedFilterGlobalRewrittenNeverRuns(t *testing.T) {
 	}
 }
 
+// A repository that moves its configuration into the worktree scope with
+// extensions.worktreeConfig is still its own configuration: a filter written
+// into .git/config.worktree never runs on a passive status read either.
+func TestUntrustedFilterWorktreeConfigNeverRuns(t *testing.T) {
+	f := newFilterFixture(t, "worktree-config")
+	f.git(t, "init", "-q", "-b", "main")
+	f.git(t, "config", "user.name", "Branchline Test")
+	f.git(t, "config", "user.email", "test@branchline.invalid")
+	f.git(t, "config", "extensions.worktreeConfig", "true")
+	f.git(t, "config", "--worktree", "filter.x.clean", "sh "+f.cleanSh)
+	if err := os.WriteFile(filepath.Join(f.repoDir, ".gitattributes"), []byte("*.txt filter=x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(f.repoDir, "f.txt"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.git(t, "add", ".gitattributes", "f.txt")
+	f.git(t, "commit", "-q", "-m", "initial")
+	f.resetMarks(t)
+	f.backdate(t)
+
+	if _, err := f.repo().StatusOpts(false); err != nil {
+		t.Fatalf("status read: %v", err)
+	}
+	if f.marked(t, f.cleanLog) {
+		t.Fatal("a filter the repository kept in its worktree scope ran on a passive status read")
+	}
+
+	f.controlStatus(t)
+	if !f.marked(t, f.cleanLog) {
+		t.Fatal("control: plain git status did not run the worktree-scoped filter, the fixture is broken")
+	}
+}
+
 // Staging a file is the user's own action and runs the repository's filters
 // exactly as git on the command line does.
 func TestUntrustedFilterUserStageStillRunsFilter(t *testing.T) {
