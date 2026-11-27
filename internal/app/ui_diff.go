@@ -164,6 +164,10 @@ type diffPanel struct {
 	state     *editor.DiffState
 	added     int
 	deleted   int
+	// discard is the discard confirmation open over the panel, nil while
+	// none is. It lives beside the diff rather than in it so a reload of
+	// the diff neither drops nor answers it.
+	discard *diffDiscardState
 }
 
 func (d *diffPanel) limit() int {
@@ -740,6 +744,7 @@ func (d *diffPanel) body(c *ui.Context, s *repoSession, scope string, p palette)
 	default:
 		placeholderCard(c, "No diff to display", "This file has no textual changes.", d.req.title(), p)
 	}
+	d.discardDiffLinesModal(c, s, scope, p)
 }
 
 func (d *diffPanel) emptyPlaceholder(c *ui.Context, p palette) {

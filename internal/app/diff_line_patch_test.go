@@ -1,6 +1,8 @@
 package app
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -28,11 +30,18 @@ func parseOnePatch(t *testing.T, raw string) editor.FilePatch {
 	return files[0]
 }
 
-// unstagedPatch is the patch of one modified file's working tree against
-// the index, read and parsed as the diff panel reads it.
+// unstagedPatch is the patch of one file's working tree against the index,
+// read and parsed as the diff panel reads it. The status letter picks git's
+// diff: M or D a plain diff, ? or ! the no-index diff of an untracked file.
 func unstagedPatch(t *testing.T, r *git.Repo, path string, context int) editor.FilePatch {
 	t.Helper()
-	raw, err := r.FileDiffOpts(git.FileChange{Path: path, Status: 'M'}, git.DiffOptions{Context: context})
+	return unstagedPatchStatus(t, r, path, 'M', context)
+}
+
+// unstagedPatchStatus is unstagedPatch with the file's status letter.
+func unstagedPatchStatus(t *testing.T, r *git.Repo, path string, status byte, context int) editor.FilePatch {
+	t.Helper()
+	raw, err := r.FileDiffOpts(git.FileChange{Path: path, Status: status}, git.DiffOptions{Context: context})
 	if err != nil {
 		t.Fatalf("read unstaged diff of %s: %v", path, err)
 	}
@@ -86,6 +95,16 @@ func indexContent(t *testing.T, repo *gitRepoFixture, path string) string {
 		t.Fatalf("git show :%s: %v\n%s", path, err, out)
 	}
 	return out
+}
+
+// readWorktreeFile is the content of path in the fixture's working tree.
+func readWorktreeFile(t *testing.T, repo *gitRepoFixture, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(repo.Path(), path))
+	if err != nil {
+		t.Fatalf("read worktree %s: %v", path, err)
+	}
+	return string(data)
 }
 
 // stageLinesChosen builds the forward patch of the chosen lines and applies
@@ -526,5 +545,269 @@ func TestDiffLinePatchZeroContext(t *testing.T) {
 	text = stageLinesChosen(t, r, fp, chooseLines(t, fp, "+TWO-ADD", "-four", "+FOUR"))
 	if got := indexContent(t, repo, "a.txt"); got != linesText("one", "two", "TWO-ADD", "three", "FOUR", "five") {
 		t.Fatalf("index after staging both =\n%q\npatch:\n%s", got, text)
+	}
+}
+
+// Staging every line of an untracked file writes a creation patch: the new
+// file mode header and /dev/null let git create the index entry, which
+// holds the file whole.
+func TestDiffLinePatchStageUntrackedAllLines(t *testing.T) {
+	repo := newGitRepo(t, "lp-untracked-all")
+	repo.CommitFile("base.txt", "base\n", "initial")
+	repo.WriteFile("new.txt", linesText("alpha", "beta", "gamma", "delta"))
+	r := linePatchRepo(repo)
+
+	fp := unstagedPatchStatus(t, r, "new.txt", '?', 3)
+	text := stageLinesChosen(t, r, fp, chooseLines(t, fp, "+alpha", "+beta", "+gamma", "+delta"))
+
+	if !strings.Contains(text, "new file mode 100644\n") || !strings.Contains(text, "--- /dev/null\n") {
+		t.Fatalf("staging a whole untracked file wrote no creation headers:\n%s", text)
+	}
+	if got := indexContent(t, repo, "new.txt"); got != linesText("alpha", "beta", "gamma", "delta") {
+		t.Fatalf("index after staging all lines =\n%q", got)
+	}
+	// The file is staged whole: nothing is left unstaged, as git status
+	// tells added-and-unmodified from added-and-modified.
+	if got := repo.Git("status", "--porcelain", "--", "new.txt"); got != "A  new.txt\n" {
+		t.Fatalf("status after staging all lines = %q, want fully added", got)
+	}
+}
+
+// Staging only two lines of an untracked file keeps the creation headers:
+// git creates the index entry with exactly the lines chosen, and the rest
+// of the file stays untracked work.
+func TestDiffLinePatchStageUntrackedTwoLines(t *testing.T) {
+	repo := newGitRepo(t, "lp-untracked-two")
+	repo.CommitFile("base.txt", "base\n", "initial")
+	repo.WriteFile("new.txt", linesText("alpha", "beta", "gamma", "delta"))
+	r := linePatchRepo(repo)
+
+	fp := unstagedPatchStatus(t, r, "new.txt", '?', 3)
+	text := stageLinesChosen(t, r, fp, chooseLines(t, fp, "+alpha", "+beta"))
+
+	if got := indexContent(t, repo, "new.txt"); got != linesText("alpha", "beta") {
+		t.Fatalf("index after staging two lines =\n%q", got)
+	}
+	if strings.Contains(text, "\n gamma") || strings.Contains(text, "\n delta") {
+		t.Fatalf("patch of a partial creation holds unchosen lines as context:\n%s", text)
+	}
+	// Added in the index, modified in the working tree: gamma and delta are
+	// still to stage.
+	if got := repo.Git("status", "--porcelain", "--", "new.txt"); got != "AM new.txt\n" {
+		t.Fatalf("status after staging two lines = %q, want added-and-modified", got)
+	}
+	raw, err := r.FileDiffOpts(git.FileChange{Path: "new.txt", Status: 'M'}, git.DiffOptions{Context: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(raw, "+gamma") || !strings.Contains(raw, "+delta") {
+		t.Fatalf("remaining unstaged diff lost the unchosen lines:\n%s", raw)
+	}
+}
+
+// Unstaging every line of an added file removes the index entry: the file
+// is untracked again.
+func TestDiffLinePatchUnstageAddedAllLines(t *testing.T) {
+	repo := newGitRepo(t, "lp-added-all")
+	repo.CommitFile("base.txt", "base\n", "initial")
+	repo.WriteFile("new.txt", linesText("alpha", "beta", "gamma", "delta"))
+	repo.Git("add", "--", "new.txt")
+	r := linePatchRepo(repo)
+
+	fp := stagedPatch(t, r, "new.txt", 3)
+	text := unstageLinesChosen(t, r, fp, chooseLines(t, fp, "+alpha", "+beta", "+gamma", "+delta"))
+
+	if !strings.Contains(text, "new file mode 100644\n") {
+		t.Fatalf("unstaging a whole addition wrote no creation header:\n%s", text)
+	}
+	if out, err := tryGitCommand(repo.Path(), "ls-files", "--error-unmatch", "--", "new.txt"); err == nil {
+		t.Fatalf("index still holds the fully unstaged file: %s", out)
+	}
+	if got := repo.Git("status", "--porcelain", "--", "new.txt"); got != "?? new.txt\n" {
+		t.Fatalf("status after unstaging all lines = %q, want untracked", got)
+	}
+	if got := readWorktreeFile(t, repo, "new.txt"); got != linesText("alpha", "beta", "gamma", "delta") {
+		t.Fatalf("unstaging touched the working tree file: %q", got)
+	}
+}
+
+// Unstaging two lines of an added file keeps the rest in the index: the
+// patch is a plain modification, since the file must stay in the index
+// with its remaining lines.
+func TestDiffLinePatchUnstageAddedTwoLines(t *testing.T) {
+	repo := newGitRepo(t, "lp-added-two")
+	repo.CommitFile("base.txt", "base\n", "initial")
+	repo.WriteFile("new.txt", linesText("alpha", "beta", "gamma", "delta"))
+	repo.Git("add", "--", "new.txt")
+	r := linePatchRepo(repo)
+
+	fp := stagedPatch(t, r, "new.txt", 3)
+	// Unstage gamma and delta: alpha and beta stay added.
+	text := unstageLinesChosen(t, r, fp, chooseLines(t, fp, "+gamma", "+delta"))
+
+	if strings.Contains(text, "new file mode") {
+		t.Fatalf("partial unstage of an addition kept the creation header:\n%s", text)
+	}
+	if got := indexContent(t, repo, "new.txt"); got != linesText("alpha", "beta") {
+		t.Fatalf("index after unstaging two lines =\n%q", got)
+	}
+	if got := repo.Git("status", "--porcelain", "--", "new.txt"); got != "AM new.txt\n" {
+		t.Fatalf("status after unstaging two lines = %q, want added-and-modified", got)
+	}
+	if got := readWorktreeFile(t, repo, "new.txt"); got != linesText("alpha", "beta", "gamma", "delta") {
+		t.Fatalf("unstaging touched the working tree file: %q", got)
+	}
+}
+
+// Staging every line of a deleted file writes a deletion patch: the index
+// entry is removed and the deletion is staged whole.
+func TestDiffLinePatchStageDeletedAllLines(t *testing.T) {
+	repo := newGitRepo(t, "lp-deleted-all")
+	repo.CommitFile("gone.txt", linesText("one", "two", "three", "four", "five"), "initial")
+	if err := os.Remove(filepath.Join(repo.Path(), "gone.txt")); err != nil {
+		t.Fatal(err)
+	}
+	r := linePatchRepo(repo)
+
+	fp := unstagedPatchStatus(t, r, "gone.txt", 'D', 3)
+	text := stageLinesChosen(t, r, fp, chooseLines(t, fp, "-one", "-two", "-three", "-four", "-five"))
+
+	if !strings.Contains(text, "deleted file mode 100644\n") || !strings.Contains(text, "+++ /dev/null\n") {
+		t.Fatalf("staging a whole deletion wrote no deletion headers:\n%s", text)
+	}
+	if out, err := tryGitCommand(repo.Path(), "ls-files", "--error-unmatch", "--", "gone.txt"); err == nil {
+		t.Fatalf("index still holds the staged deletion: %s", out)
+	}
+	if got := repo.Git("status", "--porcelain", "--", "gone.txt"); got != "D  gone.txt\n" {
+		t.Fatalf("status after staging the deletion = %q, want fully staged", got)
+	}
+}
+
+// Staging two lines of a deleted file leaves the file in the index with
+// exactly the lines not chosen: the patch is a plain modification.
+func TestDiffLinePatchStageDeletedTwoLines(t *testing.T) {
+	repo := newGitRepo(t, "lp-deleted-two")
+	repo.CommitFile("gone.txt", linesText("one", "two", "three", "four", "five"), "initial")
+	if err := os.Remove(filepath.Join(repo.Path(), "gone.txt")); err != nil {
+		t.Fatal(err)
+	}
+	r := linePatchRepo(repo)
+
+	fp := unstagedPatchStatus(t, r, "gone.txt", 'D', 3)
+	// Stage the deletion of two and three: the index keeps one, four, five.
+	text := stageLinesChosen(t, r, fp, chooseLines(t, fp, "-two", "-three"))
+
+	if strings.Contains(text, "deleted file mode") {
+		t.Fatalf("partial stage of a deletion kept the deletion header:\n%s", text)
+	}
+	if got := indexContent(t, repo, "gone.txt"); got != linesText("one", "four", "five") {
+		t.Fatalf("index after staging two deletions =\n%q", got)
+	}
+	if got := repo.Git("status", "--porcelain", "--", "gone.txt"); got != "MD gone.txt\n" {
+		t.Fatalf("status after staging two deletions = %q, want modified-and-deleted", got)
+	}
+}
+
+// Unstaging every line of a staged deletion restores the file in the index
+// exactly as HEAD has it, so the deletion unstages whole.
+func TestDiffLinePatchUnstageStagedDeletionAllLines(t *testing.T) {
+	repo := newGitRepo(t, "lp-undel-all")
+	repo.CommitFile("gone.txt", linesText("one", "two", "three", "four", "five"), "initial")
+	if err := os.Remove(filepath.Join(repo.Path(), "gone.txt")); err != nil {
+		t.Fatal(err)
+	}
+	repo.Git("add", "--", "gone.txt")
+	r := linePatchRepo(repo)
+
+	fp := stagedPatch(t, r, "gone.txt", 3)
+	unstageLinesChosen(t, r, fp, chooseLines(t, fp, "-one", "-two", "-three", "-four", "-five"))
+
+	if got := indexContent(t, repo, "gone.txt"); got != linesText("one", "two", "three", "four", "five") {
+		t.Fatalf("index after unstaging the deletion =\n%q", got)
+	}
+	if got := repo.Git("status", "--porcelain", "--", "gone.txt"); got != " D gone.txt\n" {
+		t.Fatalf("status after unstaging the deletion = %q, want only unstaged deletion left", got)
+	}
+}
+
+// Unstaging two lines of a staged deletion restores exactly those lines in
+// the index: the file is there with nothing else, since reverse-creating
+// writes the lines the patch holds.
+func TestDiffLinePatchUnstageStagedDeletionTwoLines(t *testing.T) {
+	repo := newGitRepo(t, "lp-undel-two")
+	repo.CommitFile("gone.txt", linesText("one", "two", "three", "four", "five"), "initial")
+	if err := os.Remove(filepath.Join(repo.Path(), "gone.txt")); err != nil {
+		t.Fatal(err)
+	}
+	repo.Git("add", "--", "gone.txt")
+	r := linePatchRepo(repo)
+
+	fp := stagedPatch(t, r, "gone.txt", 3)
+	// Restore two and three alone: one, four and five stay deleted.
+	text := unstageLinesChosen(t, r, fp, chooseLines(t, fp, "-two", "-three"))
+
+	if !strings.Contains(text, "deleted file mode") {
+		t.Fatalf("unstaging lines of a deletion dropped the deletion header:\n%s", text)
+	}
+	if got := indexContent(t, repo, "gone.txt"); got != linesText("two", "three") {
+		t.Fatalf("index after unstaging two deletions =\n%q", got)
+	}
+	if got := repo.Git("status", "--porcelain", "--", "gone.txt"); got != "MD gone.txt\n" {
+		t.Fatalf("status after unstaging two deletions = %q, want modified-and-deleted", got)
+	}
+}
+
+// An untracked file without a trailing newline stages whole and in part
+// with the no-newline marker on the line it belongs to: a partial staging
+// of the last line writes a file ending without a newline.
+func TestDiffLinePatchUntrackedNoTrailingNewline(t *testing.T) {
+	repo := newGitRepo(t, "lp-untracked-noeol")
+	repo.CommitFile("base.txt", "base\n", "initial")
+	repo.WriteFile("new.txt", "alpha\nbeta")
+	r := linePatchRepo(repo)
+
+	fp := unstagedPatchStatus(t, r, "new.txt", '?', 3)
+	// Stage only beta, the newline-less last line.
+	stageLinesChosen(t, r, fp, chooseLines(t, fp, "+beta"))
+
+	if got := indexContent(t, repo, "new.txt"); got != "beta" {
+		t.Fatalf("index after staging the last line = %q, want exactly beta without newline", got)
+	}
+	repo.Git("reset", "-q")
+
+	// Staging both lines writes the file as it is on disk.
+	fp = unstagedPatchStatus(t, r, "new.txt", '?', 3)
+	text := stageLinesChosen(t, r, fp, chooseLines(t, fp, "+alpha", "+beta"))
+	if strings.Count(text, "\\ No newline at end of file") != 1 {
+		t.Fatalf("creation patch does not carry exactly one no-newline marker:\n%s", text)
+	}
+	if got := indexContent(t, repo, "new.txt"); got != "alpha\nbeta" {
+		t.Fatalf("index after staging the whole file = %q", got)
+	}
+}
+
+// An untracked file with CRLF line endings stages with its carriage
+// returns intact, in whole and in part.
+func TestDiffLinePatchUntrackedCRLF(t *testing.T) {
+	repo := newGitRepo(t, "lp-untracked-crlf")
+	repo.CommitFile("base.txt", "base\n", "initial")
+	repo.WriteFile("new.txt", "alpha\r\nbeta\r\ngamma\r\n")
+	r := linePatchRepo(repo)
+
+	fp := unstagedPatchStatus(t, r, "new.txt", '?', 3)
+	text := stageLinesChosen(t, r, fp, chooseLines(t, fp, "+alpha\r", "+beta\r"))
+
+	if got := indexContent(t, repo, "new.txt"); got != "alpha\r\nbeta\r\n" {
+		t.Fatalf("index after staging two CRLF lines = %q", got)
+	}
+	repo.Git("reset", "-q")
+
+	fp = unstagedPatchStatus(t, r, "new.txt", '?', 3)
+	text = stageLinesChosen(t, r, fp, chooseLines(t, fp, "+alpha\r", "+beta\r", "+gamma\r"))
+	if strings.Contains(strings.ReplaceAll(text, "\r\n", ""), "\r") {
+		t.Fatalf("creation patch rewrote a line ending:\n%q", text)
+	}
+	if got := indexContent(t, repo, "new.txt"); got != "alpha\r\nbeta\r\ngamma\r\n" {
+		t.Fatalf("index after staging the CRLF file = %q", got)
 	}
 }
