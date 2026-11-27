@@ -116,9 +116,12 @@ func (f *filterFixture) backdate(t *testing.T) {
 	}
 }
 
+// rewrite changes the content of f.txt without changing its size: a length
+// change alone answers the status without converting the content, and the
+// filter would have nothing to do.
 func (f *filterFixture) rewrite(t *testing.T) {
 	t.Helper()
-	if err := os.WriteFile(filepath.Join(f.repoDir, "f.txt"), []byte("changed\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(f.repoDir, "f.txt"), []byte("xello\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }
