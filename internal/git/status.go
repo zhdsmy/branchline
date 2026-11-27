@@ -11,9 +11,19 @@ func (r *Repo) Status() (Status, error) {
 }
 
 // StatusOpts returns the working tree. showIgnored also lists untracked
-// paths excluded by .gitignore, as git status --ignored=matching.
+// paths excluded by .gitignore, as git status --ignored=matching. The read
+// never runs the filter programs the repository defines: a status is the
+// app's own bookkeeping, not a user action. When the filters cannot even be
+// listed the read fails instead of running them unguarded. Submodules keep
+// their own configuration, which no listing of the parent's can see, so the
+// dirty check that would descend into them is off; a submodule still shows
+// the moment the commit it points at moves.
 func (r *Repo) StatusOpts(showIgnored bool) (Status, error) {
-	args := []string{"status", "--porcelain=v2", "--branch", "-z", "--untracked-files=all"}
+	passive, err := r.passiveFilterConfig()
+	if err != nil {
+		return Status{}, fmt.Errorf("read repository filter configuration: %w", err)
+	}
+	args := append(append([]string{}, passive...), "status", "--porcelain=v2", "--branch", "-z", "--untracked-files=all", "--ignore-submodules=dirty")
 	if showIgnored {
 		args = append(args, "--ignored=matching")
 	}
@@ -22,7 +32,7 @@ func (r *Repo) StatusOpts(showIgnored bool) (Status, error) {
 		return Status{}, err
 	}
 	st := ParseStatus(out)
-	st.State = r.state()
+	st.State = r.statePassive(passive)
 	if st.State == "rebase" {
 		st.Stopped = r.rebaseStop(st.Conflicted())
 	}
@@ -160,9 +170,22 @@ func (r *Repo) hashText(text string) (string, error) {
 
 // state finds a merge, rebase, cherry-pick, revert or bisect in progress.
 // git status says which one. A leftover REBASE_HEAD is not enough: git keeps
-// that object after the rebase finishes.
+// that object after the rebase finishes. The status read is guarded against
+// the repository's own filters like every read the app runs on its own; a
+// failure to list them only loses the state, never runs them.
 func (r *Repo) state() string {
-	out, err := r.run(quick, "status", "--untracked-files=no")
+	passive, err := r.passiveFilterConfig()
+	if err != nil {
+		return ""
+	}
+	return r.statePassive(passive)
+}
+
+// statePassive is state for a caller that already listed the repository's
+// own filters, so one status read costs one listing instead of two.
+func (r *Repo) statePassive(passive []string) string {
+	args := append(append([]string{}, passive...), "status", "--untracked-files=no", "--ignore-submodules=dirty")
+	out, err := r.run(quick, args...)
 	if err != nil {
 		return ""
 	}
@@ -227,9 +250,12 @@ func (r *Repo) rebaseStop(conflict bool) string {
 }
 
 // fileNoneEmpty reports a file git can read that is not empty. The empty
-// blob is what hash-object prints for a zero-length file.
+// blob is what hash-object prints for a zero-length file. --no-filters
+// keeps the repository's own filters out of the read: git applies the
+// working tree's attributes even to paths inside .git, and the check only
+// ever compares a byte count.
 func (r *Repo) fileNoneEmpty(path string) bool {
-	out, err := r.run(quick, "hash-object", "--", path)
+	out, err := r.run(quick, "hash-object", "--no-filters", "--", path)
 	if err != nil {
 		return false
 	}
