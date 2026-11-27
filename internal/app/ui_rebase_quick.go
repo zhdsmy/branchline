@@ -201,7 +201,12 @@ func (a *app) commitRebaseQuickModals(c *ui.Context) {
 // editor shows a loading line, a failed read shows the error and a Retry —
 // either way the confirmation stays disabled because a rewrite must never
 // start from a message the user did not see — and a blank message disables it
-// too, because Git would refuse it the same way.
+// too, because Git would refuse it the same way. The editor takes the focus
+// the frame it appears: it shows only once the read landed, so the first
+// frames put the focus on cancel, and leaving it there would type into a
+// void and turn Enter into a cancel of the draft. Enter inside the text is
+// its line break, so Cmd+Enter is the keyboard confirmation, exactly the
+// primary button while the button is enabled and nothing while it is not.
 func (a *app) quickRebaseMessageModal(c *ui.Context) {
 	p := a.pal
 	st := quickRebaseUI(a)
@@ -217,7 +222,15 @@ func (a *app) quickRebaseMessageModal(c *ui.Context) {
 	blank := strings.TrimSpace(st.message) == ""
 	confirmDisabled := a.session.Busy() || st.loading || st.readErr != nil || blank
 
+	cmdConfirmed := false
 	_, cancelled, confirmed := dialogFrame(c, p, "quick-rebase-message-modal", &st.open, title, 480, func() {
+		// Cmd+Enter confirms from anywhere in the dialog — the message
+		// editor takes plain Enter as a line break but leaves a modified
+		// one to the shortcuts. As the frame's own Enter shortcut, the
+		// registration is unconditional and the gate decides here.
+		if c.Shortcut(ui.Cmd, ui.KeyEnter) && !confirmDisabled {
+			cmdConfirmed = true
+		}
 		ui.Field(c, "Commit:", func() {
 			ui.Text(c, st.target.Short()+" "+st.target.Subject).FontSize(12).TextColor(p.text).SingleLine().Ellipsis("…")
 		})
@@ -238,7 +251,8 @@ func (a *app) quickRebaseMessageModal(c *ui.Context) {
 			ui.TextArea(c.Key("quick-rebase-message"), &st.message).
 				Label("Commit message").
 				Height(110).
-				FillWidth()
+				FillWidth().
+				AutoFocus()
 			if blank {
 				ui.Text(c, "The commit message cannot be empty.").FontSize(11.5).TextColor(p.danger)
 			}
@@ -252,7 +266,10 @@ func (a *app) quickRebaseMessageModal(c *ui.Context) {
 	if cancelled {
 		a.closeQuickRebaseModal()
 	}
-	if confirmed {
+	// The key and the click can never both land in one frame — the write
+	// the first one starts disables the button — and either way the one
+	// confirmation path runs once.
+	if confirmed || cmdConfirmed {
 		a.submitQuickRebase()
 	}
 	if !st.open {
