@@ -9,6 +9,7 @@ package app
 import (
 	"slices"
 	"strings"
+	"unsafe"
 
 	"github.com/egoist/mygo/ui"
 
@@ -98,32 +99,46 @@ func refSortSpecOf(order string) refSortSpec {
 	}
 }
 
-// compareRefNames orders two names for sortRefNames: first by the groups
-// the spec asks for, then by name ignoring case, falling back to a
-// case-sensitive comparison so names differing only in case keep a
-// deterministic order.
-func compareRefNames(a, b string, spec refSortSpec) int {
-	if spec.master {
-		am, bm := a == "main" || a == "master", b == "main" || b == "master"
-		if am != bm {
-			if am {
-				return -1
-			}
-			return 1
-		}
+// refSortKey is what one name compares by, computed once per name before
+// sorting so the comparison itself never allocates: the name in lowercase,
+// the original name for the case-sensitive tie-break, whether it is exactly
+// main or master, and whether it holds a slash.
+type refSortKey struct {
+	lower  string
+	name   string
+	master bool
+	folder bool
+}
+
+func refSortKeyOf(name string) refSortKey {
+	return refSortKey{
+		lower:  strings.ToLower(name),
+		name:   name,
+		master: name == "main" || name == "master",
+		folder: strings.Contains(name, "/"),
 	}
-	if spec.folders {
-		af, bf := strings.Contains(a, "/"), strings.Contains(b, "/")
-		if af != bf {
-			if af {
-				return -1
-			}
-			return 1
+}
+
+// compareRefSortKeys orders two precomputed keys: first by the groups the
+// spec asks for, then by the lowercase name, falling back to the original
+// name so names differing only in case keep a deterministic order. It
+// allocates nothing.
+func compareRefSortKeys(a, b refSortKey, spec refSortSpec) int {
+	if spec.master && a.master != b.master {
+		if a.master {
+			return -1
 		}
+		return 1
 	}
-	la, lb := strings.ToLower(a), strings.ToLower(b)
+	if spec.folders && a.folder != b.folder {
+		if a.folder {
+			return -1
+		}
+		return 1
+	}
+	la, lb := a.lower, b.lower
 	if la == lb {
-		la, lb = a, b
+		la, lb = a.name, b.name
 	}
 	cmp := strings.Compare(la, lb)
 	if spec.backward {
@@ -132,27 +147,43 @@ func compareRefNames(a, b string, spec refSortSpec) int {
 	return cmp
 }
 
+// keyedRefItem decorates one item with its comparison key for the sort.
+type keyedRefItem[T any] struct {
+	key  refSortKey
+	item T
+}
+
+// sortKeyedRef returns items in the order the stored value asks for, keyed
+// on the name keyOf gives each item. The key is computed once per item; the
+// comparison reads only the keys. The slice passed in is never changed:
+// every caller receives a fresh slice.
+func sortKeyedRef[T any](items []T, order string, keyOf func(T) string) []T {
+	spec := refSortSpecOf(order)
+	decorated := make([]keyedRefItem[T], len(items))
+	for i, item := range items {
+		decorated[i] = keyedRefItem[T]{key: refSortKeyOf(keyOf(item)), item: item}
+	}
+	slices.SortStableFunc(decorated, func(x, y keyedRefItem[T]) int {
+		return compareRefSortKeys(x.key, y.key, spec)
+	})
+	out := make([]T, len(items))
+	for i, d := range decorated {
+		out[i] = d.item
+	}
+	return out
+}
+
 // sortRefNames returns names in the order the stored value asks for. The
 // slice passed in is never changed: every caller receives a fresh slice.
 func sortRefNames(names []string, order string) []string {
-	out := slices.Clone(names)
-	spec := refSortSpecOf(order)
-	slices.SortStableFunc(out, func(a, b string) int {
-		return compareRefNames(a, b, spec)
-	})
-	return out
+	return sortKeyedRef(names, order, func(name string) string { return name })
 }
 
 // sortBranches returns a copy of branches ordered by the stored value,
 // keyed on the short branch name. The snapshot's own slice is never sorted:
 // the worker and the other views read it in the order git reported.
 func sortBranches(branches []git.Branch, order string) []git.Branch {
-	out := slices.Clone(branches)
-	spec := refSortSpecOf(order)
-	slices.SortStableFunc(out, func(x, y git.Branch) int {
-		return compareRefNames(x.Name, y.Name, spec)
-	})
-	return out
+	return sortKeyedRef(branches, order, func(br git.Branch) string { return br.Name })
 }
 
 // remoteBranchSortName is the name a remote-tracking branch sorts by: the
@@ -166,23 +197,49 @@ func remoteBranchSortName(rb git.Branch) string {
 // value, keyed on the branch name without the remote prefix. The snapshot's
 // own slice is never sorted.
 func sortRemoteBranches(branches []git.Branch, order string) []git.Branch {
-	out := slices.Clone(branches)
-	spec := refSortSpecOf(order)
-	slices.SortStableFunc(out, func(x, y git.Branch) int {
-		return compareRefNames(remoteBranchSortName(x), remoteBranchSortName(y), spec)
-	})
-	return out
+	return sortKeyedRef(branches, order, remoteBranchSortName)
 }
 
 // sortTags returns a copy of tags ordered by the stored value. The
 // snapshot's own slice is never sorted.
 func sortTags(tags []git.Tag, order string) []git.Tag {
-	out := slices.Clone(tags)
-	spec := refSortSpecOf(order)
-	slices.SortStableFunc(out, func(x, y git.Tag) int {
-		return compareRefNames(x.Name, y.Name, spec)
-	})
-	return out
+	return sortKeyedRef(tags, order, func(tag git.Tag) string { return tag.Name })
+}
+
+// sameBackingSlice reports whether x and y share one backing array and
+// length — the identity of the immutable snapshot slice, not just equal
+// contents. Retaining the source in the cache keeps its backing array
+// alive, so a new snapshot can never reuse the address of the cached one.
+func sameBackingSlice[T any](x, y []T) bool {
+	return len(x) == len(y) && unsafe.SliceData(x) == unsafe.SliceData(y)
+}
+
+// refSortCache is the one-entry cache of a sorted reference list: the
+// snapshot slice and the order it was sorted from, and the sorted copy.
+// A hit returns the very slice the first sort produced, so repeated frames
+// of an unchanged snapshot and unchanged settings sort nothing.
+type refSortCache[T any] struct {
+	src   []T
+	order string
+	out   []T
+	valid bool
+}
+
+// lookup returns the cached sorted copy when it was made from this very
+// snapshot slice and this order.
+func (c *refSortCache[T]) lookup(src []T, order string) ([]T, bool) {
+	if c.valid && c.order == order && sameBackingSlice(c.src, src) {
+		return c.out, true
+	}
+	return nil, false
+}
+
+// store replaces the cache entry with the copy sorted from src and order.
+func (c *refSortCache[T]) store(src []T, order string, out []T) {
+	c.src = src
+	c.order = order
+	c.out = out
+	c.valid = true
 }
 
 // localBranchSort is the order the Branches section currently shows, a
@@ -214,23 +271,47 @@ func (a *app) tagSort() string {
 }
 
 // sortedLocalBranches is the Branches section's copy of the snapshot's
-// branches, in the order the settings ask for.
+// branches, in the order the settings ask for. The sorted copy is cached on
+// the snapshot slice and the order: repeated frames of an unchanged
+// snapshot and unchanged settings return the cached copy without sorting.
 func (a *app) sortedLocalBranches(branches []git.Branch) []git.Branch {
-	return sortBranches(branches, a.localBranchSort())
+	order := a.localBranchSort()
+	cache := &a.refsView.localSortCache
+	if out, ok := cache.lookup(branches, order); ok {
+		return out
+	}
+	out := sortBranches(branches, order)
+	cache.store(branches, order, out)
+	return out
 }
 
 // sortedRemoteBranches is the Remotes section's copy of the snapshot's
 // remote-tracking branches, in the order the settings ask for. Sorting the
 // whole list once keeps every remote's subsequence sorted: filtering it for
-// one remote preserves relative order.
+// one remote preserves relative order, so every remote shares the one
+// cached copy rather than sorting the list again per remote.
 func (a *app) sortedRemoteBranches(branches []git.Branch) []git.Branch {
-	return sortRemoteBranches(branches, a.remoteBranchSort())
+	order := a.remoteBranchSort()
+	cache := &a.refsView.remoteSortCache
+	if out, ok := cache.lookup(branches, order); ok {
+		return out
+	}
+	out := sortRemoteBranches(branches, order)
+	cache.store(branches, order, out)
+	return out
 }
 
 // sortedTags is the Tags section's copy of the snapshot's tags, in the
-// order the settings ask for.
+// order the settings ask for, cached like the branches'.
 func (a *app) sortedTags(tags []git.Tag) []git.Tag {
-	return sortTags(tags, a.tagSort())
+	order := a.tagSort()
+	cache := &a.refsView.tagSortCache
+	if out, ok := cache.lookup(tags, order); ok {
+		return out
+	}
+	out := sortTags(tags, order)
+	cache.store(tags, order, out)
+	return out
 }
 
 // saveLocalBranchSort persists the order of the sidebar Branches section.

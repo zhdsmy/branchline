@@ -701,3 +701,150 @@ func TestRefSortSidebarOrderLoopbackSSH(t *testing.T) {
 		t.Fatalf("unexpected action error: %v", err)
 	}
 }
+
+// BenchmarkRefSort5000 measures one sort of 5000 branch names exercising
+// every grouping: mixed case, slashes, and a main in the list.
+func BenchmarkRefSort5000(b *testing.B) {
+	names := make([]string, 5000)
+	for i := range names {
+		switch i % 5 {
+		case 0:
+			names[i] = "feature/item" + itoa5(i)
+		case 1:
+			names[i] = "Release/Candidate" + itoa5(i)
+		case 2:
+			names[i] = "plainbranch" + itoa5(i)
+		case 3:
+			names[i] = "UPPER" + itoa5(i)
+		default:
+			names[i] = "lower" + itoa5(i)
+		}
+	}
+	names[0] = "main"
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		sinkStrings = sortRefNames(names, "backward-master-folders")
+	}
+}
+
+var sinkStrings []string
+
+// itoa5 formats i as a zero-padded five digit decimal string.
+func itoa5(i int) string {
+	var buf [5]byte
+	for p := 4; p >= 0; p-- {
+		buf[p] = byte('0' + i%10)
+		i /= 10
+	}
+	return string(buf[:])
+}
+
+// --- Sort cache ---
+
+// Repeated reads of an unchanged snapshot with unchanged settings return
+// the very slice the first sort produced — the cache hits for the local
+// branches, the remote branches and the tags alike.
+func TestRefSortCacheHitReturnsSameBackingArray(t *testing.T) {
+	repo := refSortFixture(t, "sort-cache-hit")
+
+	h := newRefSortTestApp(t)
+	h.openRepo(repo.StoreRepo())
+	h.drain()
+
+	refs := h.app.session.Snapshot().Refs
+
+	localFirst := h.app.sortedLocalBranches(refs.Branches)
+	localSecond := h.app.sortedLocalBranches(refs.Branches)
+	if &localFirst[0] != &localSecond[0] {
+		t.Fatal("second sortedLocalBranches call returned a different backing array: the cache did not hit")
+	}
+
+	remoteFirst := h.app.sortedRemoteBranches(refs.Remote)
+	remoteSecond := h.app.sortedRemoteBranches(refs.Remote)
+	if &remoteFirst[0] != &remoteSecond[0] {
+		t.Fatal("second sortedRemoteBranches call returned a different backing array: the cache did not hit")
+	}
+
+	tagsFirst := h.app.sortedTags(refs.Tags)
+	tagsSecond := h.app.sortedTags(refs.Tags)
+	if &tagsFirst[0] != &tagsSecond[0] {
+		t.Fatal("second sortedTags call returned a different backing array: the cache did not hit")
+	}
+}
+
+// The cache keys on the order as well as the snapshot: changing the setting
+// re-sorts the very same snapshot slice, and the new order shows.
+func TestRefSortCacheInvalidatesOnSettingsChange(t *testing.T) {
+	repo := refSortFixture(t, "sort-cache-settings")
+
+	h := newRefSortTestApp(t)
+	h.openRepo(repo.StoreRepo())
+	h.drain()
+
+	refs := h.app.session.Snapshot().Refs
+	backward := h.app.sortedLocalBranches(refs.Branches)
+	if backward[0].Name != "zeta" {
+		t.Fatalf("fresh-store backward order starts with %q, want zeta", backward[0].Name)
+	}
+
+	if err := h.app.saveLocalBranchSort(""); err != nil {
+		t.Fatalf("save alphabetical order: %v", err)
+	}
+	alpha := h.app.sortedLocalBranches(refs.Branches)
+	if alpha[0].Name != "alpha" {
+		t.Fatalf("order after switching to alphabetical starts with %q, want alpha: the cache did not invalidate", alpha[0].Name)
+	}
+	if &backward[0] == &alpha[0] {
+		t.Fatal("changed settings returned the cached backing array")
+	}
+}
+
+// A new snapshot brings new slices, which the cache never confuses with the
+// old ones: a branch created outside the app lands in its sorted position
+// once the reload after a write picks it up.
+func TestRefSortCacheInvalidatesOnNewSnapshot(t *testing.T) {
+	repo := refSortFixture(t, "sort-cache-snapshot")
+
+	h := newRefSortTestApp(t)
+	closeSync(t, h)
+	h.openRepo(repo.StoreRepo())
+	h.drain()
+
+	assertSidebarOrder(t, h, "zeta", "release/one", "master", "main", "feature/two", "alpha")
+
+	// Created outside the app: nothing in the app knows, so the sidebar
+	// still shows the old snapshot until a reload.
+	repo.CreateBranch("midway")
+	h.ui.Frame()
+	rows := sidebarRowOrder(t, h)
+	if slices.Contains(rows, "midway") {
+		t.Fatal("midway visible before any reload: the premise of an external change is broken")
+	}
+
+	// Fetch is a write of the toolbar that triggers a full reload even when
+	// it downloads nothing new.
+	if err := h.ui.Click("Fetch"); err != nil {
+		t.Fatalf("click Fetch: %v", err)
+	}
+	h.drain()
+	if err := h.app.session.ActionErr(); err != nil {
+		t.Fatalf("unexpected fetch error: %v", err)
+	}
+
+	// backward order: midway sorts between release/one and master.
+	assertSidebarOrder(t, h, "zeta", "release/one", "midway", "master", "main", "feature/two", "alpha")
+
+	// The new sorted list must come from a fresh sort of the new snapshot,
+	// never the cached copy of the old one.
+	refs := h.app.session.Snapshot().Refs
+	current := h.app.sortedLocalBranches(refs.Branches)
+	names := make([]string, len(current))
+	for i, br := range current {
+		names[i] = br.Name
+	}
+	want := []string{"zeta", "release/one", "midway", "master", "main", "feature/two", "alpha"}
+	if !slices.Equal(names, want) {
+		t.Fatalf("sorted branches of the new snapshot = %q, want %q", names, want)
+	}
+}
