@@ -449,7 +449,7 @@ func (a *app) settingsGitPage(c *ui.Context, p palette) {
 
 			if st.identityLoading {
 				ui.Row(c.Key("git-identity-loading")).FillWidth().Justify(ui.Start).Role(ui.RoleStatus).Label("Global Identity Loading").Busy(true).Gap(8).AlignItems(ui.Center).Children(func() {
-					ui.Spinner(c)
+					ui.Spinner(c).AccessHidden(true)
 					ui.Text(c, "Loading global Git identity…").FontSize(12).TextColor(p.muted).SingleLine()
 				})
 			} else if st.identityReadErr != nil {
