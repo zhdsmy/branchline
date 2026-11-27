@@ -148,6 +148,9 @@ type barePushCase struct {
 // runBarePushCase executes the shared Push assertion sequence against an opened
 // repository with a bare origin, proving the expected message appears, no git
 // push runs, the bare remote is unchanged byte-for-byte, and Dismiss clears it.
+// The worker-probe cases reach the quick push through Option+click: a plain
+// click on a born branch now opens the Push dialog instead of starting the
+// push, while the pre-flight cases keep exercising the plain click.
 func runBarePushCase(t *testing.T, h *testHarness, cmdLog *git.CommandLog, tc barePushCase, bareRefs func() string, mutateBeforePush func()) {
 	t.Helper()
 	emptySnapshotLoaded(t, h)
@@ -156,9 +159,13 @@ func runBarePushCase(t *testing.T, h *testHarness, cmdLog *git.CommandLog, tc ba
 		mutateBeforePush()
 	}
 
-	clickPush(t, h)
 	if tc.drain {
+		if err := h.ui.ClickWith(ui.Alt, "Push"); err != nil {
+			t.Fatalf("Option+click Push: %v", err)
+		}
 		h.drain()
+	} else {
+		clickPush(t, h)
 	}
 	requirePushValidationError(t, h, cmdLog, tc.wantMsg, tc.forbidMsg)
 	if got := bareRefs(); got != before {
@@ -263,9 +270,10 @@ func TestSyncPushUnbornBareRemote(t *testing.T) {
 	}
 }
 
-// TestSyncPushBornBranchSkipsHeadStateProbe verifies the born-branch Push hot
-// path adds no HeadState git commands (symbolic-ref -q HEAD, show-ref, or
-// rev-parse --verify HEAD^{commit}).
+// TestSyncPushBornBranchSkipsHeadStateProbe verifies the born-branch quick
+// Push hot path adds no HeadState git commands (symbolic-ref -q HEAD,
+// show-ref, or rev-parse --verify HEAD^{commit}). Option+click reaches it:
+// a plain click opens the Push dialog instead.
 func TestSyncPushBornBranchSkipsHeadStateProbe(t *testing.T) {
 	repo := newGitRepo(t, "push-born-hotpath")
 	repo.CommitFile("a.txt", "one\n", "first on main")
@@ -279,7 +287,9 @@ func TestSyncPushBornBranchSkipsHeadStateProbe(t *testing.T) {
 	beforeRecords, _ := cmdLog.Snapshot()
 	startIdx := len(beforeRecords)
 
-	clickPush(t, h)
+	if err := h.ui.ClickWith(ui.Alt, "Push"); err != nil {
+		t.Fatalf("Option+click Push: %v", err)
+	}
 	h.drain()
 	if err := h.app.session.ActionErr(); err != nil {
 		t.Fatalf("born-branch Push failed: %v", err)

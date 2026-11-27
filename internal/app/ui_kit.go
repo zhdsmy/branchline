@@ -187,7 +187,10 @@ func iconBtn(c *ui.Context, sfName string, fallback *ui.SVG, size float32, color
 	return b
 }
 
-func toolbarActionBtn(c *ui.Context, sfName string, fallback *ui.SVG, label string, p palette, disabled bool) ui.Element {
+// toolbarActionBtnTip builds a toolbar action button with its own tooltip.
+// Tooltip adds a tip on each call rather than replacing the last, so callers
+// pass the final tooltip here instead of calling Tooltip on the returned element.
+func toolbarActionBtnTip(c *ui.Context, sfName string, fallback *ui.SVG, label, tooltip string, p palette, disabled bool) ui.Element {
 	b := ui.ButtonBase(c).
 		Height(28).
 		PaddingX(9).
@@ -195,7 +198,7 @@ func toolbarActionBtn(c *ui.Context, sfName string, fallback *ui.SVG, label stri
 		Radius(7).
 		AlignItems(ui.Center).
 		Label(label).
-		Tooltip(label).
+		Tooltip(tooltip).
 		Disabled(disabled).
 		FocusRing(false)
 	bg := ui.Transparent
