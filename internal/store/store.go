@@ -124,8 +124,9 @@ type DiffPrefs struct {
 	// git diff -U; ContextSaved marks it chosen, since 0 is a choice.
 	ContextLines int  `json:"contextLines,omitempty"`
 	ContextSaved bool `json:"contextSaved,omitempty"`
-	// FileListFlat lists changed files by path rather than in folders.
-	FileListFlat bool `json:"fileListFlat,omitempty"`
+	// FileListTree groups the changed files of Local Changes in folders.
+	// The zero value is the flat list.
+	FileListTree bool `json:"fileListTree,omitempty"`
 	// FileListCombined puts staged and unstaged changes in one list.
 	FileListCombined bool `json:"fileListCombined,omitempty"`
 	// FileListSort is "status" to sort files by their change, "" by path.
