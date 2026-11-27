@@ -378,6 +378,8 @@ var sidebarTabBaseline = []string{
 	"Stashes",
 	"Save Stash",
 	"Stash stash@{0}",
+	"Filter Changes",
+	"Show as Tree",
 	"Commit message",
 	"Amend",
 	"Divider",
