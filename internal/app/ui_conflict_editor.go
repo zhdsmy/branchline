@@ -44,6 +44,10 @@ type conflictEditorState struct {
 	draftSynced string
 	draftDirty  bool
 
+	// hunkList is the place of the merge view's conflict block list, which
+	// draws only the blocks in view.
+	hunkList ui.ListState
+
 	// saveErr is the error of the last Save & Mark Resolved write for this
 	// conflict, shown next to the button until the next attempt or reload.
 	saveErr error
@@ -578,44 +582,51 @@ func (a *app) conflictMergeToolbar(c *ui.Context, f git.FileChange, st *conflict
 	})
 }
 
-// conflictHunkList renders every conflict block of the inspection: its title,
-// the two versions with the choice checkboxes, and the focus highlight of the
-// navigation target. The navigation scroll runs exactly on the frame the user
-// asked for it, then disarms, so the list never locks its scroll position.
+// conflictHunkList renders the conflict blocks of the inspection in a
+// virtual list, drawing only the blocks in view: each its title, the two
+// versions with the choice checkboxes, and the focus highlight of the
+// navigation target. The navigation scroll runs exactly on the frame the
+// user asked for it, then disarms, so the list never locks its scroll
+// position.
 func (a *app) conflictHunkList(c *ui.Context, st *conflictEditorState, ins git.ConflictInspection, p palette, recompute func()) {
 	hunks := ins.Hunks
 	ui.Column(c.Key("conflict-hunks-pane")).Grow(1).Basis(0).MinWidth(0).MinHeight(0).FillHeight().Children(func() {
-		ui.Scroll(c.Key("conflict-hunks-scroll")).Grow(1).FillWidth().MinHeight(0).Padding(6, 10, 10, 10).Children(func() {
-			ui.Column(c.Key("conflict-hunks")).FillWidth().Gap(10).Children(func() {
-				for i, h := range hunks {
-					i, h := i, h
-					focused := i == st.activeHunk
-					border := p.hairline
-					if focused {
-						border = p.accent
-					}
-					block := ui.Column(c.Key(fmt.Sprintf("conflict-hunk-%d", i))).FillWidth().Gap(6).Padding(10).Radius(8).Background(p.surface).Border(1, border)
-					if focused && st.scrollHunk {
-						st.scrollHunk = false
-						block.ScrollIntoView()
-					}
-					block.Children(func() {
-						ui.Row(c.Key(fmt.Sprintf("conflict-hunk-head-%d", i))).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
-							ui.Text(c, fmt.Sprintf("Conflict %d", i+1)).FontSize(11.5).FontWeight(650).TextColor(p.text).SingleLine()
-							if h.BaseStart >= 0 {
-								ui.Box(c).Padding(1, 5).Radius(4).Background(p.hover).Shrink(0).Children(func() {
-									ui.Text(c, "diff3").FontSize(10).FontWeight(500).TextColor(p.faint).SingleLine()
-								})
-							}
-						})
-						ui.Row(c.Key(fmt.Sprintf("conflict-hunk-sides-%d", i))).FillWidth().Gap(10).AlignItems(ui.Start).Children(func() {
-							conflictHunkSide(c, st, i, true, h.Ours, p, recompute)
-							conflictHunkSide(c, st, i, false, h.Theirs, p, recompute)
-						})
-					})
+		st.hunkList.Key = func(row int) any { return row }
+		ui.List(c.Key("conflict-hunks-scroll"), &st.hunkList, len(hunks)).
+			Grow(1).FillWidth().MinHeight(0).Padding(6, 10, 10, 10).Gap(10).
+			Rows(func(r ui.ListRow) {
+				i := r.Index
+				if i < 0 || i >= len(hunks) {
+					return
 				}
+				h := hunks[i]
+				rc := r.Context
+				focused := i == st.activeHunk
+				border := p.hairline
+				if focused {
+					border = p.accent
+				}
+				ui.Column(rc.Key(fmt.Sprintf("conflict-hunk-%d", i))).FillWidth().Gap(6).Padding(10).Radius(8).Background(p.surface).Border(1, border).Children(func() {
+					ui.Row(rc.Key(fmt.Sprintf("conflict-hunk-head-%d", i))).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
+						ui.Text(rc, fmt.Sprintf("Conflict %d", i+1)).FontSize(11.5).FontWeight(650).TextColor(p.text).SingleLine()
+						if h.BaseStart >= 0 {
+							ui.Box(rc).Padding(1, 5).Radius(4).Background(p.hover).Shrink(0).Children(func() {
+								ui.Text(rc, "diff3").FontSize(10).FontWeight(500).TextColor(p.faint).SingleLine()
+							})
+						}
+					})
+					ui.Row(rc.Key(fmt.Sprintf("conflict-hunk-sides-%d", i))).FillWidth().Gap(10).AlignItems(ui.Start).Children(func() {
+						conflictHunkSide(rc, st, i, true, h.Ours, p, recompute)
+						conflictHunkSide(rc, st, i, false, h.Theirs, p, recompute)
+					})
+				})
 			})
-		})
+		if st.scrollHunk {
+			st.scrollHunk = false
+			if st.activeHunk >= 0 && st.activeHunk < len(hunks) {
+				st.hunkList.ScrollIntoView(st.activeHunk)
+			}
+		}
 	})
 }
 

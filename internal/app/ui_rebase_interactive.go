@@ -68,6 +68,21 @@ type interactiveRebaseUIState struct {
 	readErr       error
 	rows          []*interactiveRebaseRow
 	submitClicked bool
+
+	// list is the place of the plan rows list, kept by item key across the
+	// moves of the rows, and moves is the queue of row moves clicked while
+	// the list built: a move applies only once every row of the pass is
+	// built, so one pass never draws a commit twice. moves is drained within
+	// the frame it was recorded in and never survives it.
+	list  ui.ListState
+	moves []interactiveRebaseMove
+}
+
+// interactiveRebaseMove is one move a move button recorded: the commit it
+// moves, and the direction in the execution order.
+type interactiveRebaseMove struct {
+	hash string
+	dir  int
 }
 
 // interactiveRebaseUI returns the app's interactive rebase state, creating
@@ -265,6 +280,10 @@ func (a *app) interactiveRebaseModal(c *ui.Context) {
 			})
 			switch {
 			case st.loading:
+				// A new plan read starts the rows list from the top again:
+				// the place of the rows it replaces means nothing to it, as
+				// the scroll container's reset offset did before.
+				st.list = ui.ListState{}
 				ui.Text(c, "Loading plan…").FontSize(12.5).TextColor(p.muted)
 			case st.readErr != nil:
 				ui.Text(c, st.readErr.Error()).FontSize(12).TextColor(p.danger).MaxWidth(604)
@@ -272,18 +291,29 @@ func (a *app) interactiveRebaseModal(c *ui.Context) {
 					a.startInteractiveRebasePlanRead(st)
 				}
 			default:
-				// The rows drawn this frame are a snapshot of the order as the
-				// frame started: a move button's swap lands while its own row is
-				// still building, and the rows the loop has not reached yet must
-				// not shift underneath it — otherwise one commit renders twice in
-				// one pass. The row objects are shared, so the action choice of
-				// each still writes the commit it names.
-				display := append([]*interactiveRebaseRow(nil), st.rows...)
-				ui.Scroll(c.Key("ir-rows-scroll")).MaxHeight(320).Gap(2).FillWidth().Children(func() {
-					for pos := len(display) - 1; pos >= 0; pos-- {
-						a.interactiveRebaseRowView(c, p, st, display, pos)
+				// The list draws only the rows in view; its order is the reverse
+				// of the execution order, the newest commit on top. A move
+				// button's click cannot swap rows while the rows build — the
+				// rows not built yet would shift underneath the pass, drawing
+				// one commit twice — so the button records the move and the
+				// swaps apply once the whole list is built. The pass rebuilds
+				// for the click it consumed, so the frame shows the outcome the
+				// same as an immediate swap would. With fewer rows than the
+				// list's height the list is exactly as tall as its content;
+				// past MaxHeight it scrolls.
+				st.list.KeepOffset = true
+				st.list.Key = func(row int) any { return st.rows[len(st.rows)-1-row].hash }
+				ui.List(c.Key("ir-rows-scroll"), &st.list, len(st.rows)).
+					MaxHeight(320).Gap(2).FillWidth().
+					Rows(func(r ui.ListRow) {
+						a.interactiveRebaseRowView(r.Context, p, st, st.rows, len(st.rows)-1-r.Index)
+					})
+				if len(st.moves) > 0 {
+					for _, m := range st.moves {
+						moveInteractiveRebaseRow(st.rows, m.hash, m.dir)
 					}
-				})
+					st.moves = st.moves[:0]
+				}
 			}
 			a.interactiveRebaseMessagePanel(c, p, st)
 			if drops > 0 {
@@ -313,10 +343,12 @@ func (a *app) interactiveRebaseModal(c *ui.Context) {
 
 // interactiveRebaseRowView renders one plan row of the form: the short hash,
 // subject and author of the commit, its move controls and its action choice.
-// display is the frame's frozen projection of the execution order and pos
-// counts backward through it — the form shows the newest commit on top — so
-// the top row is already as late as it can go and disables moving up, the
-// bottom row disables moving down.
+// display is the plan in the execution order and pos the row's position in
+// it — the form shows the newest commit on top — so the top row is already
+// as late as it can go and disables moving up, the bottom row disables
+// moving down. The order display holds never changes while the rows build:
+// move buttons record their clicks, and the swaps apply once the whole list
+// is built.
 func (a *app) interactiveRebaseRowView(c *ui.Context, p palette, st *interactiveRebaseUIState, display []*interactiveRebaseRow, pos int) {
 	row := display[pos]
 	short := irShort(row.hash)
@@ -381,7 +413,9 @@ func (a *app) interactiveRebaseMoveButton(c *ui.Context, p palette, st *interact
 		symbolIcon(c, sf, fallback, 10, color)
 	})
 	if b.Clicked() {
-		moveInteractiveRebaseRow(st.rows, row.hash, dir)
+		// The swap applies once the whole list is built: a row not yet built
+		// must never shift underneath the pass and draw its commit twice.
+		st.moves = append(st.moves, interactiveRebaseMove{hash: row.hash, dir: dir})
 	}
 }
 
