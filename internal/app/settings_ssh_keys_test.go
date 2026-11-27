@@ -293,8 +293,8 @@ func TestSettingsSSHKeysUseCheckboxReachesLocalFetch(t *testing.T) {
 	if err := os.Truncate(gitLog, 0); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.ui.Click("Fetch"); err != nil {
-		t.Fatalf("click Fetch: %v; texts=%q", err, h.ui.Texts())
+	if err := h.ui.ClickWith(ui.Alt, "Fetch"); err != nil {
+		t.Fatalf("Option-click Fetch: %v; texts=%q", err, h.ui.Texts())
 	}
 	h.drain()
 
@@ -830,8 +830,8 @@ func TestSettingsSSHKeysQuotedPathAndOnlyCheckedActive(t *testing.T) {
 	if err := os.Truncate(sshLog, 0); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.ui.Click("Fetch"); err != nil {
-		t.Fatalf("click Fetch: %v; texts=%q", err, h.ui.Texts())
+	if err := h.ui.ClickWith(ui.Alt, "Fetch"); err != nil {
+		t.Fatalf("Option-click Fetch: %v; texts=%q", err, h.ui.Texts())
 	}
 	h.drain()
 	assertSSHArgvHasIdentity(t, sshLog, checked.Path, unchecked.Path)

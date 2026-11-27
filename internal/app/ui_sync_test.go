@@ -77,11 +77,12 @@ func TestSyncLocalFetchPullPushAndSetUpstream(t *testing.T) {
 	// Create a local branch without an upstream and publish it with Push.
 	repo.Git("checkout", "-b", "feature")
 	featureHead := repo.CommitFile("feature.txt", "feature\n", "feature commit")
+	// The external checkout and commit happened behind the snapshot's back:
+	// reload so the Push dialog sees the new branch.
+	h.app.session.Reload()
 	h.drain()
 
-	if err := h.ui.Click("Push"); err != nil {
-		t.Fatalf("click Push: %v", err)
-	}
+	clickPushConfirm(t, h)
 	h.drain()
 
 	if got := strings.TrimSpace(runGitCommand(t, bareDir, "rev-parse", "refs/heads/feature")); got != featureHead {
@@ -113,7 +114,7 @@ func TestSyncLocalFetchPullPushAndSetUpstream(t *testing.T) {
 	peerHead := strings.TrimSpace(runGitCommand(t, peerDir, "rev-parse", "HEAD"))
 
 	headBefore := strings.TrimSpace(repo.Git("rev-parse", "HEAD"))
-	if err := h.ui.Click("Fetch"); err != nil {
+	if err := h.ui.ClickWith(ui.Alt, "Fetch"); err != nil {
 		t.Fatalf("click Fetch: %v", err)
 	}
 	h.drain()
@@ -126,7 +127,7 @@ func TestSyncLocalFetchPullPushAndSetUpstream(t *testing.T) {
 	}
 
 	// Pull fast-forwards HEAD and updates the working tree.
-	if err := h.ui.Click("Pull"); err != nil {
+	if err := h.ui.ClickWith(ui.Alt, "Pull"); err != nil {
 		t.Fatalf("click Pull: %v", err)
 	}
 	h.drain()
@@ -142,7 +143,7 @@ func TestSyncLocalFetchPullPushAndSetUpstream(t *testing.T) {
 	}
 
 	// Pulling again toasts the up-to-date note instead of an error.
-	if err := h.ui.Click("Pull"); err != nil {
+	if err := h.ui.ClickWith(ui.Alt, "Pull"); err != nil {
 		t.Fatalf("click Pull again: %v", err)
 	}
 	h.drain()
@@ -154,9 +155,7 @@ func TestSyncLocalFetchPullPushAndSetUpstream(t *testing.T) {
 	}
 
 	// Pushing with nothing to send toasts the up-to-date note.
-	if err := h.ui.Click("Push"); err != nil {
-		t.Fatalf("click Push again: %v", err)
-	}
+	clickPushConfirm(t, h)
 	h.drain()
 	if err := h.app.session.ActionErr(); err != nil {
 		t.Fatalf("up-to-date push reported an error: %v", err)
@@ -406,7 +405,7 @@ func TestSyncBusyDisablesButtonsAndRejectsReentry(t *testing.T) {
 	openSyncRepo(t, h, repo.StoreRepo())
 
 	h.queue.PauseWorkers()
-	if err := h.ui.Click("Fetch"); err != nil {
+	if err := h.ui.ClickWith(ui.Alt, "Fetch"); err != nil {
 		t.Fatalf("click Fetch: %v", err)
 	}
 	fetchWorker := h.queue.WaitWorker(t)
@@ -465,7 +464,7 @@ func TestSyncErrorDisplayAndDismiss(t *testing.T) {
 
 	// Break the remote URL so Fetch fails for real.
 	repo.Git("remote", "set-url", "origin", filepath.Join(t.TempDir(), "missing.git"))
-	if err := h.ui.Click("Fetch"); err != nil {
+	if err := h.ui.ClickWith(ui.Alt, "Fetch"); err != nil {
 		t.Fatalf("click Fetch: %v", err)
 	}
 	h.drain()
@@ -505,13 +504,11 @@ func TestSyncErrorDisplayAndDismiss(t *testing.T) {
 	runGitCommand(t, peerDir, "push", "origin", "main")
 	repo.CommitFile("local.txt", "l\n", "local ahead")
 
-	if err := h.ui.Click("Fetch"); err != nil {
+	if err := h.ui.ClickWith(ui.Alt, "Fetch"); err != nil {
 		t.Fatalf("click Fetch to learn remote state: %v", err)
 	}
 	h.drain()
-	if err := h.ui.Click("Push"); err != nil {
-		t.Fatalf("click Push: %v", err)
-	}
+	clickPushConfirm(t, h)
 	h.drain()
 	if err := h.app.session.ActionErr(); err == nil {
 		t.Fatal("expected ActionErr after non-fast-forward Push")
@@ -559,7 +556,7 @@ func TestSyncPullConflictPreservesWorkingTree(t *testing.T) {
 	}
 	headBefore := strings.TrimSpace(repo.Git("rev-parse", "HEAD"))
 
-	if err := h.ui.Click("Pull"); err != nil {
+	if err := h.ui.ClickWith(ui.Alt, "Pull"); err != nil {
 		t.Fatalf("click Pull: %v", err)
 	}
 	h.drain()
@@ -988,7 +985,7 @@ func TestSyncPushGoneUpstreamNonOriginRemote(t *testing.T) {
 	h := newTestApp(t)
 	openSyncRepo(t, h, repo.StoreRepo())
 
-	clickPush(t, h)
+	clickPushConfirm(t, h)
 	h.drain()
 
 	if err := h.app.session.ActionErr(); err != nil {
@@ -1063,18 +1060,22 @@ func clickPush(t *testing.T, h *testHarness) {
 	}
 }
 
-// clickFetch clicks the toolbar Fetch button and fails the test on error.
+// clickFetch clicks the toolbar Fetch button with Option held — the direct
+// fetch a plain click ran before the Fetch dialog — and fails the test on
+// error.
 func clickFetch(t *testing.T, h *testHarness) {
 	t.Helper()
-	if err := h.ui.Click("Fetch"); err != nil {
+	if err := h.ui.ClickWith(ui.Alt, "Fetch"); err != nil {
 		t.Fatalf("click Fetch: %v", err)
 	}
 }
 
-// clickPull clicks the toolbar Pull button and fails the test on error.
+// clickPull clicks the toolbar Pull button with Option held — the direct
+// pull a plain click ran before the Pull dialog — and fails the test on
+// error.
 func clickPull(t *testing.T, h *testHarness) {
 	t.Helper()
-	if err := h.ui.Click("Pull"); err != nil {
+	if err := h.ui.ClickWith(ui.Alt, "Pull"); err != nil {
 		t.Fatalf("click Pull: %v", err)
 	}
 }
@@ -1116,7 +1117,11 @@ func TestSyncFetchPullPushLoopbackSSH(t *testing.T) {
 	srv.RunGit(t, repoDir, "commit", "-m", "feature commit")
 	featureHead := srv.RunGit(t, repoDir, "rev-parse", "HEAD")
 
-	clickPush(t, h)
+	// The server-side checkout and commit happened behind the snapshot's
+	// back: reload so the Push dialog sees the new branch.
+	h.app.session.Reload()
+	h.drain()
+	clickPushConfirm(t, h)
 	h.drain()
 
 	if got := srv.RunGit(t, bareDir, "rev-parse", "refs/heads/feature"); got != featureHead {
@@ -1641,7 +1646,11 @@ func TestConfiguredLinuxSyncFetchPullPush(t *testing.T) {
 	srv.RunGit(t, repoDir, "commit", "-m", "feature commit")
 	featureHead := srv.RunGit(t, repoDir, "rev-parse", "HEAD")
 
-	clickPush(t, h)
+	// The server-side checkout and commit happened behind the snapshot's
+	// back: reload so the Push dialog sees the new branch.
+	h.app.session.Reload()
+	h.drain()
+	clickPushConfirm(t, h)
 	h.drain()
 
 	if got := srv.RunGit(t, bareDir, "rev-parse", "refs/heads/feature"); got != featureHead {
