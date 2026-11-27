@@ -138,6 +138,7 @@ func (a *app) commitActionModals(c *ui.Context) {
 	a.interactiveRebaseModal(c)
 	a.checkoutCommitModal(c)
 	a.commitRebaseQuickModals(c)
+	a.fileResetModal(c)
 }
 
 // resetModal is the Reset dialog: it moves the current branch — or the

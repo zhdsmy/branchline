@@ -250,8 +250,10 @@ func (a *app) retryFileBlameLoad() {
 
 // historyFileContextMenu is the context menu of a changed-file row in the
 // commit detail of the History page: File History walks HEAD for the file,
-// and Blame pins the file at the shown commit, falling back to its first
-// parent when the commit deleted the file.
+// Blame pins the file at the shown commit, falling back to its first parent
+// when the commit deleted the file, and the two reset entries restore the
+// file in the working tree and the index to the state at or before the
+// commit.
 func (a *app) historyFileContextMenu(m *ui.Menu, commit git.Commit, f git.FileChange) {
 	// Copy the commit and clone its parents at once: the menu's function runs
 	// again when an item is chosen, and must never read the mutable commit
@@ -272,6 +274,7 @@ func (a *app) historyFileContextMenu(m *ui.Menu, commit git.Commit, f git.FileCh
 	if m.Item("Blame…").ID("file-blame").Disabled(!blameOK).Chosen() {
 		a.openFileInspector(pageHistory, inspectorModeBlame, path, blameRev)
 	}
+	a.historyFileResetMenuItems(m, commit, f)
 }
 
 // changesFileContextMenu is the context menu of a file row of the Local
