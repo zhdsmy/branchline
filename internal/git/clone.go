@@ -211,7 +211,12 @@ const (
 
 // ConnectionMessage is what Test Connection says for the result of
 // TestRemote: one of the three answers above, or git's own words for
-// another failure.
+// another failure. Those words are the first fatal: or error: line of
+// what git printed, or its first non-empty line when there is neither:
+// a failure often starts with progress such as "Cloning into 'x'...",
+// while the reason follows on a fatal: line. The message can hold what
+// a credential helper or the remote wrote, so the caller redacts it —
+// for example with RedactText — before showing or logging it.
 func ConnectionMessage(err error) string {
 	if err == nil {
 		return ConnectionSucceeded
@@ -231,9 +236,18 @@ func ConnectionMessage(err error) string {
 		strings.Contains(lower, "returned error: 404"):
 		return RepositoryNotFound
 	}
-	for _, line := range strings.Split(msg, "\n") {
-		line = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "fatal:"))
-		if line != "" {
+	lines := strings.Split(msg, "\n")
+	for _, prefix := range []string{"fatal:", "error:"} {
+		for _, line := range lines {
+			if text, ok := strings.CutPrefix(strings.TrimSpace(line), prefix); ok {
+				if text = strings.TrimSpace(text); text != "" {
+					return text
+				}
+			}
+		}
+	}
+	for _, line := range lines {
+		if line = strings.TrimSpace(line); line != "" {
 			return line
 		}
 	}

@@ -3,8 +3,12 @@ package git
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -169,5 +173,131 @@ func TestConnectionMessage(t *testing.T) {
 	other := &Error{Args: []string{"ls-remote"}, ExitCode: 128, Stderr: "fatal: unable to access 'https://x/': Could not resolve host: x\n"}
 	if got := ConnectionMessage(other); got != "unable to access 'https://x/': Could not resolve host: x" {
 		t.Fatalf("other says %q", got)
+	}
+}
+
+// TestConnectionMessagePicksReasonLine picks git's reason for a failure
+// over the progress and bookkeeping lines that come before it.
+func TestConnectionMessagePicksReasonLine(t *testing.T) {
+	gitErr := func(stderr string) error {
+		return &Error{Args: []string{"ls-remote"}, ExitCode: 128, Stderr: stderr}
+	}
+	cases := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{
+			name: "progress before fatal",
+			err:  gitErr("Cloning into 'x'...\nfatal: could not read Username for 'https://example.com': terminal prompts disabled\n"),
+			want: "could not read Username for 'https://example.com': terminal prompts disabled",
+		},
+		{
+			name: "remote lines before fatal",
+			err:  gitErr("remote: Enumerating objects: 5, done.\nremote: Counting objects: 100% (5/5), done.\nfatal: pack has bad object at offset 12\n"),
+			want: "pack has bad object at offset 12",
+		},
+		{
+			name: "only an error line",
+			err:  gitErr("error: RPC failed; curl 56 OpenSSL SSL_read: connection reset\n"),
+			want: "RPC failed; curl 56 OpenSSL SSL_read: connection reset",
+		},
+		{
+			name: "error line before the fatal line",
+			err:  gitErr("error: 5000 bytes of body are still expected\nfatal: the remote end hung up unexpectedly\n"),
+			want: "the remote end hung up unexpectedly",
+		},
+		{
+			name: "one plain line",
+			err:  gitErr("ssh: connect to host example.com port 22: Operation timed out\n"),
+			want: "ssh: connect to host example.com port 22: Operation timed out",
+		},
+		{
+			name: "carriage returns of a Windows style line ending",
+			err:  gitErr("Cloning into 'x'...\r\nfatal: unable to connect to example.com\r\n"),
+			want: "unable to connect to example.com",
+		},
+		{
+			name: "carriage return on a plain line",
+			err:  gitErr("some progress\r\n"),
+			want: "some progress",
+		},
+		{
+			name: "whitespace before fatal",
+			err:  gitErr("  fatal: cannot lock ref, another clone is running\n"),
+			want: "cannot lock ref, another clone is running",
+		},
+		{
+			name: "an error that is not git's uses its own words",
+			err:  errors.New("context canceled"),
+			want: "context canceled",
+		},
+		{
+			name: "empty stderr falls back to the error text",
+			err:  &Error{Args: []string{"clone"}, ExitCode: 128},
+			want: "git clone: exit status 128",
+		},
+		{
+			name: "whitespace-only stderr falls back to the error text",
+			err:  gitErr("  \r\n\t\n"),
+			want: "git ls-remote: exit status 128",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := ConnectionMessage(c.err); got != c.want {
+				t.Errorf("ConnectionMessage() = %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
+// TestConnectionMessageCloneFailureLoopback clones a server that answers
+// every request with 401: the message is the authentication failure, not
+// the "Cloning into" progress line, and no credential helper of this Mac
+// runs or keeps the answer.
+func TestConnectionMessageCloneFailureLoopback(t *testing.T) {
+	isolateCredentials(t)
+	t.Setenv("GIT_TERMINAL_PROMPT", "0")
+	t.Setenv("GIT_CONFIG_COUNT", "1")
+	t.Setenv("GIT_CONFIG_KEY_0", "credential.helper")
+	t.Setenv("GIT_CONFIG_VALUE_0", "")
+
+	// No credential helper can be left: the empty entry above clears the
+	// list, so --get-all prints nothing but one empty line.
+	check := exec.Command("git", "config", "--get-all", "credential.helper")
+	check.Dir = t.TempDir()
+	if out, err := check.CombinedOutput(); strings.TrimSpace(string(out)) != "" {
+		t.Fatalf("credential helpers are configured: %q (err %v)", out, err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("WWW-Authenticate", `Basic realm="x"`)
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	parent := t.TempDir()
+	r := New(&LocalExecutor{Dir: parent})
+	err := r.CloneInto(context.Background(), CloneOptions{URL: server.URL + "/repo.git", Name: "repo"})
+	if err == nil {
+		t.Fatal("the clone of a server that answers 401 succeeded")
+	}
+	var ge *Error
+	if errors.As(err, &ge) {
+		t.Logf("clone stderr verbatim:\n%s", ge.Stderr)
+	}
+	msg := ConnectionMessage(err)
+	t.Logf("ConnectionMessage: %q", msg)
+	if strings.HasPrefix(msg, "Cloning into") {
+		t.Fatalf("the message is the progress line: %q", msg)
+	}
+	if !strings.Contains(msg, "could not read Username") && !strings.Contains(msg, "Authentication failed") {
+		t.Fatalf("the message is not the authentication failure: %q", msg)
+	}
+
+	// Nothing of the failed login was kept in the keychain of this Mac.
+	if out, err := exec.Command("security", "find-internet-password", "-s", "127.0.0.1").CombinedOutput(); err == nil {
+		t.Fatalf("the keychain keeps a password for 127.0.0.1: %q", out)
 	}
 }
