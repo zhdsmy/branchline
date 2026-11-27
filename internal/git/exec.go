@@ -15,6 +15,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -198,13 +199,9 @@ func (l *LocalExecutor) Run(ctx context.Context, stdin []byte, args ...string) (
 			if env, err := l.AskPass.Env(); err == nil {
 				cmd.Env = append(cmd.Env, env...)
 				sess := l.AskPass.session(creds)
-				out, err := runAskContext(ctx, cmd, stdin, args, func(pipe, prompt string, _ bool) {
+				out, err := runAskContext(ctx, cmd, stdin, args, func(pipe, prompt string, _ bool) error {
 					answer, ok := sess.ask(prompt)
-					// The callback cannot report an error. When the answer
-					// does not reach the pipe, the script keeps waiting on
-					// it, and git or ssh keeps waiting on the script until
-					// the command's timeout or cancellation kills it.
-					_ = writePipe(pipe, replyLine(answer, ok))
+					return deliverPipe(pipe, replyLine(answer, ok))
 				})
 				sess.finish(err)
 				return out, err
@@ -340,7 +337,7 @@ func (s *SSHExecutor) remoteCommand(prepared bool, args ...string) string {
 	b.WriteString(RemotePath(s.Dir))
 	b.WriteString(" && ")
 	if ask {
-		b.WriteString(remoteAskSetup)
+		b.WriteString(remoteAskSetup())
 		b.WriteString(" && ")
 	}
 	if prepared {
@@ -497,9 +494,48 @@ func runContext(ctx context.Context, cmd *exec.Cmd, stdin []byte, args []string)
 	return runTo(ctx, cmd, stdin, args, &stderr, stderr.String)
 }
 
-func runAskContext(ctx context.Context, cmd *exec.Cmd, stdin []byte, args []string, answer func(pipe, prompt string, remote bool)) ([]byte, error) {
-	w := &askWriter{answer: answer}
-	return runTo(ctx, cmd, stdin, args, w, w.text)
+// runAskContext runs cmd, handing each question to answer. When an
+// answer cannot reach the pipe, the script keeps waiting on it and the
+// command would only end with its timeout, so the command is ended at
+// once, the way a cancellation ends it, and the error says why.
+func runAskContext(ctx context.Context, cmd *exec.Cmd, stdin []byte, args []string, answer func(pipe, prompt string, remote bool) error) ([]byte, error) {
+	configureShellCancel(cmd)
+	var mu sync.Mutex
+	var fail error
+	end := func(err error) {
+		mu.Lock()
+		if fail == nil {
+			fail = err
+		}
+		mu.Unlock()
+		if cmd.Cancel != nil {
+			_ = cmd.Cancel()
+		} else if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+	}
+	w := &askWriter{answer: func(pipe, prompt string, remote bool) {
+		if err := answer(pipe, prompt, remote); err != nil {
+			end(fmt.Errorf("could not deliver the answer to the password prompt: %s", RedactText(err.Error())))
+		}
+	}}
+	out, err := runTo(ctx, cmd, stdin, args, w, w.text)
+	mu.Lock()
+	delivery := fail
+	mu.Unlock()
+	if delivery != nil {
+		var ge *Error
+		if errors.As(err, &ge) {
+			if ge.Stderr != "" {
+				ge.Stderr = delivery.Error() + "\n" + ge.Stderr
+			} else {
+				ge.Stderr = delivery.Error()
+			}
+			return out, ge
+		}
+		return out, delivery
+	}
+	return out, err
 }
 
 func runTo(ctx context.Context, cmd *exec.Cmd, stdin []byte, args []string, stderrW io.Writer, stderrText func() string) ([]byte, error) {
