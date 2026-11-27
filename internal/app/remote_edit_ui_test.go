@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -69,7 +70,10 @@ func installRemoteEditSeams(t *testing.T, h *testHarness) (*remoteEditCapture, s
 // and optionally gating the shell commands of remote editing, recognized by
 // their scripts: downloads cat the file, saves write a temporary one. git
 // operations of the session never go through RunShellInput, so the gate
-// holds remote editing alone.
+// holds remote editing alone. The workers of remote editing run without a
+// canceling context, so the gate also watches abandoned, which the cleanup
+// closes before draining: a test failing while a command is held must
+// release the worker rather than hang the teardown.
 type gatedShellExecutor struct {
 	real *git.SSHExecutor
 
@@ -78,6 +82,7 @@ type gatedShellExecutor struct {
 	saves      int
 	gateCh     chan struct{}
 	gateArrive chan struct{}
+	abandoned  chan struct{}
 }
 
 func (g *gatedShellExecutor) Run(ctx context.Context, stdin []byte, args ...string) ([]byte, error) {
@@ -106,6 +111,8 @@ func (g *gatedShellExecutor) RunShellInput(ctx context.Context, command string, 
 		}
 		select {
 		case <-gate:
+		case <-g.abandoned:
+			return nil, errors.New("the test abandoned the gated shell command")
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}
@@ -167,9 +174,10 @@ func installGatedShellExecutor(t *testing.T, h *testHarness) *gatedShellExecutor
 	if !ok {
 		t.Fatalf("session executor = %T, want *git.SSHExecutor", repo.Exec)
 	}
-	wrapped := &gatedShellExecutor{real: ssh}
+	wrapped := &gatedShellExecutor{real: ssh, abandoned: make(chan struct{})}
 	repo.Exec = wrapped
 	t.Cleanup(func() {
+		close(wrapped.abandoned)
 		h.queue.releaseAllAndWait()
 		repo.Exec = ssh
 	})
