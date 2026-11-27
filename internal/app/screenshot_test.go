@@ -109,6 +109,7 @@ func screenshotStates() []screenshotState {
 		{name: "changes-diff", setup: setupScreenshotChangesDiff},
 		{name: "changes-tree", setup: setupScreenshotChangesTree},
 		{name: "history-detail", setup: setupScreenshotHistoryDetail},
+		{name: "history-tree", setup: setupScreenshotHistoryTree},
 		{name: "refs-sidebar", setup: setupScreenshotRefsSidebar},
 		{name: "repo-switcher", setup: setupScreenshotRepoSwitcher},
 		{name: "add-ssh-modal", setup: setupScreenshotAddSSHModal},
