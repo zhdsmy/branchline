@@ -30,6 +30,7 @@ type syncUIState struct {
 	syncErr     string
 	lastRepoGen uint64
 	fetchDlg    fetchDialogState
+	pullDlg     pullDialogState
 
 	// mu guards the lifecycle counters background workers and the quit-time
 	// teardown share. inflight counts running sync workers; closing is set by
@@ -135,9 +136,11 @@ func syncStateFor(a *app) *syncUIState {
 		st.lastRepoGen = gen
 		st.syncErr = ""
 		st.pass.cancelAll()
-		// The Fetch dialog's captured remotes belong to the old repository:
-		// close it without fetching or remembering anything.
+		// The Fetch and Pull dialogs' captured remotes, branches and HEAD
+		// belong to the old repository: close them without fetching, pulling
+		// or remembering anything.
 		st.fetchDlg = fetchDialogState{}
+		st.pullDlg = pullDialogState{}
 	}
 	return st
 }
@@ -275,9 +278,16 @@ func (a *app) syncToolbar(c *ui.Context) {
 			a.openFetchDialog()
 		}
 	}
-	pull := toolbarActionBtn(c.Key("sync-pull"), "arrow.down", fallbackDownArr, "Pull", p, disabled)
+	// The Pull button opens the Pull dialog; holding Option it pulls the
+	// upstream as a click always did.
+	pull := toolbarActionBtnTip(c.Key("sync-pull"), "arrow.down", fallbackDownArr, "Pull",
+		"Pull — hold Option to pull the upstream directly", p, disabled)
 	if pull.Clicked() {
-		a.syncPull()
+		if pull.ClickModifiers()&ui.Alt != 0 {
+			a.syncPull()
+		} else {
+			a.openPullDialog()
+		}
 	}
 	// The Push button opens the Push dialog; holding Option it pushes the
 	// current branch as a click always did.
@@ -293,10 +303,11 @@ func (a *app) syncToolbar(c *ui.Context) {
 
 	// The askpass modal is built from the toolbar pass: ui.Modal mounts into
 	// the window-level overlayRoot, so it is not clipped by the toolbar strip.
-	// The Push and Fetch dialogs mount beneath it, so a question of their
-	// workers can never hide behind the dialog it belongs to.
+	// The Push, Fetch and Pull dialogs mount beneath it, so a question of
+	// their workers can never hide behind the dialog it belongs to.
 	a.pushDialog(c)
 	a.fetchDialog(c)
+	a.pullDialog(c)
 	st.pass.view(c)
 }
 
