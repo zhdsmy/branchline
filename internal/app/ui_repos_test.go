@@ -542,7 +542,7 @@ func TestRepoAddSSHTestConnectionErrorsLoopbackSSH(t *testing.T) {
 
 	t.Run("key rejected", func(t *testing.T) {
 		key := filepath.Join(t.TempDir(), "badkey")
-		if out, err := exec.Command("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", key).CombinedOutput(); err != nil {
+		if out, err := exec.Command("ssh-keygen", "-q", "-t", "ed25519", "-C", "branchline-test", "-N", "", "-f", key).CombinedOutput(); err != nil {
 			t.Fatalf("ssh-keygen: %v\n%s", err, out)
 		}
 		h := newTestApp(t)

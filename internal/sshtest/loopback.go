@@ -127,7 +127,7 @@ func startLoopback(t testing.TB, deps loopbackDeps) *Target {
 	hostKey := filepath.Join(baseDir, "host_ed25519")
 	userKey := filepath.Join(baseDir, "user_ed25519")
 	for _, k := range []string{hostKey, userKey} {
-		if out, err := exec.Command(keygenBin, "-q", "-t", "ed25519", "-N", "", "-f", k).CombinedOutput(); err != nil {
+		if out, err := exec.Command(keygenBin, "-q", "-t", "ed25519", "-C", "branchline-test", "-N", "", "-f", k).CombinedOutput(); err != nil {
 			t.Fatalf("ssh-keygen %s: %v\n%s", filepath.Base(k), err, out)
 		}
 	}
@@ -363,7 +363,7 @@ func (s *Target) GenerateKey(t testing.TB, name, passphrase string) string {
 		t.Fatalf("ssh-keygen not found: %v", err)
 	}
 	keyPath := filepath.Join(s.baseDir, "key-"+cleanName)
-	if out, err := exec.Command(keygenBin, "-q", "-t", "ed25519", "-N", passphrase, "-f", keyPath).CombinedOutput(); err != nil {
+	if out, err := exec.Command(keygenBin, "-q", "-t", "ed25519", "-C", "branchline-test", "-N", passphrase, "-f", keyPath).CombinedOutput(); err != nil {
 		t.Fatalf("ssh-keygen %s: %v\n%s", cleanName, err, out)
 	}
 	pub, err := os.ReadFile(keyPath + ".pub")

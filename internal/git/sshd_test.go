@@ -34,7 +34,7 @@ func startSSHD(t *testing.T) *sshServer {
 	}
 	dir := t.TempDir()
 	for _, k := range []string{"host", "user"} {
-		if out, err := exec.Command("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", filepath.Join(dir, k)).CombinedOutput(); err != nil {
+		if out, err := exec.Command("ssh-keygen", "-q", "-t", "ed25519", "-C", "branchline-test", "-N", "", "-f", filepath.Join(dir, k)).CombinedOutput(); err != nil {
 			t.Fatalf("ssh-keygen: %v %s", err, out)
 		}
 	}
@@ -188,7 +188,7 @@ func startJumpSSHD(t *testing.T, targetPort int, identity string, logPath string
 		t.Skip("no sshd on this machine")
 	}
 	dir := t.TempDir()
-	if out, err := exec.Command("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", filepath.Join(dir, "host")).CombinedOutput(); err != nil {
+	if out, err := exec.Command("ssh-keygen", "-q", "-t", "ed25519", "-C", "branchline-test", "-N", "", "-f", filepath.Join(dir, "host")).CombinedOutput(); err != nil {
 		t.Fatalf("ssh-keygen: %v %s", err, out)
 	}
 	l, err := net.Listen("tcp", "127.0.0.1:0")
@@ -442,7 +442,7 @@ func TestRealSSHServerAsksPassphrase(t *testing.T) {
 	isolateCredentials(t)
 	srv := startSSHD(t)
 	key := filepath.Join(srv.dir, "locked")
-	if out, err := exec.Command("ssh-keygen", "-q", "-t", "ed25519", "-N", "s3cret pass", "-f", key).CombinedOutput(); err != nil {
+	if out, err := exec.Command("ssh-keygen", "-q", "-t", "ed25519", "-C", "branchline-test", "-N", "s3cret pass", "-f", key).CombinedOutput(); err != nil {
 		t.Fatalf("ssh-keygen: %v %s", err, out)
 	}
 	pub, err := os.ReadFile(key + ".pub")
