@@ -25,13 +25,14 @@ func selectBranchesForBatch(t *testing.T, h *testHarness, names ...string) {
 }
 
 // chooseBatchItem right-clicks the selected row and chooses the batch menu
-// item, failing the test unless the menu carries it enabled.
-func chooseBatchItem(t *testing.T, h *testHarness, row, item string) {
+// item — a path through the submenus when the item nests in one — failing
+// the test unless the menu carries it enabled.
+func chooseBatchItem(t *testing.T, h *testHarness, row string, item ...string) {
 	t.Helper()
 	if err := h.ui.RightClick(row); err != nil {
 		t.Fatalf("right-click selected row %q: %v\ntexts=%q", row, err, h.ui.Texts())
 	}
-	if err := h.ui.ChooseMenuItem(item); err != nil {
+	if err := h.ui.ChooseMenuItem(item...); err != nil {
 		t.Fatalf("choose %q: %v; menu=%q", item, err, h.ui.Menu())
 	}
 	h.ui.Frame()
