@@ -89,11 +89,61 @@ func TestAddressRoundTrip(t *testing.T) {
 		t.Errorf("portless IPv6 written back as %q, want the ssh:// form: scp style cannot hold colons", got)
 	}
 
-	// Malformed authorities are still errors.
-	for _, bad := range []string{"ssh://box:port/x", "ssh://u@[::1x/srv", "ssh://u@[::1]x/srv"} {
+	// Malformed authorities and out-of-range or signed ports are errors.
+	for _, bad := range []string{
+		"ssh://box:port/x",
+		"ssh://u@[::1x/srv",
+		"ssh://u@[::1]x/srv",
+		"ssh://u@h:+22/x",
+		"ssh://u@h:-1/x",
+		"ssh://u@h:0/x",
+		"ssh://u@h:65536/x",
+		"ssh://u@h:99999999999999999999/x",
+		"ssh://u@h:22a/x",
+		"ssh://u@[::1]:+22/x",
+		"ssh://u@[::1]:-1/x",
+		"ssh://u@[::1]:0/x",
+		"ssh://u@[::1]:65536/x",
+	} {
 		if got, err := ParseAddress(bad); err == nil {
 			t.Errorf("%q: want an error, got %+v", bad, got)
 		}
+	}
+
+	// Boundary decimal ports 1 and 65535 are valid on hostnames and IPv6.
+	for _, tc := range []struct {
+		in   string
+		host string
+		port int
+	}{
+		{"ssh://u@h:1/x", "h", 1},
+		{"ssh://u@h:65535/x", "h", 65535},
+		{"ssh://u@[::1]:1/x", "::1", 1},
+		{"ssh://u@[::1]:65535/x", "::1", 65535},
+	} {
+		got, err := ParseAddress(tc.in)
+		if err != nil || got.Host != tc.host || got.Port != tc.port || got.Path != "/x" {
+			t.Errorf("%q: got %+v, %v; want host=%q port=%d path=/x", tc.in, got, err, tc.host, tc.port)
+		}
+	}
+
+	// Authority splits user and host on the last @, matching url.Parse;
+	// SSHExecutor.Validate still rejects @ in the username.
+	gotAt, err := ParseAddress("ssh://a@b@host/x")
+	if err == nil {
+		t.Errorf("ssh://a@b@host/x: want validation error for @ in user, got %+v", gotAt)
+	}
+	if gotAt.User != "a@b" || gotAt.Host != "host" || gotAt.Path != "/x" {
+		t.Errorf("ssh://a@b@host/x: parsed as user=%q host=%q path=%q, want user=%q host=%q path=%q",
+			gotAt.User, gotAt.Host, gotAt.Path, "a@b", "host", "/x")
+	}
+	gotAt6, err := ParseAddress("ssh://a@b@[::1]:2222/x")
+	if err == nil {
+		t.Errorf("ssh://a@b@[::1]:2222/x: want validation error for @ in user, got %+v", gotAt6)
+	}
+	if gotAt6.User != "a@b" || gotAt6.Host != "::1" || gotAt6.Port != 2222 || gotAt6.Path != "/x" {
+		t.Errorf("ssh://a@b@[::1]:2222/x: parsed as user=%q host=%q port=%d path=%q, want user=%q host=%q port=2222 path=/x",
+			gotAt6.User, gotAt6.Host, gotAt6.Port, gotAt6.Path, "a@b", "::1")
 	}
 
 	// The scp form is untouched: its path never carried escapes or

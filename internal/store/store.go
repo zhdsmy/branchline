@@ -342,8 +342,8 @@ func ParseAddress(s string) (Repo, error) {
 			authority, r.Path = rest[:slash], rest[slash:]
 		}
 		var hostport string
-		if u, h, ok := strings.Cut(authority, "@"); ok {
-			r.User, hostport = u, h
+		if at := strings.LastIndexByte(authority, '@'); at >= 0 {
+			r.User, hostport = authority[:at], authority[at+1:]
 		} else {
 			hostport = authority
 		}
@@ -358,9 +358,9 @@ func ParseAddress(s string) (Repo, error) {
 					return r, fmt.Errorf("cannot read %q: garbage after ]", s)
 				}
 				if p := rest[1:]; p != "" {
-					port, err := strconv.Atoi(p)
+					port, err := parseSSHPort(p)
 					if err != nil {
-						return r, fmt.Errorf("bad port %q", p)
+						return r, err
 					}
 					r.Port = port
 				}
@@ -369,8 +369,8 @@ func ParseAddress(s string) (Repo, error) {
 			r.Host = host
 			if port != "" {
 				var err error
-				if r.Port, err = strconv.Atoi(port); err != nil {
-					return r, fmt.Errorf("bad port %q", port)
+				if r.Port, err = parseSSHPort(port); err != nil {
+					return r, err
 				}
 			}
 		} else {
@@ -404,6 +404,23 @@ func ParseAddress(s string) (Repo, error) {
 		return r, err
 	}
 	return r, nil
+}
+
+// parseSSHPort reads a decimal port in 1..65535; signs and non-digits are rejected.
+func parseSSHPort(p string) (int, error) {
+	if p == "" {
+		return 0, fmt.Errorf("bad port %q", p)
+	}
+	for i := 0; i < len(p); i++ {
+		if p[i] < '0' || p[i] > '9' {
+			return 0, fmt.Errorf("bad port %q", p)
+		}
+	}
+	port, err := strconv.Atoi(p)
+	if err != nil || port < 1 || port > 65535 {
+		return 0, fmt.Errorf("bad port %q", p)
+	}
+	return port, nil
 }
 
 // DefaultName names a repository after its directory.
