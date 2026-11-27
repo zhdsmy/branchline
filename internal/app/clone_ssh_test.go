@@ -524,7 +524,9 @@ func hungGitHTTPServer(t *testing.T) (url string, sawConn, dropped <-chan struct
 			}
 		}
 	}))
-	httpSrv.Listener.Close()
+	if err := httpSrv.Listener.Close(); err != nil {
+		t.Fatalf("close default listener: %v", err)
+	}
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen loopback: %v", err)
