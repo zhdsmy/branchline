@@ -16,6 +16,14 @@ type dialogAction struct {
 // primary button on the right. The panel is named after the title. It
 // reports whether this frame dismissed the dialog (Escape or a click
 // outside), and whether cancel or the primary button was clicked.
+//
+// While cancel is disabled the dialog cannot leave at all: Escape and a
+// click outside are refused with it, so a dialog locking its cancel button
+// for a write in progress keeps every way out shut for as long as the write
+// runs — dismissing it would strand the user with the operation's outcome
+// nowhere visible. The modal still computes its dismissal inside, but the
+// frame builds the panel again either way, so holding the open flag up
+// costs no flicker.
 func dialogFrame(c *ui.Context, p palette, key string, open *bool, title string, width float32, body func(), cancel, primary dialogAction) (dismissed, cancelled, confirmed bool) {
 	if !*open {
 		return false, false, false
@@ -41,5 +49,9 @@ func dialogFrame(c *ui.Context, p palette, key string, open *bool, title string,
 			})
 		})
 	}).Label(title).Dismissed()
+	if dismissed && cancel.disabled {
+		*open = true
+		dismissed = false
+	}
 	return dismissed, cancelled, confirmed
 }

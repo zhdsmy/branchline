@@ -144,3 +144,99 @@ func TestDialogFrameClosedBuildsNothing(t *testing.T) {
 		t.Error("a closed frame reported a dismissal or a click")
 	}
 }
+
+// lockedDialogHarness drives the same single-dialogFrame view as
+// dialogHarness, with the cancel button's disabled condition bound to its
+// lock: while a dialog's write keeps cancel disabled, the frame must refuse
+// Escape and clicks outside with it.
+type lockedDialogHarness struct {
+	ui        *ui.Tester
+	open      bool
+	locked    bool
+	dismissed bool
+	cancelled bool
+}
+
+func newLockedDialogHarness(t *testing.T) *lockedDialogHarness {
+	t.Helper()
+	h := &lockedDialogHarness{open: true, locked: true}
+	p := paletteForTheme(nil)
+	h.ui = ui.NewTester(func(c *ui.Context) {
+		dismissed, cancelled, _ := dialogFrame(c, p, "test-modal", &h.open, "Test Dialog", 460, func() {
+			ui.Text(c, "body text")
+		},
+			dialogAction{key: "test-cancel", text: "Cancel", label: "Cancel", disabled: h.locked},
+			testConfirmButton())
+		h.dismissed = h.dismissed || dismissed
+		h.cancelled = h.cancelled || cancelled
+	}, 1200, 800)
+	h.ui.Frame()
+	return h
+}
+
+// While the cancel button is disabled — the dialog's write is running —
+// Escape does not dismiss the dialog: the frame reports no dismissal, the
+// open flag stays up and the panel with its name keeps showing. Releasing
+// the lock lets Escape dismiss as always.
+func TestDialogFrameLockedIgnoresEscape(t *testing.T) {
+	h := newLockedDialogHarness(t)
+
+	h.ui.Key(0, ui.KeyEscape)
+	if h.dismissed {
+		t.Error("a frame reported the dismissal Escape caused while locked")
+	}
+	if !h.open {
+		t.Error("the open flag is down after Escape while locked")
+	}
+	if _, ok := h.ui.AccessByRole(ui.RoleDialog, "Test Dialog"); !ok {
+		t.Errorf("the dialog panel is gone after Escape while locked; texts=%q", h.ui.Texts())
+	}
+	if !h.ui.HasText("body text") {
+		t.Errorf("the body is gone after Escape while locked; texts=%q", h.ui.Texts())
+	}
+	if cancel, ok := h.ui.AccessByRole(ui.RoleButton, "Cancel"); !ok {
+		t.Error("the cancel button is gone after Escape while locked")
+	} else if !cancel.Disabled {
+		t.Error("the cancel button of the locked harness is enabled")
+	}
+
+	h.locked = false
+	h.ui.Frame()
+	h.ui.Key(0, ui.KeyEscape)
+	if !h.dismissed {
+		t.Error("no frame reported the dismissal Escape caused once unlocked")
+	}
+	if h.open {
+		t.Error("the open flag is still up after Escape once unlocked")
+	}
+}
+
+// While locked, a click outside the panel does not dismiss the dialog
+// either; unlocked, it does.
+func TestDialogFrameLockedIgnoresClickOutside(t *testing.T) {
+	h := newLockedDialogHarness(t)
+
+	h.ui.ClickAt(10, 10)
+	if h.dismissed {
+		t.Error("a frame reported the dismissal the outside click caused while locked")
+	}
+	if !h.open {
+		t.Error("the open flag is down after an outside click while locked")
+	}
+	if _, ok := h.ui.AccessByRole(ui.RoleDialog, "Test Dialog"); !ok {
+		t.Errorf("the dialog panel is gone after an outside click while locked; texts=%q", h.ui.Texts())
+	}
+	if !h.ui.HasText("body text") {
+		t.Errorf("the body is gone after an outside click while locked; texts=%q", h.ui.Texts())
+	}
+
+	h.locked = false
+	h.ui.Frame()
+	h.ui.ClickAt(10, 10)
+	if !h.dismissed {
+		t.Error("no frame reported the dismissal the outside click caused once unlocked")
+	}
+	if h.open {
+		t.Error("the open flag is still up after an outside click once unlocked")
+	}
+}
