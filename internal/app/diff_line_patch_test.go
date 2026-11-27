@@ -493,3 +493,38 @@ func TestDiffLinePatchNoSelectionErrors(t *testing.T) {
 		t.Fatalf("the index changed without a patch applied: %q", got)
 	}
 }
+
+// A diff read with no context lines, as the toolbar's zero-context choice
+// asks git for, builds patches with empty sides: staging one addition of a
+// replacement run yields a hunk with no old lines beyond the deletion kept.
+func TestDiffLinePatchZeroContext(t *testing.T) {
+	repo := newGitRepo(t, "lp-uctx")
+	repo.CommitFile("a.txt", linesText("one", "two", "three", "four", "five"), "initial")
+	// A pure addition after two, and a replacement of four.
+	repo.WriteFile("a.txt", linesText("one", "two", "TWO-ADD", "three", "FOUR", "five"))
+	r := linePatchRepo(repo)
+
+	fp := unstagedPatch(t, r, "a.txt", -1)
+	if len(fp.Hunks) != 2 {
+		t.Fatalf("zero-context hunks = %d, want 2", len(fp.Hunks))
+	}
+	// Stage only the pure addition: the first hunk has no deletion, and its
+	// old side is empty.
+	text := stageLinesChosen(t, r, fp, chooseLines(t, fp, "+TWO-ADD"))
+	if !strings.Contains(text, "+TWO-ADD") || strings.Contains(text, "FOUR") {
+		t.Fatalf("patch of the addition wrong:\n%s", text)
+	}
+	if got := indexContent(t, repo, "a.txt"); got != linesText("one", "two", "TWO-ADD", "three", "four", "five") {
+		t.Fatalf("index after staging the addition =\n%q", got)
+	}
+
+	// Stage both from the same diff in one patch: the second hunk's
+	// new-side start shifts by the line the first adds. The index goes back
+	// first, as the construction the patch came from reads the diff as it
+	// was: applying an addition twice would duplicate it.
+	repo.Git("reset", "-q")
+	text = stageLinesChosen(t, r, fp, chooseLines(t, fp, "+TWO-ADD", "-four", "+FOUR"))
+	if got := indexContent(t, repo, "a.txt"); got != linesText("one", "two", "TWO-ADD", "three", "FOUR", "five") {
+		t.Fatalf("index after staging both =\n%q\npatch:\n%s", got, text)
+	}
+}
