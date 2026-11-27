@@ -107,6 +107,7 @@ type screenshotState struct {
 func screenshotStates() []screenshotState {
 	return []screenshotState{
 		{name: "changes-diff", setup: setupScreenshotChangesDiff},
+		{name: "changes-tree", setup: setupScreenshotChangesTree},
 		{name: "history-detail", setup: setupScreenshotHistoryDetail},
 		{name: "refs-sidebar", setup: setupScreenshotRefsSidebar},
 		{name: "repo-switcher", setup: setupScreenshotRepoSwitcher},
@@ -1032,8 +1033,8 @@ func TestScreenshotGoldenBudget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("glob screenshot baselines: %v", err)
 	}
-	if len(entries) != 38 {
-		t.Fatalf("screenshot baseline PNG count = %d, want 38", len(entries))
+	if len(entries) != 40 {
+		t.Fatalf("screenshot baseline PNG count = %d, want 40", len(entries))
 	}
 	var total int64
 	for _, path := range entries {

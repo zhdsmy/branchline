@@ -390,11 +390,14 @@ func (a *app) historyCompareFileList(c *ui.Context, p palette) {
 				ui.Text(c, "No differences").FontSize(11.5).TextColor(p.faint).SingleLine()
 			})
 		default:
-			// Compare-mode file rows carry no context menu: the File
-			// History and Blame entries of the single-commit rows belong
-			// to one commit, not to a range.
+			// Compare-mode file rows carry only the external diff entry
+			// of their context menu: the File History and Blame entries
+			// of the single-commit rows belong to one commit, not to a
+			// range.
 			changedFileList(c.Key("compare-files"), &cmp.fileList, cmp.files, p, &cmp.fileSel,
-				nil,
+				func(m *ui.Menu, f git.FileChange) {
+					a.compareFileContextMenu(m, f)
+				},
 				func(i int, f git.FileChange) {
 					if cmp.base.Hash != "" {
 						hv.diff.Load(a.session, "history-diff", rangeFileDiffRequest(cmp.base, cmp.target, f))
