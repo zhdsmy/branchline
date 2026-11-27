@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -32,9 +33,23 @@ type Reply struct {
 	Remember bool
 }
 
+// askScriptTimeout is how long a script waits for the answer before its
+// watchdog ends it: the timeout of the slow commands, like fetch and push.
+const askScriptTimeout = 600
+
+// scriptTimeout is the watchdog deadline of the scripts written from now
+// on, in seconds. Tests can shorten it.
+var scriptTimeout = askScriptTimeout
+
 // scriptFor is the askpass script for where it runs: L on this Mac, R on
 // a server.
-func scriptFor(where string) string { return strings.Replace(askScript, "@WHERE@", where, 1) }
+func scriptFor(where string) string { return scriptForTimeout(where, scriptTimeout) }
+
+// scriptForTimeout is scriptFor with the watchdog deadline in seconds.
+func scriptForTimeout(where string, timeout int) string {
+	s := strings.Replace(askScript, "@WHERE@", where, 1)
+	return strings.Replace(s, "@TIMEOUT@", strconv.Itoa(timeout), 1)
+}
 
 // askMarker starts the line an askpass script writes on standard error to
 // ask for an answer. The record separator keeps it from any real output.
@@ -44,7 +59,11 @@ const askMarker = "\x1eBRANCHLINE-ASKPASS "
 // It makes a named pipe, says on standard error where it waits and what
 // it asks, then reads the answer from the pipe. The answer goes through
 // the pipe only and is never written to a file. A line starting with +
-// is the answer; anything else cancels.
+// is the answer; anything else cancels. A watchdog ends the script when
+// no answer arrives within @TIMEOUT@ seconds, so that a crashed app or a
+// broken connection cannot leave it waiting forever. The watchdog closes
+// the pipes it inherits, so that it cannot keep the command waiting, and
+// it leaves by itself once the pipe is gone: nothing is left behind.
 const askScript = `#!/bin/sh
 # Branchline askpass
 r=$(mktemp -u "${TMPDIR:-/tmp}/branchline-ap.XXXXXXXX") || exit 1
@@ -52,6 +71,16 @@ r=$(printf '%s' "$r" | tr -s /)
 mkfifo -m 600 "$r" || exit 1
 trap 'rm -f "$r"' EXIT
 trap 'exit 1' INT TERM HUP
+(
+  w=0
+  while [ "$w" -lt @TIMEOUT@ ]; do
+    sleep 1
+    [ -e "$r" ] || exit 0
+    w=$((w + 1))
+  done
+  [ -e "$r" ] && kill -TERM $$ 2>/dev/null
+  exit 0
+) >&- 2>&- &
 p=$(printf '%s' "$1" | tr '\n\r\036' '   ')
 printf '\036BRANCHLINE-ASKPASS @WHERE@ %s %s\n' "$r" "$p" >&2
 IFS= read -r a < "$r" || exit 1
@@ -174,6 +203,10 @@ func validPipe(path string) bool {
 	return true
 }
 
+// deliverPipe gives the answer to a script on this Mac. It is writePipe;
+// tests can replace it with one that fails.
+var deliverPipe = writePipe
+
 // writePipe gives the answer to a script on this Mac. The script opens
 // its end after asking, so opening is tried again for a while.
 func writePipe(path string, line []byte) error {
@@ -272,12 +305,16 @@ func asksUser(args []string) bool {
 
 // remoteAskSetup writes the askpass script on the server for one command,
 // in a file only the login can read; remoteAskCleanup removes it. The
-// script holds no secret.
-var (
-	remoteAskSetup = `__bl_ap=$(mktemp "${TMPDIR:-/tmp}/branchline-askpass.XXXXXXXX") && printf '%s' ` + ShellQuote(scriptFor("R")) +
-		` > "$__bl_ap" && chmod 700 "$__bl_ap" && GIT_ASKPASS="$__bl_ap" SSH_ASKPASS="$__bl_ap" SSH_ASKPASS_REQUIRE=force DISPLAY="${DISPLAY:-branchline:0}"`
-	remoteAskCleanup = `; __bl_s=$?; rm -f "$__bl_ap"; exit $__bl_s`
-)
+// script holds no secret. The variables need export: assignments on their
+// own never leave the shell, so git would not see them. The script is
+// written when the command is built, so that it holds the deadline of
+// that moment.
+func remoteAskSetup() string {
+	return `__bl_ap=$(mktemp "${TMPDIR:-/tmp}/branchline-askpass.XXXXXXXX") && printf '%s' ` + ShellQuote(scriptFor("R")) +
+		` > "$__bl_ap" && chmod 700 "$__bl_ap" && export GIT_ASKPASS="$__bl_ap" SSH_ASKPASS="$__bl_ap" SSH_ASKPASS_REQUIRE=force DISPLAY="${DISPLAY:-branchline:0}"`
+}
+
+const remoteAskCleanup = `; __bl_s=$?; rm -f "$__bl_ap"; exit $__bl_s`
 
 // env is the environment of the ssh program on this Mac.
 func (s *SSHExecutor) env() []string {
@@ -301,18 +338,13 @@ func (s *SSHExecutor) runContext(ctx context.Context, cmd *exec.Cmd, stdin []byt
 		return runContext(ctx, cmd, stdin, args)
 	}
 	sess := s.AskPass.session(creds)
-	out, err := runAskContext(ctx, cmd, stdin, args, func(pipe, prompt string, remote bool) {
+	out, err := runAskContext(ctx, cmd, stdin, args, func(pipe, prompt string, remote bool) error {
 		answer, ok := sess.ask(prompt)
 		line := replyLine(answer, ok)
-		// The callback cannot report an error. When the answer does not
-		// reach the pipe, the script keeps waiting on it, and git or ssh
-		// keeps waiting on the script until the command's timeout or
-		// cancellation kills it.
 		if !remote {
-			_ = writePipe(pipe, line)
-			return
+			return deliverPipe(pipe, line)
 		}
-		_ = s.replyRemote(pipe, line)
+		return s.replyRemote(pipe, line)
 	})
 	sess.finish(err)
 	return out, err
@@ -334,5 +366,9 @@ func (s *SSHExecutor) replyRemote(pipe string, line []byte) error {
 	cmd := exec.CommandContext(ctx, prog, s.SSHArgs("cat > "+ShellQuote(pipe))...)
 	cmd.Env = s.env()
 	_, err := s.run(cmd, line, []string{"ssh"}, nil)
+	var ge *Error
+	if errors.As(err, &ge) && strings.TrimSpace(ge.Stderr) != "" {
+		return errors.New(strings.TrimSpace(ge.Stderr))
+	}
 	return err
 }
