@@ -30,11 +30,6 @@ type historyTreeCache struct {
 	flatByPath  map[string]int
 }
 
-// invalidate drops the cached derivation, as the repository switch does.
-func (c *historyTreeCache) invalidate() {
-	*c = historyTreeCache{}
-}
-
 // lookup returns the derivation for the commit's files at collapseRev,
 // building it when the slice or the revision moved on since the last build.
 // Choosing another commit, collapsing a folder and retrying a failed detail
