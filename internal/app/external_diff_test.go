@@ -670,4 +670,3 @@ func TestExternalDiffSettingsChooseButtonPicksPath(t *testing.T) {
 		t.Fatalf("persisted CustomDiff.Path after the picker = %q, want %q", got, picked)
 	}
 }
-

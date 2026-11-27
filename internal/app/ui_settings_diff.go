@@ -50,17 +50,17 @@ const defaultDiffTool = "FileMerge"
 // save reverts the control to — and its raw save error in errs, shared with
 // the other controls of the page.
 type diffToolSettingsState struct {
-	diffTool, diffToolApplied     string
-	mergeTool, mergeToolApplied   string
-	customDiffPath                string
-	customDiffPathApplied         string
-	customDiffArgs                string
-	customDiffArgsApplied         string
-	customMergePath               string
-	customMergePathApplied        string
-	customMergeArgs               string
-	customMergeArgsApplied        string
-	errs                          map[string]string
+	diffTool, diffToolApplied   string
+	mergeTool, mergeToolApplied string
+	customDiffPath              string
+	customDiffPathApplied       string
+	customDiffArgs              string
+	customDiffArgsApplied       string
+	customMergePath             string
+	customMergePathApplied      string
+	customMergeArgs             string
+	customMergeArgsApplied      string
+	errs                        map[string]string
 
 	// pickToolPathFn shows the file picker of the Choose buttons. Tests
 	// replace it with a picker that never shows the system dialog.
@@ -203,9 +203,9 @@ func (a *app) settingsDiffToolRows(c *ui.Context, key, selectLabel, pathKey, arg
 		return
 	}
 	ui.Field(c, "Path", func() {
-		ui.Row(c.Key(key+"-path-row")).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
+		ui.Row(c.Key(key + "-path-row")).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
 			ui.TextInput(c.Key(pathKey), path).Grow(1).MinWidth(0).Font("monospace").Placeholder("/usr/local/bin/difftool").Label(selectLabel + " Path")
-			if ui.Button(c.Key(key+"-choose"), "Choose…").Label("Choose "+selectLabel+" Path").Clicked() {
+			if ui.Button(c.Key(key+"-choose"), "Choose…").Label("Choose " + selectLabel + " Path").Clicked() {
 				a.chooseCustomToolPath(st, key, path, pathApplied)
 			}
 		})
