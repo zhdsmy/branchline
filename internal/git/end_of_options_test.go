@@ -362,6 +362,86 @@ func TestEndOfOptionsExternalDiff(t *testing.T) {
 	}
 }
 
+// TestEndOfOptionsPullRejectsDashNames covers pull, which forwards its
+// positional arguments to the git fetch it spawns after stripping any
+// separator: no marker can protect them there, so a remote or branch
+// starting with "-" is refused before git runs at all.
+func TestEndOfOptionsPullRejectsDashNames(t *testing.T) {
+	dir, _ := endOfOptionsRepo(t)
+	gitRun(t, dir, "push", "-q", "srv", "main")
+	gitRun(t, dir, "branch", "--set-upstream-to", "srv/main", "main")
+
+	marker := filepath.Join(t.TempDir(), "executed")
+	script := filepath.Join(t.TempDir(), "upload-pack.sh")
+	markerScript(t, marker, script)
+	evil := "--upload-pack=" + script
+
+	log := NewCommandLog()
+	r := New(&LocalExecutor{Dir: dir}).WithCommandLog(log)
+
+	for _, o := range []PullOptions{
+		{Remote: evil},
+		{Remote: "srv", Branch: evil},
+	} {
+		if err := r.PullOpts(o); err == nil {
+			t.Fatalf("PullOpts(%+v) succeeded, want a refusal", o)
+		} else if !strings.Contains(err.Error(), "is not usable") {
+			t.Fatalf("PullOpts(%+v) error = %v, want the unusable-name refusal", o, err)
+		}
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("the upload-pack script ran: %s exists", marker)
+	}
+	recs, _ := log.Snapshot()
+	for _, rec := range recs {
+		if len(rec.Args) > 0 && rec.Args[0] == "pull" {
+			t.Fatalf("git pull ran despite the refusal: %+v", rec)
+		}
+	}
+}
+
+// TestEndOfOptionsLFSRejectsDashRemote covers the Git LFS commands, which
+// pass the remote to a program of their own that a separator here cannot
+// guard: a remote starting with "-" is refused before git-lfs runs. The
+// executor only records what it is asked to run — git-lfs does not have
+// to be installed for the check — so a recorded invocation means the
+// refusal did not happen.
+func TestEndOfOptionsLFSRejectsDashRemote(t *testing.T) {
+	ex := &argsRecorder{}
+	r := New(ex)
+
+	if err := r.LFSFetch("-rx"); err == nil {
+		t.Fatal("LFSFetch(-rx) succeeded, want a refusal")
+	} else if !strings.Contains(err.Error(), "is not usable") {
+		t.Fatalf("LFSFetch error = %v, want the unusable-name refusal", err)
+	}
+	if ex.args != nil {
+		t.Fatalf("git lfs fetch ran despite the refusal: %q", ex.args)
+	}
+	if err := r.LFSPull("-rx"); err == nil {
+		t.Fatal("LFSPull(-rx) succeeded, want a refusal")
+	} else if !strings.Contains(err.Error(), "is not usable") {
+		t.Fatalf("LFSPull error = %v, want the unusable-name refusal", err)
+	}
+	if ex.args != nil {
+		t.Fatalf("git lfs pull ran despite the refusal: %q", ex.args)
+	}
+
+	// Ordinary remotes are not refused and keep the exact argument list.
+	if err := r.LFSFetch("srv"); err != nil {
+		t.Fatalf("LFSFetch(srv): %v", err)
+	}
+	if want := []string{"lfs", "fetch", "--all", "srv"}; !slices.Equal(ex.args, want) {
+		t.Fatalf("lfs fetch args %q, want %q", ex.args, want)
+	}
+	if err := r.LFSPull("srv"); err != nil {
+		t.Fatalf("LFSPull(srv): %v", err)
+	}
+	if want := []string{"lfs", "pull", "srv"}; !slices.Equal(ex.args, want) {
+		t.Fatalf("lfs pull args %q, want %q", ex.args, want)
+	}
+}
+
 // argsRecorder is an Executor that only records the arguments it gets.
 type argsRecorder struct{ args []string }
 
@@ -436,5 +516,20 @@ func TestEndOfOptionsInsertedArgs(t *testing.T) {
 	}
 	if want := []string{"push", "--delete", "--", "srv", "--receive-pack=./evil.sh"}; !slices.Equal(ex.args, want) {
 		t.Fatalf("push args %q, want %q", ex.args, want)
+	}
+
+	// cherry-pick and revert read a commit behind "--" as a pathspec and
+	// print the usage, so they get --end-of-options instead.
+	_ = r.CherryPick("-x")
+	if want := []string{"cherry-pick", "--end-of-options", "-x"}; !slices.Equal(ex.args, want) {
+		t.Fatalf("cherry-pick args %q, want %q", ex.args, want)
+	}
+
+	// git stash show reads a name behind "--" as a pathspec, so the stash
+	// entry goes behind --end-of-options after the diff flags.
+	_, _ = r.StashPatch("-x")
+	want := []string{"stash", "show", "-p", "--no-ext-diff", "--no-textconv", "--include-untracked", "--end-of-options", "-x"}
+	if !slices.Equal(ex.args, want) {
+		t.Fatalf("stash show args %q, want %q", ex.args, want)
 	}
 }

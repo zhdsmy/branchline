@@ -20,12 +20,17 @@ func leadingDash(values ...string) bool {
 
 // withDashdash inserts the "--" separator before the positional arguments
 // of a command that takes no pathspec — push, fetch, branch, tag, remote,
-// merge, rebase, cherry-pick, revert, stash apply/drop — but only when one
-// of them starts with "-". The separator ends option parsing for every
+// merge, rebase, merge-tree, stash apply/pop/drop — but only when one of
+// them starts with "-". The separator ends option parsing for every
 // argument after it, so a name like --receive-pack=./script stays the
 // reference it is instead of choosing the program git-push runs. Options
 // of the command itself must already be in args; they keep working in
 // every case, and without a "-" value the argument list is unchanged.
+// It is not for cherry-pick, revert or git stash show — those read an
+// argument behind "--" as a pathspec or misuse it, withEndOfOptions is
+// theirs — nor for pull, which strips the separator before forwarding the
+// positional arguments to the git fetch it spawns; pull refuses such
+// names instead.
 func withDashdash(args []string, positional ...string) []string {
 	if leadingDash(positional...) {
 		args = append(args, "--")
@@ -35,12 +40,13 @@ func withDashdash(args []string, positional ...string) []string {
 
 // withEndOfOptions inserts "--end-of-options" before the revision arguments
 // of a command whose revisions share the command line with a pathspec —
-// checkout, reset, diff, log, show — but only when one of the revisions
-// starts with "-". There "--" cannot protect a revision: it separates
-// revisions from paths, so a revision before it is still read as options.
-// Pseudo-revisions of the caller's own construction (--branches, --all)
-// are options and must not be part of revs. Without a "-" value the
-// argument list is unchanged.
+// checkout, reset, diff, log, show — and of cherry-pick, revert and
+// git stash show, where "--" would read as a pathspec separator or be
+// misused — but only when one of the revisions starts with "-". There
+// "--" cannot protect a revision: it separates revisions from paths, so a
+// revision before it is still read as options. Pseudo-revisions of the
+// caller's own construction (--branches, --all) are options and must not
+// be part of revs. Without a "-" value the argument list is unchanged.
 func withEndOfOptions(args []string, revs ...string) []string {
 	if leadingDash(revs...) {
 		args = append(args, "--end-of-options")

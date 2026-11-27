@@ -86,12 +86,22 @@ func (r *Repo) pull(o PullOptions) (string, error) {
 	if o.Tags {
 		args = append(args, "--tags")
 	}
+	// A name starting with "-" is refused instead of separated: git pull
+	// strips the "--" end-of-options marker before handing the positional
+	// arguments to the git fetch it spawns, so the separator cannot protect
+	// them there — a remote or branch shaped like --upload-pack=<program>
+	// would run that program.
 	if remote := strings.TrimSpace(o.Remote); remote != "" {
-		positional := []string{remote}
-		if branch := strings.TrimSpace(o.Branch); branch != "" {
-			positional = append(positional, branch)
+		if strings.HasPrefix(remote, "-") {
+			return "", fmt.Errorf("pulling: the remote name %q is not usable", remote)
 		}
-		args = withDashdash(args, positional...)
+		args = append(args, remote)
+		if branch := strings.TrimSpace(o.Branch); branch != "" {
+			if strings.HasPrefix(branch, "-") {
+				return "", fmt.Errorf("pulling: the branch name %q is not usable", branch)
+			}
+			args = append(args, branch)
+		}
 	}
 	out, err := r.run(slow, args...)
 	if err == nil && strings.Contains(string(out), "Already up to date") {

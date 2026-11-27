@@ -71,10 +71,10 @@ func (r *Repo) StashPatch(name string) (string, error) {
 	if name == "" {
 		return "", fmt.Errorf("a stash is needed")
 	}
-	out, err := r.run(quick, withDashdash([]string{"stash", "show", "-p", "--no-ext-diff", "--no-textconv", "--include-untracked"}, name)...)
+	out, err := r.run(quick, withEndOfOptions([]string{"stash", "show", "-p", "--no-ext-diff", "--no-textconv", "--include-untracked"}, name)...)
 	if err != nil {
 		// Git before 2.32 does not know --include-untracked here.
-		out, err = r.run(quick, withDashdash([]string{"stash", "show", "-p", "--no-ext-diff", "--no-textconv"}, name)...)
+		out, err = r.run(quick, withEndOfOptions([]string{"stash", "show", "-p", "--no-ext-diff", "--no-textconv"}, name)...)
 	}
 	return string(out), err
 }

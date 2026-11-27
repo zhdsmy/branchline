@@ -119,7 +119,10 @@ func replayArgs(command, hash string, o ReplayOptions) ([]string, error) {
 		args = append(args, "-m", strconv.Itoa(o.Mainline))
 	}
 	if leadingDash(hash) {
-		args = append(args, "--")
+		// "--" cannot protect the commit here: git cherry-pick -- -dash
+		// prints the usage instead of reading -dash as the commit, while
+		// --end-of-options does read it as one.
+		args = append(args, "--end-of-options")
 	}
 	return append(args, hash), nil
 }
