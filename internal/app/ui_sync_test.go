@@ -114,7 +114,7 @@ func TestSyncLocalFetchPullPushAndSetUpstream(t *testing.T) {
 	peerHead := strings.TrimSpace(runGitCommand(t, peerDir, "rev-parse", "HEAD"))
 
 	headBefore := strings.TrimSpace(repo.Git("rev-parse", "HEAD"))
-	if err := h.ui.Click("Fetch"); err != nil {
+	if err := h.ui.ClickWith(ui.Alt, "Fetch"); err != nil {
 		t.Fatalf("click Fetch: %v", err)
 	}
 	h.drain()
@@ -405,7 +405,7 @@ func TestSyncBusyDisablesButtonsAndRejectsReentry(t *testing.T) {
 	openSyncRepo(t, h, repo.StoreRepo())
 
 	h.queue.PauseWorkers()
-	if err := h.ui.Click("Fetch"); err != nil {
+	if err := h.ui.ClickWith(ui.Alt, "Fetch"); err != nil {
 		t.Fatalf("click Fetch: %v", err)
 	}
 	fetchWorker := h.queue.WaitWorker(t)
@@ -464,7 +464,7 @@ func TestSyncErrorDisplayAndDismiss(t *testing.T) {
 
 	// Break the remote URL so Fetch fails for real.
 	repo.Git("remote", "set-url", "origin", filepath.Join(t.TempDir(), "missing.git"))
-	if err := h.ui.Click("Fetch"); err != nil {
+	if err := h.ui.ClickWith(ui.Alt, "Fetch"); err != nil {
 		t.Fatalf("click Fetch: %v", err)
 	}
 	h.drain()
@@ -504,7 +504,7 @@ func TestSyncErrorDisplayAndDismiss(t *testing.T) {
 	runGitCommand(t, peerDir, "push", "origin", "main")
 	repo.CommitFile("local.txt", "l\n", "local ahead")
 
-	if err := h.ui.Click("Fetch"); err != nil {
+	if err := h.ui.ClickWith(ui.Alt, "Fetch"); err != nil {
 		t.Fatalf("click Fetch to learn remote state: %v", err)
 	}
 	h.drain()
@@ -1060,10 +1060,12 @@ func clickPush(t *testing.T, h *testHarness) {
 	}
 }
 
-// clickFetch clicks the toolbar Fetch button and fails the test on error.
+// clickFetch clicks the toolbar Fetch button with Option held — the direct
+// fetch a plain click ran before the Fetch dialog — and fails the test on
+// error.
 func clickFetch(t *testing.T, h *testHarness) {
 	t.Helper()
-	if err := h.ui.Click("Fetch"); err != nil {
+	if err := h.ui.ClickWith(ui.Alt, "Fetch"); err != nil {
 		t.Fatalf("click Fetch: %v", err)
 	}
 }

@@ -3,6 +3,7 @@ package app
 import (
 	"errors"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 
@@ -28,6 +29,7 @@ type syncUIState struct {
 	ask         *git.AskPass
 	syncErr     string
 	lastRepoGen uint64
+	fetchDlg    fetchDialogState
 
 	// mu guards the lifecycle counters background workers and the quit-time
 	// teardown share. inflight counts running sync workers; closing is set by
@@ -133,6 +135,9 @@ func syncStateFor(a *app) *syncUIState {
 		st.lastRepoGen = gen
 		st.syncErr = ""
 		st.pass.cancelAll()
+		// The Fetch dialog's captured remotes belong to the old repository:
+		// close it without fetching or remembering anything.
+		st.fetchDlg = fetchDialogState{}
 	}
 	return st
 }
@@ -259,9 +264,16 @@ func (a *app) syncToolbar(c *ui.Context) {
 	}
 
 	disabled := !a.session.HasRepo() || a.session.Busy()
-	fetch := toolbarActionBtn(c.Key("sync-fetch"), "arrow.triangle.2.circlepath", fallbackSync, "Fetch", p, disabled)
+	// The Fetch button opens the Fetch dialog; holding Option it fetches all
+	// remotes as a click always did.
+	fetch := toolbarActionBtnTip(c.Key("sync-fetch"), "arrow.triangle.2.circlepath", fallbackSync, "Fetch",
+		"Fetch — hold Option to fetch all remotes directly", p, disabled)
 	if fetch.Clicked() {
-		a.syncFetch()
+		if fetch.ClickModifiers()&ui.Alt != 0 {
+			a.syncFetch()
+		} else {
+			a.openFetchDialog()
+		}
 	}
 	pull := toolbarActionBtn(c.Key("sync-pull"), "arrow.down", fallbackDownArr, "Pull", p, disabled)
 	if pull.Clicked() {
@@ -281,9 +293,10 @@ func (a *app) syncToolbar(c *ui.Context) {
 
 	// The askpass modal is built from the toolbar pass: ui.Modal mounts into
 	// the window-level overlayRoot, so it is not clipped by the toolbar strip.
-	// The Push dialog mounts beneath it, so a question of the push worker can
-	// never hide behind the dialog it belongs to.
+	// The Push and Fetch dialogs mount beneath it, so a question of their
+	// workers can never hide behind the dialog it belongs to.
 	a.pushDialog(c)
+	a.fetchDialog(c)
 	st.pass.view(c)
 }
 
@@ -309,6 +322,17 @@ func dropIfStale(a *app, gen uint64) bool {
 // reaching them mid-operation must leave both the running operation's state
 // and the displayed errors untouched.
 func (a *app) syncFetch() {
+	// Captured on the UI thread by value: the worker never reads the store.
+	fetchTags := a.store.Settings().FetchTags
+	a.syncFetchOpts(git.FetchOptions{All: true, Prune: true, Tags: fetchTags})
+}
+
+// syncFetchOpts runs one fetch with the given options through the session's
+// sync lifecycle. A fetch aimed at one remote first confirms the remote is
+// still configured — with git remote through refs — so a remote deleted
+// after its fetch was asked for is never fetched, and the refusal is the
+// error the toolbar shows.
+func (a *app) syncFetchOpts(opts git.FetchOptions) {
 	if a.session.Busy() {
 		return
 	}
@@ -318,12 +342,19 @@ func (a *app) syncFetch() {
 		return
 	}
 	st.syncErr = ""
-	// Captured on the UI thread by value: the worker never reads the store.
-	fetchTags := a.store.Settings().FetchTags
 	st.syncWorkerStarted()
 	if !a.session.doThen("Fetching", func(*git.Repo) error {
 		defer st.syncWorkerDone()
-		return repo.FetchOpts(git.FetchOptions{All: true, Prune: true, Tags: fetchTags})
+		if opts.Remote != "" && !opts.All {
+			refs, err := repo.Refs()
+			if err != nil {
+				return err
+			}
+			if !slices.Contains(refs.Remotes, opts.Remote) {
+				return errors.New("The remote " + opts.Remote + " no longer exists.")
+			}
+		}
+		return repo.FetchOpts(opts)
 	}, func(err error) {
 		if dropIfStale(a, gen) {
 			return
