@@ -709,6 +709,7 @@ func (a *app) changesFileRow(c *ui.Context, f git.FileChange, staged bool) {
 		if b.Clicked() {
 			a.selectChange(f, staged)
 		}
+		a.remoteEditMarker(c, f, staged)
 
 		if !staged {
 			if ui.Button(c.Key("discard-"+f.Path), "Discard").Label("Discard "+f.Path).FontSize(11).Padding(2, 6).Disabled(a.session.Busy()).Clicked() {

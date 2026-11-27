@@ -281,6 +281,7 @@ func (a *app) changesFileContextMenu(m *ui.Menu, f git.FileChange) {
 	if m.Item("Blame…").ID("file-blame").Disabled(noHistory).Chosen() {
 		a.openFileInspector(pageChanges, inspectorModeBlame, path, "HEAD")
 	}
+	a.remoteEditMenuItems(m, f)
 }
 
 // fileInspectorView renders the open inspector in place of the origin page's
