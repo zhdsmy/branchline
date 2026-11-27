@@ -94,9 +94,24 @@ func newApp(s *store.Store) *app {
 	a.applyAppearanceFn = mygo.Theme.SetSource
 	a.session.settingsFn = s.Settings
 	a.session.ignoreSpace = s.Settings().IgnoreSpace
+	a.session.diffChangesOnly = s.Settings().DiffChangesOnly
+	if s.Settings().DiffContextSaved {
+		a.session.diffContextLines = s.Settings().DiffContextLines
+		a.session.diffContextSaved = true
+	}
+	a.session.diffWrap = s.Settings().DiffWrap
 	a.session.dateOrder = s.Settings().DateOrder
 	a.session.saveIgnoreSpace = func(v bool) error {
 		return saveIgnoreSpacePref(a, v)
+	}
+	a.session.saveDiffChangesOnly = func(v bool) error {
+		return saveDiffChangesOnlyPref(a, v)
+	}
+	a.session.saveDiffContextLines = func(v int) error {
+		return saveDiffContextLinesPref(a, v)
+	}
+	a.session.saveDiffWrap = func(v bool) error {
+		return saveDiffWrapPref(a, v)
 	}
 	return a
 }

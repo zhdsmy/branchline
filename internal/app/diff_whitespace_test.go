@@ -35,6 +35,16 @@ func writeWhitespaceFixture(f *gitRepoFixture, file, wsLine, realLine string) {
 
 func assertWhitespaceToggleEffect(t *testing.T, h *testHarness) {
 	t.Helper()
+	// These tests check the whitespace toggle, not the file coverage: the
+	// entire-file default spreads the fixture's two changes beyond the
+	// viewport, so the fixture pins coverage to the changes and their
+	// context through the header's own Show Entire File toggle before the
+	// whitespace assertions run.
+	if err := h.ui.Click("Show Entire File"); err != nil {
+		t.Fatalf("turn off Show Entire File for the whitespace fixture: %v", err)
+	}
+	h.drain()
+
 	ins := diffAccessLines(h.ui, ui.RoleInsertion)
 	del := diffAccessLines(h.ui, ui.RoleDeletion)
 	if !slices.Contains(ins, "var x  =  1") {

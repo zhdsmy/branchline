@@ -55,6 +55,24 @@ type repoSession struct {
 	// when the app is created; tests without a store leave it nil.
 	saveIgnoreSpace func(bool) error
 
+	// diffChangesOnly, diffContextLines, diffContextSaved and diffWrap are
+	// the diff panel's global toolbar choices: only the changed lines rather
+	// than the entire file, the unchanged lines around a change, and whether
+	// long lines wrap. As with ignoreSpace the UI thread captures them into
+	// diff requests and states before background workers run, so workers
+	// never read these fields.
+	diffChangesOnly  bool
+	diffContextLines int
+	// diffContextSaved marks the context line count explicitly chosen, since
+	// 0 is a choice; without it the count reads as the default of 3.
+	diffContextSaved bool
+	diffWrap         bool
+	// The save callbacks persist one diff toolbar choice each. They are wired
+	// once when the app is created; tests without a store leave them nil.
+	saveDiffChangesOnly  func(bool) error
+	saveDiffContextLines func(int) error
+	saveDiffWrap         func(bool) error
+
 	// settingsFn reads the app's persisted settings, wired when the app is
 	// created. Tests building a session alone leave it nil, and Settings then
 	// returns the zero value, which keeps every view option at its default.
@@ -421,6 +439,118 @@ func saveIgnoreSpacePref(a *app, v bool) error {
 	}
 	settings := a.store.Settings()
 	settings.IgnoreSpace = v
+	if err := a.store.SetSettings(settings); err != nil {
+		a.toast = "Cannot save settings: " + err.Error()
+		return err
+	}
+	return nil
+}
+
+// DiffChangesOnly reports whether file diffs show only the changed lines and
+// their context rather than the entire file.
+func (s *repoSession) DiffChangesOnly() bool { return s.diffChangesOnly }
+
+// DiffEntireFile reports whether file diffs show the entire file; it is the
+// inverse of DiffChangesOnly, phrased for the toolbar's on/off button.
+func (s *repoSession) DiffEntireFile() bool { return !s.diffChangesOnly }
+
+// SetDiffChangesOnly records the changes-only choice. As with the other diff
+// toolbar choices it takes effect only once persisted: a failed save leaves
+// the in-memory value unchanged and returns the error, so a view keeps its
+// previous rendering instead of reloading.
+func (s *repoSession) SetDiffChangesOnly(v bool) error {
+	if s.saveDiffChangesOnly != nil {
+		if err := s.saveDiffChangesOnly(v); err != nil {
+			return err
+		}
+	}
+	s.diffChangesOnly = v
+	return nil
+}
+
+// DiffContextLines is the chosen number of unchanged lines around a change,
+// as git diff -U: 3 until one is chosen, then the choice, 0 included.
+func (s *repoSession) DiffContextLines() int {
+	if !s.diffContextSaved {
+		return defaultDiffContextLines
+	}
+	return s.diffContextLines
+}
+
+// SetDiffContextLines records the context line count; negative counts read
+// as none, as git diff -U0. The choice takes effect only once persisted, as
+// SetDiffChangesOnly's does.
+func (s *repoSession) SetDiffContextLines(v int) error {
+	if v < 0 {
+		v = 0
+	}
+	if s.saveDiffContextLines != nil {
+		if err := s.saveDiffContextLines(v); err != nil {
+			return err
+		}
+	}
+	s.diffContextLines = v
+	s.diffContextSaved = true
+	return nil
+}
+
+// DiffWrap reports whether long diff lines wrap rather than scroll sideways.
+func (s *repoSession) DiffWrap() bool { return s.diffWrap }
+
+// SetDiffWrap records the line-wrapping choice. It takes effect only once
+// persisted, as SetDiffChangesOnly's does.
+func (s *repoSession) SetDiffWrap(v bool) error {
+	if s.saveDiffWrap != nil {
+		if err := s.saveDiffWrap(v); err != nil {
+			return err
+		}
+	}
+	s.diffWrap = v
+	return nil
+}
+
+// saveDiffChangesOnlyPref writes the changes-only choice to the store,
+// leaving every other setting untouched; a failure is surfaced as a toast,
+// as the ignore-whitespace choice's is.
+func saveDiffChangesOnlyPref(a *app, v bool) error {
+	if a.store == nil {
+		return nil
+	}
+	settings := a.store.Settings()
+	settings.DiffChangesOnly = v
+	if err := a.store.SetSettings(settings); err != nil {
+		a.toast = "Cannot save settings: " + err.Error()
+		return err
+	}
+	return nil
+}
+
+// saveDiffContextLinesPref writes the context line count to the store with
+// its explicit-choice marker, leaving every other setting untouched; a
+// failure is surfaced as a toast, as the ignore-whitespace choice's is.
+func saveDiffContextLinesPref(a *app, v int) error {
+	if a.store == nil {
+		return nil
+	}
+	settings := a.store.Settings()
+	settings.DiffContextLines = v
+	settings.DiffContextSaved = true
+	if err := a.store.SetSettings(settings); err != nil {
+		a.toast = "Cannot save settings: " + err.Error()
+		return err
+	}
+	return nil
+}
+
+// saveDiffWrapPref writes the line-wrapping choice to the store, leaving
+// every other setting untouched; a failure is surfaced as a toast, as the
+// ignore-whitespace choice's is.
+func saveDiffWrapPref(a *app, v bool) error {
+	if a.store == nil {
+		return nil
+	}
+	settings := a.store.Settings()
+	settings.DiffWrap = v
 	if err := a.store.SetSettings(settings); err != nil {
 		a.toast = "Cannot save settings: " + err.Error()
 		return err
