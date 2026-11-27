@@ -114,10 +114,8 @@ func (a *app) tagRow(c *ui.Context, tag git.Tag, sorted []git.Tag, pickedCount i
 		Radius(6).
 		AlignItems(ui.Center).
 		Focusable().
-		Role(ui.RoleListItem).
-		Label(tag.Name).
-		AccessSelected(picked).
-		AccessHidden(true)
+		Role(ui.RoleNone).
+		Label(tag.Name)
 	switch {
 	case picked:
 		row.Background(p.selected)
