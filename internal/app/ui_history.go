@@ -78,6 +78,13 @@ type historyState struct {
 	// at its first row.
 	fileList ui.ListState
 
+	// graphWidth caches the widest lane count of the snapshot's graph rows,
+	// keyed on the rows slice itself, so a frame of an unchanged snapshot
+	// never scans them again. The key self-invalidates when a load replaces
+	// the slice, and a repository switch drops the entry with the rest of
+	// the state.
+	graphWidth graphWidthCache
+
 	// mode is the detail pane's current mode; selection holds every chosen
 	// commit hash, as the list's multi-selection does. compare is the
 	// two-commit comparison state, meaningful only in historyCompare mode.
@@ -97,6 +104,38 @@ type historyState struct {
 func (h *historyState) resetForRepo(gen uint64) {
 	split := h.splitSize
 	*h = historyState{repoGen: gen, splitSize: split, listSel: -1}
+}
+
+// graphWidthCache is the one-entry cache of the widest lane count of a
+// commit graph's rows: the rows slice the width was scanned from, and the
+// width. The snapshot's graph rows are regenerated whole on every load, so
+// the identity of the slice is the identity of its contents: while the same
+// backing array and length arrive, the scan cannot have a different answer.
+type graphWidthCache struct {
+	src   []git.GraphRow
+	width int
+	valid bool
+}
+
+// historyGraphWidth is the widest lane count of the graph rows, at least one
+// so the graph column keeps room for the dot of a lane-less row. Scanning
+// every row of a long history on every frame costs real time once Load More
+// deepens the walk, so the answer is cached on the slice itself: a hit —
+// the very slice a previous scan answered for — skips the scan, a miss
+// scans and replaces the entry. Retaining the source in the cache keeps its
+// backing array alive, so a new graph can never reuse its address.
+func historyGraphWidth(c *graphWidthCache, rows []git.GraphRow) int {
+	if c.valid && sameBackingSlice(c.src, rows) {
+		return c.width
+	}
+	width := 1
+	for _, r := range rows {
+		width = max(width, r.Width)
+	}
+	c.src = rows
+	c.width = width
+	c.valid = true
+	return width
 }
 
 // historyPage renders the History page: a branch-graph commit
@@ -157,10 +196,7 @@ func (a *app) historyCommitList(c *ui.Context, p palette) {
 	snap := a.session.Snapshot()
 	head := snap.Status.Head
 
-	graphW := 1
-	for _, r := range snap.Graph {
-		graphW = max(graphW, r.Width)
-	}
+	graphW := historyGraphWidth(&hv.graphWidth, snap.Graph)
 	graphW = min(graphW, historyMaxLanes)
 	graphColW := float32(graphW)*historyLaneWidth + 10
 
