@@ -775,6 +775,7 @@ func (d *diffPanel) body(c *ui.Context, s *repoSession, scope string, p palette)
 		if s != nil {
 			applyDiffDisplayPrefs(d.state, s.Settings(), s.DiffWrap())
 		}
+		d.syncLineActions(s, scope, p)
 		editor.DiffView(c.Key("diff-view"), d.state).Grow(1).FillWidth().MinHeight(0)
 	default:
 		placeholderCard(c, "No diff to display", "This file has no textual changes.", d.req.title(), p)
