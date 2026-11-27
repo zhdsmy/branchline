@@ -631,3 +631,73 @@ func TestChangesTreeSaveFailureStillToggles(t *testing.T) {
 		t.Fatal("the failed save reached the repository settings")
 	}
 }
+
+func TestChangesTreeCollapseSurvivesRefresh(t *testing.T) {
+	// Reloading the repository status preserves the folder collapse state
+	// while the same repository stays open.
+	repo := treeTestRepo(t, "changestree-refresh")
+	h := openChangesHarness(t, repo)
+	mustClick(t, h, "Show as Tree")
+	h.ui.Frame()
+
+	mustClick(t, h, "Unstaged Folder pack, 1 file")
+	h.ui.Frame()
+	if changeRowShown(h, "Unstaged pack/one.txt") {
+		t.Fatal("setup: pack did not collapse")
+	}
+
+	repo.WriteFile("pack/extra.txt", "extra\n")
+	h.app.session.Reload()
+	h.drain()
+
+	info, ok := treeFolderShown(h, "Unstaged Folder pack, 2 files")
+	if !ok {
+		t.Fatalf("pack missing after refresh; texts=%q", h.ui.Texts())
+	}
+	if info.Expanded {
+		t.Fatal("refreshing the repository forgot the collapsed folder")
+	}
+	if changeRowShown(h, "Unstaged pack/one.txt") || changeRowShown(h, "Unstaged pack/extra.txt") {
+		t.Fatal("children of the collapsed folder reappeared after refresh")
+	}
+}
+
+func TestChangesTreeToggleKeepsSelectionAndFocus(t *testing.T) {
+	// Switching between the flat list and the tree keeps the selected file
+	// and its diff intact, and leaves keyboard focus on the view toggle.
+	repo := treeTestRepo(t, "changestree-selfocus")
+	h := openChangesHarness(t, repo)
+
+	mustClick(t, h, "Unstaged chain/deep/down/alpha.txt")
+	h.drain()
+	if !h.app.changesView.selected || h.app.changesView.selectedPath != "chain/deep/down/alpha.txt" {
+		t.Fatalf("setup: selection = %+v", h.app.changesView)
+	}
+	if h.app.changesView.diff.state == nil {
+		t.Fatal("setup: diff did not load")
+	}
+
+	mustClick(t, h, "Show as Tree")
+	h.ui.Frame()
+	if !h.app.changesView.treeMode {
+		t.Fatal("view did not switch to tree")
+	}
+	if !h.app.changesView.selected || h.app.changesView.selectedPath != "chain/deep/down/alpha.txt" || h.app.changesView.diff.state == nil {
+		t.Fatalf("switching to tree lost selection or diff: %+v", h.app.changesView)
+	}
+	if focused, ok := h.ui.AccessByRole(ui.RoleButton, "Show as List"); !ok || !focused.Focused {
+		t.Fatalf("keyboard focus left the view toggle after switching to tree: ok=%v info=%+v", ok, focused)
+	}
+
+	h.ui.Key(0, ui.KeySpace)
+	h.ui.Frame()
+	if h.app.changesView.treeMode {
+		t.Fatal("pressing Space on the focused toggle did not return to the flat list")
+	}
+	if !h.app.changesView.selected || h.app.changesView.selectedPath != "chain/deep/down/alpha.txt" || h.app.changesView.diff.state == nil {
+		t.Fatalf("switching back to list lost selection or diff: %+v", h.app.changesView)
+	}
+	if focused, ok := h.ui.AccessByRole(ui.RoleButton, "Show as Tree"); !ok || !focused.Focused {
+		t.Fatalf("keyboard focus left the view toggle after returning to list: ok=%v info=%+v", ok, focused)
+	}
+}
