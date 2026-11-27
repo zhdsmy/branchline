@@ -330,15 +330,15 @@ func (s *SSHExecutor) env() []string {
 // run runs the ssh program, answering what ssh asks on this Mac and what
 // the askpass script asks on the server.
 func (s *SSHExecutor) run(cmd *exec.Cmd, stdin []byte, args []string, creds []Credential) ([]byte, error) {
-	return s.runContext(context.Background(), cmd, stdin, args, creds)
+	return s.runContext(context.Background(), cmd, stdin, args, creds, nil)
 }
 
-func (s *SSHExecutor) runContext(ctx context.Context, cmd *exec.Cmd, stdin []byte, args []string, creds []Credential) ([]byte, error) {
+func (s *SSHExecutor) runContext(ctx context.Context, cmd *exec.Cmd, stdin []byte, args []string, creds []Credential, pw *pgidWriter) ([]byte, error) {
 	if s.AskPass == nil {
-		return runContext(ctx, cmd, stdin, args)
+		return runContext(ctx, cmd, stdin, args, pw)
 	}
 	sess := s.AskPass.session(creds)
-	out, err := runAskContext(ctx, cmd, stdin, args, func(pipe, prompt string, remote bool) error {
+	out, err := runAskContext(ctx, cmd, stdin, args, pw, func(pipe, prompt string, remote bool) error {
 		answer, ok := sess.ask(prompt)
 		line := replyLine(answer, ok)
 		if !remote {
