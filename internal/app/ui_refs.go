@@ -10,8 +10,9 @@ import (
 
 // refsState holds the sidebar branches/remotes/tags state on app:
 // the new-branch dialog draft, the delete-branch confirmation dialog with
-// its asynchronous merged check, and the repository generation they belong
-// to so switching repositories discards them.
+// its asynchronous merged check, the caches of the sorted reference lists,
+// and the repository generation they belong to so switching repositories
+// discards them.
 type refsState struct {
 	repoGen uint64
 
@@ -26,6 +27,10 @@ type refsState struct {
 	delMerged      bool
 	delErr         error
 	delForceAgreed bool
+
+	localSortCache  refSortCache[git.Branch]
+	remoteSortCache refSortCache[git.Branch]
+	tagSortCache    refSortCache[git.Tag]
 }
 
 // resetForRepoGen discards dialog drafts belonging to another repository
@@ -56,7 +61,7 @@ func (a *app) refsSidebar(c *ui.Context) {
 		if len(refs.Branches) == 0 {
 			a.refPlaceholderRow(c, "No branches")
 		} else {
-			for _, br := range refs.Branches {
+			for _, br := range a.sortedLocalBranches(refs.Branches) {
 				a.branchRow(c, br, inflight)
 			}
 		}
@@ -180,10 +185,13 @@ func (a *app) branchRow(c *ui.Context, br git.Branch, inflight bool) {
 	})
 }
 
-// remoteRows shows one remote and, indented under it, its tracking branches.
+// remoteRows shows one remote and, indented under it, its tracking branches
+// in the order the settings ask for. Sorting a copy of the whole list keeps
+// this remote's subsequence sorted, and the snapshot's own slice is never
+// reordered.
 func (a *app) remoteRows(c *ui.Context, remote string, refs git.Refs) {
 	a.remoteRow(c, remote)
-	for _, rb := range refs.Remote {
+	for _, rb := range a.sortedRemoteBranches(refs.Remote) {
 		if rb.Remote != remote {
 			continue
 		}

@@ -10,12 +10,15 @@ import (
 
 // branchesSectionContextMenu is the context menu of the Branches section
 // header: creating a branch is possible with the section collapsed, as it
-// does not depend on any row the collapse hides.
+// does not depend on any row the collapse hides. The sort block behind it
+// only changes the display, so its items stay enabled while a write is in
+// flight.
 func (a *app) branchesSectionContextMenu(m *ui.Menu) {
 	disabled := !a.session.HasRepo() || a.session.Busy()
 	if m.Item("New Branch…").Disabled(disabled).Chosen() {
 		a.openNewBranchDialog()
 	}
+	a.branchesSortMenuItems(m)
 }
 
 // openNewBranchDialog opens the New Branch dialog with the same fresh draft
@@ -35,6 +38,7 @@ func (a *app) remotesSectionContextMenu(m *ui.Menu) {
 	if m.Item("Add New Remote…").Disabled(disabled).Chosen() {
 		a.openAddRemoteDialog()
 	}
+	a.remotesSortMenuItems(m)
 }
 
 // tagsSectionContextMenu is the context menu of the Tags section header:
@@ -47,6 +51,7 @@ func (a *app) tagsSectionContextMenu(m *ui.Menu) {
 	if m.Item("New Tag…").Disabled(disabled).Chosen() {
 		a.openNewTagDialog("")
 	}
+	a.tagsSortMenuItems(m)
 }
 
 // remoteFetchMenuItem is the first entry of a remote row's context menu:

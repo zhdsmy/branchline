@@ -76,7 +76,7 @@ func (a *app) tagsSidebarSection(c *ui.Context) {
 		a.refPlaceholderRow(c, "No tags")
 		return
 	}
-	for _, tag := range refs.Tags {
+	for _, tag := range a.sortedTags(refs.Tags) {
 		a.tagRow(c, tag)
 	}
 }
