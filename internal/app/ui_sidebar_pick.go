@@ -200,6 +200,13 @@ func (a *app) clearSidebarPick() {
 	a.refsView.pick = map[sidebarPickKey]bool{}
 }
 
+// selectOnlySidebarBranch narrows the selection to the one branch a right
+// click landed on outside the selection: the menu then offered is the
+// branch's own, exactly as if the row had been clicked first.
+func (a *app) selectOnlySidebarBranch(name string) {
+	a.selectOnlySidebarRef(localBranchPickKey(name))
+}
+
 // selectOnlySidebarRef narrows the selection to the one row a right click
 // landed on outside the selection: the menu then offered is the row's own,
 // exactly as if the row had been clicked first.

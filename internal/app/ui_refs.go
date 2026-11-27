@@ -233,7 +233,7 @@ func (a *app) branchRow(c *ui.Context, br git.Branch, inflight bool, ordered []g
 			// build the press runs. The build also replays once when an item
 			// is chosen; narrowing is idempotent, so the replay changes
 			// nothing.
-			a.selectOnlySidebarRef(localBranchPickKey(br.Name))
+			a.selectOnlySidebarBranch(br.Name)
 			pick = a.refsView.pick
 		}
 		if pick[localBranchPickKey(br.Name)] && sidebarPickCount(pick, ordered) >= 2 {
