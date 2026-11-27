@@ -2,9 +2,9 @@ package app
 
 import (
 	"fmt"
-	"slices"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"testing"
 
