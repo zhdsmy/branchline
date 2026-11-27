@@ -260,7 +260,7 @@ func (a *app) rebaseDialog(c *ui.Context) {
 		}
 	},
 		dialogAction{key: "rebase-cancel", text: "Cancel", label: "Cancel"},
-		dialogAction{key: "rebase-confirm", text: "Confirm Rebase", label: "Confirm Rebase", disabled: a.session.Busy()})
+		dialogAction{key: "rebase-confirm", text: "Confirm Rebase", label: "Confirm Rebase", disabled: a.session.Busy(), autoFocus: true})
 	if cancelled {
 		a.closeRebaseModal()
 	}

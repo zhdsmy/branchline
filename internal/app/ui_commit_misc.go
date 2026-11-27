@@ -135,7 +135,7 @@ func (a *app) checkoutCommitModal(c *ui.Context) {
 		ui.Text(c, "HEAD will be detached at "+st.checkoutTarget.Short()+" "+st.checkoutTarget.Subject).FontSize(12.5).TextColor(p.muted).SingleLine().Ellipsis("…")
 	},
 		dialogAction{key: "checkout-cancel", text: "Cancel", label: "Cancel"},
-		dialogAction{key: "checkout-confirm", text: "Checkout", label: "Confirm Checkout Commit", disabled: a.session.Busy()})
+		dialogAction{key: "checkout-confirm", text: "Checkout", label: "Confirm Checkout Commit", disabled: a.session.Busy(), autoFocus: true})
 	if cancelled {
 		a.closeCheckoutModal()
 	}

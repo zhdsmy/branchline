@@ -294,7 +294,7 @@ func (a *app) quickRebaseConfirmModal(c *ui.Context) {
 		}
 	},
 		dialogAction{key: "quick-rebase-confirm-cancel", text: "Cancel", label: "Cancel", disabled: st.submitClicked && a.session.Busy()},
-		dialogAction{key: "quick-rebase-confirm-confirm", text: confirm, label: confirm, disabled: a.session.Busy()})
+		dialogAction{key: "quick-rebase-confirm-confirm", text: confirm, label: confirm, disabled: a.session.Busy(), autoFocus: st.action != "drop", destructive: st.action == "drop"})
 	if cancelled {
 		a.closeQuickRebaseModal()
 	}

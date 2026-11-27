@@ -177,7 +177,7 @@ func (a *app) replayModal(c *ui.Context) {
 		}
 	},
 		dialogAction{key: "replay-cancel", text: "Cancel", label: "Cancel"},
-		dialogAction{key: "replay-confirm", text: confirm, label: confirm, disabled: a.session.Busy()})
+		dialogAction{key: "replay-confirm", text: confirm, label: confirm, disabled: a.session.Busy(), autoFocus: true})
 	if cancelled {
 		a.closeReplayModal()
 	}
@@ -415,7 +415,7 @@ func (a *app) abortOperationModal(c *ui.Context) {
 		ui.Text(c, description).FontSize(13).TextColor(p.muted).MaxWidth(390)
 	},
 		dialogAction{key: "abort-cancel", text: "Cancel", label: "Cancel"},
-		dialogAction{key: "abort-confirm", text: "Confirm Abort", label: "Confirm Abort", disabled: a.session.Busy()})
+		dialogAction{key: "abort-confirm", text: "Confirm Abort", label: "Confirm Abort", disabled: a.session.Busy(), destructive: true})
 	if cancelled {
 		a.closeAbortModal()
 	}

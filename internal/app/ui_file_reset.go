@@ -273,7 +273,7 @@ func (a *app) fileResetModal(c *ui.Context) {
 		}
 	},
 		dialogAction{key: "file-reset-cancel", text: "Cancel", label: "Cancel"},
-		dialogAction{key: "file-reset-confirm", text: "Reset", label: "Confirm Reset", disabled: a.session.Busy()})
+		dialogAction{key: "file-reset-confirm", text: "Reset", label: "Confirm Reset", disabled: a.session.Busy(), destructive: true})
 	if cancelled {
 		a.closeFileResetModal()
 	}

@@ -1,6 +1,8 @@
 package app
 
 import (
+	"image"
+	"image/color"
 	"testing"
 
 	"github.com/egoist/mygo/ui"
@@ -238,5 +240,273 @@ func TestDialogFrameLockedIgnoresClickOutside(t *testing.T) {
 	}
 	if h.open {
 		t.Error("the open flag is still up after an outside click once unlocked")
+	}
+}
+
+// enterDialogHarness drives a single dialogFrame with a checkbox in its
+// body, so tests can move the keyboard focus onto a control that takes
+// neither Enter nor a click away from the footer. confirmCount counts the
+// frames that reported a confirmation rather than latching one, because a
+// double-delivery regression only shows in a count.
+type enterDialogHarness struct {
+	ui           *ui.Tester
+	open         bool
+	checked      bool
+	primary      dialogAction
+	confirmCount int
+	cancelled    bool
+	dismissed    bool
+}
+
+func newEnterDialogHarness(t *testing.T, primary dialogAction) *enterDialogHarness {
+	t.Helper()
+	h := &enterDialogHarness{open: true, primary: primary}
+	p := paletteForTheme(nil)
+	h.ui = ui.NewTester(func(c *ui.Context) {
+		dismissed, cancelled, confirmed := dialogFrame(c, p, "test-modal", &h.open, "Test Dialog", 460, func() {
+			ui.Text(c, "body text")
+			ui.Checkbox(c.Key("test-checkbox"), &h.checked, "Test Option").Label("Test Option")
+		},
+			dialogAction{key: "test-cancel", text: "Cancel", label: "Cancel"},
+			h.primary)
+		h.dismissed = h.dismissed || dismissed
+		h.cancelled = h.cancelled || cancelled
+		if confirmed {
+			h.confirmCount++
+		}
+	}, 1200, 800)
+	h.ui.Frame()
+	return h
+}
+
+// focusTestCheckbox clicks the checkbox and verifies it took the focus, so
+// an Enter test is really measuring the key with the focus off the footer.
+func focusTestCheckbox(t *testing.T, h *enterDialogHarness) {
+	t.Helper()
+	if err := h.ui.Click("Test Option"); err != nil {
+		t.Fatalf("click checkbox: %v", err)
+	}
+	if box, ok := h.ui.AccessByRole(ui.RoleCheckBox, "Test Option"); !ok || !box.Focused {
+		t.Fatalf("checkbox not focused after its click: %+v found=%v", box, ok)
+	}
+}
+
+// Enter confirms a non-destructive dialog: with the focus on the autofocused
+// primary button the button itself takes the key, and with the focus on a
+// checkbox — which takes Space only — the frame's window-level shortcut
+// confirms without touching the checkbox.
+func TestDialogFrameEnterConfirms(t *testing.T) {
+	primary := testConfirmButton()
+	primary.autoFocus = true
+	h := newEnterDialogHarness(t, primary)
+	if btn, ok := h.ui.AccessByRole(ui.RoleButton, "Confirm the Test"); !ok || !btn.Focused {
+		t.Fatalf("primary button not focused at open: %+v found=%v", btn, ok)
+	}
+	h.ui.Key(0, ui.KeyEnter)
+	if h.confirmCount == 0 {
+		t.Error("Enter with the focus on the primary button did not confirm")
+	}
+
+	h2 := newEnterDialogHarness(t, testConfirmButton())
+	focusTestCheckbox(t, h2)
+	h2.ui.Key(0, ui.KeyEnter)
+	if h2.confirmCount == 0 {
+		t.Error("Enter with the focus on a checkbox did not confirm")
+	}
+	if h2.confirmCount > 1 {
+		t.Errorf("one Enter press confirmed %d times, want one", h2.confirmCount)
+	}
+	if !h2.checked {
+		t.Error("Enter toggled the focused checkbox in passing")
+	}
+	if h2.cancelled || h2.dismissed {
+		t.Error("Enter canceled or dismissed the non-destructive dialog")
+	}
+}
+
+// While the primary button is disabled Enter does nothing at all: no
+// confirmation, no toggle of the focused checkbox, the dialog stays open.
+func TestDialogFrameEnterDisabledDoesNothing(t *testing.T) {
+	primary := testConfirmButton()
+	primary.disabled = true
+	h := newEnterDialogHarness(t, primary)
+	focusTestCheckbox(t, h)
+	h.ui.Key(0, ui.KeyEnter)
+	if h.confirmCount != 0 {
+		t.Error("Enter confirmed while the primary button is disabled")
+	}
+	if !h.checked {
+		t.Error("Enter toggled the checkbox while the primary button is disabled")
+	}
+	if h.cancelled || h.dismissed || !h.open {
+		t.Error("Enter canceled or dismissed the dialog while the primary button is disabled")
+	}
+	if _, ok := h.ui.AccessByRole(ui.RoleDialog, "Test Dialog"); !ok {
+		t.Error("the dialog panel is gone after Enter with the primary disabled")
+	}
+}
+
+// A destructive dialog asks the window for no Enter shortcut: with the focus
+// cleared off every button the key goes nowhere, and the dialog stays open
+// and unconfirmed.
+func TestDialogFrameDestructiveEnterDoesNothing(t *testing.T) {
+	primary := testConfirmButton()
+	primary.destructive = true
+	h := newEnterDialogHarness(t, primary)
+
+	// Clicking the body text moves the focus off cancel — which opens with
+	// it — onto nothing, so the only consumer Enter could find would be the
+	// window-level shortcut a destructive frame must not register.
+	if err := h.ui.Click("body text"); err != nil {
+		t.Fatalf("click body text: %v", err)
+	}
+	if cancel, ok := h.ui.AccessByRole(ui.RoleButton, "Cancel"); ok && cancel.Focused {
+		t.Fatal("focus is still on cancel after clicking the body")
+	}
+	h.ui.Key(0, ui.KeyEnter)
+	if h.confirmCount != 0 {
+		t.Error("Enter confirmed the destructive dialog")
+	}
+	if h.cancelled || h.dismissed || !h.open {
+		t.Error("Enter canceled or dismissed the destructive dialog")
+	}
+	if _, ok := h.ui.AccessByRole(ui.RoleDialog, "Test Dialog"); !ok {
+		t.Error("the dialog panel is gone after Enter on the destructive dialog")
+	}
+}
+
+// autoFocus on a destructive primary is ignored: the focus opens on the
+// body's first focusable control — cancel, in a dialog of plain text — where
+// Enter cancels, the safe key of a dialog whose primary discards work.
+func TestDialogFrameDestructiveNoAutoFocus(t *testing.T) {
+	primary := testConfirmButton()
+	primary.autoFocus = true
+	primary.destructive = true
+	h := newDialogHarness(t, primary)
+	if btn, ok := h.ui.AccessByRole(ui.RoleButton, "Confirm the Test"); !ok {
+		t.Fatalf("primary button missing; texts=%q", h.ui.Texts())
+	} else if btn.Focused {
+		t.Error("the destructive primary button took the focus despite autoFocus being ignored")
+	}
+	if cancel, ok := h.ui.AccessByRole(ui.RoleButton, "Cancel"); !ok {
+		t.Fatalf("cancel button missing; texts=%q", h.ui.Texts())
+	} else if !cancel.Focused {
+		t.Error("focus is not on cancel at the destructive dialog's open")
+	}
+
+	h.ui.Key(0, ui.KeyEnter)
+	if h.confirmed {
+		t.Error("Enter on the focused cancel of a destructive dialog confirmed")
+	}
+	if !h.cancelled {
+		t.Error("Enter on the focused cancel was not the cancel click it must be")
+	}
+}
+
+// rgbaOf converts a ui.Color to the color.RGBA the pixel helpers compare.
+func rgbaOf(c ui.Color) color.RGBA {
+	return color.RGBA{R: c.R, G: c.G, B: c.B, A: c.A}
+}
+
+// buttonFillSample reads the dominant color of the middle band of the button
+// named label: insets leave out the border, the rounded corners and most of
+// the glyph pixels. The tester renders at scale 1, so DIPs are pixels.
+func buttonFillSample(t *testing.T, tt *ui.Tester, label string) color.RGBA {
+	t.Helper()
+	btn, ok := tt.AccessByRole(ui.RoleButton, label)
+	if !ok {
+		t.Fatalf("button %q missing; texts=%q", label, tt.Texts())
+	}
+	b := btn.Bounds
+	px := image.Rect(int(b.X+b.W*0.25), int(b.Y+6), int(b.X+b.W*0.75), int(b.Y+b.H-6))
+	return dominantColor(tt.Image(), px)
+}
+
+// fillWithin reports whether the sampled fill is within tol of want per
+// channel, the tolerance covering the rasterizer's rounding of the flat fill.
+func fillWithin(fill color.RGBA, want ui.Color, tol uint8) bool {
+	return maxChannelDiff(fill, rgbaOf(want)) <= tol
+}
+
+// The destructive primary paints in the theme's Danger color at rest, over
+// the pointer and pressed, in the light and the dark appearance alike — the
+// theme copy of WithAccent(Danger) derives its hover and pressed shades —
+// while the ordinary primary keeps the accent.
+func TestDialogFrameDestructivePrimaryPaintsDanger(t *testing.T) {
+	for _, dark := range []bool{false, true} {
+		primary := testConfirmButton()
+		primary.destructive = true
+		var themeDanger, themeAccent ui.Color
+		p := paletteForTheme(nil)
+		open := true
+		tt := ui.NewTester(func(c *ui.Context) {
+			th := c.Theme()
+			themeDanger, themeAccent = th.Danger, th.Accent
+			dialogFrame(c, p, "test-modal", &open, "Test Dialog", 460, func() {
+				ui.Text(c, "body text")
+			},
+				dialogAction{key: "test-cancel", text: "Cancel", label: "Cancel"},
+				primary)
+		}, 1200, 800)
+		tt.SetDark(dark)
+		tt.Frame()
+
+		btn, ok := tt.AccessByRole(ui.RoleButton, "Confirm the Test")
+		if !ok {
+			t.Fatalf("dark=%v: primary button missing; texts=%q", dark, tt.Texts())
+		}
+		cx := btn.Bounds.X + btn.Bounds.W/2
+		cy := btn.Bounds.Y + btn.Bounds.H/2
+
+		const tol = 12
+		rest := buttonFillSample(t, tt, "Confirm the Test")
+		if !fillWithin(rest, themeDanger, tol) {
+			t.Errorf("dark=%v: resting fill = %v, want within %d of the theme danger %v", dark, rest, tol, themeDanger)
+		}
+		if fillWithin(rest, themeAccent, tol) {
+			t.Errorf("dark=%v: resting fill %v is the plain accent %v, not the danger color", dark, rest, themeAccent)
+		}
+
+		tt.Move(cx, cy)
+		tt.Frame()
+		hover := buttonFillSample(t, tt, "Confirm the Test")
+		if maxChannelDiff(hover, rest) <= tol {
+			t.Errorf("dark=%v: hover fill %v does not move off the resting fill %v", dark, hover, rest)
+		}
+		if fillWithin(hover, themeAccent, tol) {
+			t.Errorf("dark=%v: hover fill %v is the plain accent %v, not a danger shade", dark, hover, themeAccent)
+		}
+
+		tt.Press(cx, cy)
+		tt.Frame()
+		pressed := buttonFillSample(t, tt, "Confirm the Test")
+		tt.Release(cx, cy)
+		tt.Frame()
+		if maxChannelDiff(pressed, rest) <= tol {
+			t.Errorf("dark=%v: pressed fill %v does not move off the resting fill %v", dark, pressed, rest)
+		}
+		if maxChannelDiff(pressed, hover) <= tol {
+			t.Errorf("dark=%v: pressed fill %v matches the hover fill %v, so neither shade comes from WithAccent", dark, pressed, hover)
+		}
+		if fillWithin(pressed, themeAccent, tol) {
+			t.Errorf("dark=%v: pressed fill %v is the plain accent %v, not a danger shade", dark, pressed, themeAccent)
+		}
+
+		// The release lands a click on the destructive primary: it confirms,
+		// which no assertion here minds — the harness is spent either way.
+		tt.Move(10, 10)
+		tt.Frame()
+	}
+
+	// An ordinary primary keeps the accent, the control half of the contrast.
+	h := newEnterDialogHarness(t, testConfirmButton())
+	plain := buttonFillSample(t, h.ui, "Confirm the Test")
+	var accent ui.Color
+	tt2 := ui.NewTester(func(c *ui.Context) {
+		accent = c.Theme().Accent
+	}, 100, 60)
+	tt2.Frame()
+	if !fillWithin(plain, accent, 12) {
+		t.Errorf("non-destructive fill %v is not within 12 of the accent %v; the harness window may be inactive", plain, accent)
 	}
 }

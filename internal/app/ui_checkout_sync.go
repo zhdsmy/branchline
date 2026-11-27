@@ -126,15 +126,6 @@ func (a *app) checkoutSyncDialog(c *ui.Context) {
 		return
 	}
 	_, cancelled, confirmed := dialogFrame(c, p, "checkout-sync-modal", &st.open, "Checkout and Sync", 460, func() {
-		// Enter submits exactly like the Checkout button, and not at all while
-		// the button is disabled. Focused controls keep their own keys first:
-		// Enter on the open Action drop-down chooses its highlighted action
-		// rather than submitting.
-		c.OnWindowShortcut(0, ui.KeyEnter, func() {
-			if !a.checkoutSyncBusy() {
-				a.submitCheckoutSync()
-			}
-		})
 		ui.Field(c, "Branch:", func() {
 			ui.Text(c, st.branch).Font("monospace").FontSize(12).TextColor(p.text).SingleLine().Ellipsis("…")
 		})
