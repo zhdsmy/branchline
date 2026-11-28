@@ -126,6 +126,10 @@ type DiffPrefs struct {
 	// FileListTree groups the changed files of Local Changes in folders.
 	// The zero value is the flat list.
 	FileListTree bool `json:"fileListTree,omitempty"`
+	// HistoryFileListTree groups the changed files of a commit in folders
+	// on the History page. The zero value is the flat list, and the choice
+	// is independent of FileListTree.
+	HistoryFileListTree bool `json:"historyFileListTree,omitempty"`
 	// FileListCombined puts staged and unstaged changes in one list.
 	FileListCombined bool `json:"fileListCombined,omitempty"`
 	// FileListSort is "status" to sort files by their change, "" by path.

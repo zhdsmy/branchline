@@ -1,7 +1,6 @@
 package app
 
 import (
-	"fmt"
 	"runtime"
 	"time"
 
@@ -116,21 +115,39 @@ func (a *app) sidebar(c *ui.Context) {
 	ui.Column(c).Fill().Padding(top, 12, 12, 12).Gap(6).DragWindow().Children(func() {
 		a.repoSwitcher(c)
 
-		ui.Scroll(c.Key("sidebar-scroll")).TrackScroll(&a.navScroll).Grow(1).Margin(0, -4).Padding(0, 4).Gap(4).Children(func() {
-			changesBadge := ""
-			if a.session.HasRepo() && a.session.Loaded() {
-				st := a.session.Snapshot().Status
-				if n := len(st.Unstaged) + len(st.Staged); n > 0 {
-					changesBadge = fmt.Sprint(n)
-				}
-			}
-			a.navRow(c, "Changes", "square.and.pencil", fallbackDiff, route{page: pageChanges}, changesBadge)
-			a.navRow(c, "History", "clock", fallbackHist, route{page: pageHistory}, "")
+		// The whole scroll area of the sidebar — the navigation rows, the
+		// section headers, the entry rows, and every reference and stash
+		// row — is one virtual list: it builds only the rows in view, and
+		// its row table rebuilds only when the data behind it changed. The
+		// list never chooses anything itself: it has no selection, so its
+		// row elements stay passive containers, the rows inside them keep
+		// their own buttons, menus, focus and selection painting exactly
+		// as the plain scroll container's did, and the keyboard behaves as
+		// it always did. KeepOffset keeps the scrolled place in pixels as
+		// rows come and go, exactly as the plain scroll container did.
+		rows := a.sidebarRows()
+		a.refsView.sidebarList.KeepOffset = true
+		a.refsView.sidebarList.Key = func(row int) any { return rows[row].key }
+		rowTheme := *c.Theme()
+		listTheme := rowTheme
+		listTheme.Accent = ui.Transparent
+		listTheme.SurfaceHover = ui.Transparent
+		ui.Themed(c.Key("sidebar-list-theme"), &listTheme).
+			Grow(1).Margin(0, -4).Background(ui.Transparent).
+			Children(func() {
+				ui.List(c.Key("sidebar-scroll"), &a.refsView.sidebarList, len(rows)).
+					Label("Sidebar").
+					TrackScroll(&a.navScroll).
+					Grow(1).FillWidth().
+					Padding(0, 4).
+					Gap(4).
+					Rows(func(r ui.ListRow) {
+						a.sidebarRowView(r.Context, rows[r.Index])
+					})
+			})
 
-			ui.Box(c).Height(6)
-			a.refsSidebar(c)
-			a.stashSidebar(c)
-		})
+		a.refsSidebar(c)
+		a.stashSidebar(c)
 	})
 }
 

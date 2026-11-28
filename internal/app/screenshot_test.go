@@ -37,7 +37,7 @@ const (
 	screenshotScale      = 2
 	screenshotChanTol    = 4
 	screenshotMaxRatio   = 0.0002
-	screenshotMaxSizeKiB = 5120
+	screenshotMaxSizeKiB = 6144
 
 	screenshotGoldenDir = "testdata/screenshots"
 	screenshotMetaFile  = "meta.json"
@@ -109,6 +109,7 @@ func screenshotStates() []screenshotState {
 		{name: "changes-diff", setup: setupScreenshotChangesDiff},
 		{name: "changes-tree", setup: setupScreenshotChangesTree},
 		{name: "history-detail", setup: setupScreenshotHistoryDetail},
+		{name: "history-tree", setup: setupScreenshotHistoryTree},
 		{name: "refs-sidebar", setup: setupScreenshotRefsSidebar},
 		{name: "repo-switcher", setup: setupScreenshotRepoSwitcher},
 		{name: "add-ssh-modal", setup: setupScreenshotAddSSHModal},
@@ -1033,8 +1034,8 @@ func TestScreenshotGoldenBudget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("glob screenshot baselines: %v", err)
 	}
-	if len(entries) != 40 {
-		t.Fatalf("screenshot baseline PNG count = %d, want 40", len(entries))
+	if len(entries) != 42 {
+		t.Fatalf("screenshot baseline PNG count = %d, want 42", len(entries))
 	}
 	var total int64
 	for _, path := range entries {

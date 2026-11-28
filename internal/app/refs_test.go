@@ -114,13 +114,36 @@ func TestRefsSidebarSectionsAndCurrentMark(t *testing.T) {
 }
 
 // findAccessNode returns the first accessible element labeled s regardless
-// of role, preferring exact matches in reading order.
+// of role, preferring exact matches in reading order — but the first
+// focusable element when more than one carries the label: the sidebar's
+// virtual list wraps every row in its own non-focusable item node named by
+// the row's content, and it is the focusable row inside the wrapper that
+// answers for the selected, disabled and busy states a test reads. With
+// only one match — or none focusable — the reading order decides, exactly
+// as it always did.
 func findAccessNode(t *testing.T, tt *ui.Tester, s string) (accessInfo, bool) {
 	t.Helper()
-	if info, ok := tt.Access(s); ok {
-		return accessInfo{Selected: info.Selected, Disabled: info.Disabled, Busy: info.Busy}, true
+	var first, firstFocusable ui.AccessInfo
+	found, foundFocusable := false, false
+	for _, info := range tt.AccessAll() {
+		if info.Name != s {
+			continue
+		}
+		if !found {
+			first, found = info, true
+		}
+		if info.Focusable && !foundFocusable {
+			firstFocusable, foundFocusable = info, true
+		}
 	}
-	return accessInfo{}, false
+	best, ok := first, found
+	if foundFocusable {
+		best = firstFocusable
+	}
+	if !ok {
+		return accessInfo{}, false
+	}
+	return accessInfo{Selected: best.Selected, Disabled: best.Disabled, Busy: best.Busy}, true
 }
 
 type accessInfo struct {

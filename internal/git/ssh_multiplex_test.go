@@ -3,8 +3,6 @@ package git
 import (
 	"context"
 	"errors"
-	"fmt"
-	"net"
 	"os"
 	"os/exec"
 	"os/user"
@@ -22,74 +20,11 @@ import (
 // "Accepted publickey" line is one handshake.
 func startMuxSSHD(t *testing.T) (*sshServer, string) {
 	t.Helper()
-	if _, err := os.Stat("/usr/sbin/sshd"); err != nil {
-		t.Skip("no sshd on this machine")
-	}
-	dir := t.TempDir()
-	for _, k := range []string{"host", "user"} {
-		if out, err := exec.Command("ssh-keygen", "-q", "-t", "ed25519", "-C", "branchline-test", "-N", "", "-f", filepath.Join(dir, k)).CombinedOutput(); err != nil {
-			t.Fatalf("ssh-keygen: %v %s", err, out)
-		}
-	}
-	pub, err := os.ReadFile(filepath.Join(dir, "user.pub"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	must(t, os.WriteFile(filepath.Join(dir, "authorized_keys"), pub, 0o600))
-
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Skipf("cannot listen here: %v", err)
-	}
-	port := l.Addr().(*net.TCPAddr).Port
-	_ = l.Close()
-	cfg := fmt.Sprintf("Port %d\nListenAddress 127.0.0.1\nHostKey %s\nAuthorizedKeysFile %s\nPidFile %s\n"+
-		"StrictModes no\nUsePAM no\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nLogLevel VERBOSE\n",
-		port, filepath.Join(dir, "host"), filepath.Join(dir, "authorized_keys"), filepath.Join(dir, "pid"))
-	must(t, os.WriteFile(filepath.Join(dir, "sshd_config"), []byte(cfg), 0o600))
-
-	logPath := filepath.Join(dir, "sshd.log")
+	logPath := filepath.Join(t.TempDir(), "sshd.log")
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	must(t, err)
 	t.Cleanup(func() { _ = logFile.Close() })
-	cmd := exec.Command("/usr/sbin/sshd", "-D", "-e", "-f", filepath.Join(dir, "sshd_config"))
-	cmd.Stdout, cmd.Stderr = logFile, logFile
-	if err := cmd.Start(); err != nil {
-		t.Skipf("sshd: %v", err)
-	}
-	exited := make(chan struct{})
-	go func() {
-		_ = cmd.Wait()
-		close(exited)
-	}()
-	t.Cleanup(func() {
-		_ = cmd.Process.Kill()
-		<-exited
-	})
-
-	wrapper := filepath.Join(dir, "ssh")
-	script := "#!/bin/sh\nexec /usr/bin/ssh -F /dev/null -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \"$@\"\n"
-	must(t, os.WriteFile(wrapper, []byte(script), 0o755))
-
-	for i := 0; ; i++ {
-		select {
-		case <-exited:
-			data, _ := os.ReadFile(logPath)
-			t.Fatalf("sshd exited before accepting connections: %s", data)
-		default:
-		}
-		c, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 100*time.Millisecond)
-		if err == nil {
-			_ = c.Close()
-			break
-		}
-		time.Sleep(100 * time.Millisecond)
-		if i == 50 {
-			data, _ := os.ReadFile(logPath)
-			t.Fatalf("sshd did not accept connections: %s", data)
-		}
-	}
-	return &sshServer{dir: dir, port: port, identity: filepath.Join(dir, "user"), ssh: wrapper}, logPath
+	return startWatchSSHD(t, "VERBOSE", logFile), logPath
 }
 
 // muxExecutor opens dir on the server through the ssh program prog. At
