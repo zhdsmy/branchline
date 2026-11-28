@@ -103,32 +103,32 @@ func (a *app) repoRenameModal(c *ui.Context, st *reposUIState) {
 		return
 	}
 	p := a.pal
-	ui.Modal(c.Key("repo-rename-modal"), &st.renOpen, func() {
-		ui.Column(c.Key("repo-rename-modal-body")).Width(440).Padding(18, 18, 14, 18).Gap(10).Children(func() {
-			ui.Text(c, "Rename Repository").FontSize(17).FontWeight(650).TextColor(p.text)
-			ui.Field(c, "Name:", func() {
-				in := ui.TextInput(c.Key("repo-rename-input"), &st.renName).FillWidth().AutoFocus().Label("Repository Name")
-				if st.renSelAll {
-					st.renSelAll = false
-					in.SetTextSelection(0, utf8.RuneCountInString(st.renName))
-				}
-				if in.Submitted() && st.repoRenameCanSubmit() {
-					a.submitRepoRename(st)
-				}
-			})
-			if st.renErr != "" {
-				ui.Text(c, st.renErr).FontSize(12).TextColor(p.danger)
+	_, cancelled, confirmed := dialogFrame(c, p, "repo-rename-modal", &st.renOpen, "Rename Repository", 440, func() {
+		ui.Field(c, "Name:", func() {
+			in := ui.TextInput(c.Key("repo-rename-input"), &st.renName).FillWidth().AutoFocus().Label("Repository Name")
+			if st.renSelAll {
+				st.renSelAll = false
+				in.SetTextSelection(0, utf8.RuneCountInString(st.renName))
 			}
-			ui.Row(c.Key("repo-rename-modal-actions")).Gap(8).Justify(ui.End).Children(func() {
-				if ui.Button(c.Key("repo-rename-cancel"), "Cancel").Label("Cancel").Clicked() {
-					st.renOpen = false
-				}
-				if ui.PrimaryButton(c.Key("repo-rename-confirm"), "Rename").Label("Confirm Rename Repository").Disabled(!st.repoRenameCanSubmit()).Clicked() {
-					a.submitRepoRename(st)
-				}
-			})
+			// Enter in the input submits here, never twice: a focused
+			// single-line input takes the key before every window shortcut,
+			// so the frame's Enter cannot fire for the same press.
+			if in.Submitted() && st.repoRenameCanSubmit() {
+				a.submitRepoRename(st)
+			}
 		})
-	})
+		if st.renErr != "" {
+			ui.Text(c, st.renErr).FontSize(12).TextColor(p.danger)
+		}
+	},
+		dialogAction{key: "repo-rename-cancel", text: "Cancel", label: "Cancel"},
+		dialogAction{key: "repo-rename-confirm", text: "Rename", label: "Confirm Rename Repository", disabled: !st.repoRenameCanSubmit()})
+	if cancelled {
+		st.renOpen = false
+	}
+	if confirmed {
+		a.submitRepoRename(st)
+	}
 }
 
 // submitRepoRename saves the dialog's name in the store. A failure shows in

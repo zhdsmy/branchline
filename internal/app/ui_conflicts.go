@@ -341,20 +341,17 @@ func (a *app) conflictResolveModal(c *ui.Context) {
 	if !st.confirmOpen {
 		return
 	}
-	ui.Modal(c.Key("conflict-resolve-modal"), &st.confirmOpen, func() {
-		ui.Column(c.Key("conflict-resolve-modal-body")).Width(430).Padding(18, 18, 14, 18).Gap(10).Children(func() {
-			ui.Text(c, st.confirmTitle).FontSize(17).FontWeight(650).TextColor(p.text).MaxWidth(390)
-			ui.Text(c, st.confirmBody).FontSize(13).TextColor(p.muted).MaxWidth(390)
-			ui.Row(c.Key("conflict-resolve-modal-actions")).Gap(8).Justify(ui.End).Children(func() {
-				if ui.Button(c.Key("conflict-resolve-cancel"), "Cancel").Label("Cancel").Clicked() {
-					a.closeConflictResolveModal()
-				}
-				if ui.PrimaryButton(c.Key("conflict-resolve-confirm"), "Confirm Resolve").Label("Confirm Resolve").Disabled(a.session.Busy()).Clicked() {
-					a.submitConflictResolve()
-				}
-			})
-		})
-	})
+	_, cancelled, confirmed := dialogFrame(c, p, "conflict-resolve-modal", &st.confirmOpen, st.confirmTitle, 430, func() {
+		ui.Text(c, st.confirmBody).FontSize(13).TextColor(p.muted).MaxWidth(390)
+	},
+		dialogAction{key: "conflict-resolve-cancel", text: "Cancel", label: "Cancel"},
+		dialogAction{key: "conflict-resolve-confirm", text: "Confirm Resolve", label: "Confirm Resolve", disabled: a.session.Busy(), destructive: true})
+	if cancelled {
+		a.closeConflictResolveModal()
+	}
+	if confirmed {
+		a.submitConflictResolve()
+	}
 	if !st.confirmOpen {
 		a.closeConflictResolveModal()
 	}

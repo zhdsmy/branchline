@@ -496,45 +496,35 @@ func (a *app) remoteEditDialogs(c *ui.Context) {
 
 	if st.confirmingDiscard {
 		open := true
-		if ui.Modal(c.Key("remote-edit-discard-modal"), &open, func() {
-			ui.Column(c.Key("remote-edit-discard-body")).Width(430).Padding(18, 18, 14, 18).Gap(10).Children(func() {
-				ui.Text(c, "Discard local copy?").FontSize(17).FontWeight(650).TextColor(p.text)
-				ui.Text(c, "The copy of "+st.copyKey.path+" has been edited. Discarding it permanently loses those edits; the file on the server is untouched.").FontSize(13).TextColor(p.muted).MaxWidth(390).Wrap()
-				ui.Row(c.Key("remote-edit-discard-actions")).Gap(8).Justify(ui.End).Children(func() {
-					if ui.Button(c.Key("remote-edit-discard-cancel"), "Cancel").Label("Cancel").Clicked() {
-						a.cancelRemoteEditDiscard()
-					}
-					if ui.PrimaryButton(c.Key("remote-edit-discard-confirm"), "Discard Local Copy").Label("Confirm Discard Local Copy").Clicked() {
-						a.submitRemoteEditDiscard()
-					}
-				})
-			})
-		}).Dismissed() {
+		dismissed, cancelled, confirmed := dialogFrame(c, p, "remote-edit-discard-modal", &open, "Discard local copy?", 430, func() {
+			ui.Text(c, "The copy of "+st.copyKey.path+" has been edited. Discarding it permanently loses those edits; the file on the server is untouched.").FontSize(13).TextColor(p.muted).MaxWidth(390).Wrap()
+		},
+			dialogAction{key: "remote-edit-discard-cancel", text: "Cancel", label: "Cancel"},
+			dialogAction{key: "remote-edit-discard-confirm", text: "Discard Local Copy", label: "Confirm Discard Local Copy", destructive: true})
+		if cancelled || dismissed {
 			a.cancelRemoteEditDiscard()
+		}
+		if confirmed {
+			a.submitRemoteEditDiscard()
 		}
 	}
 
 	if st.conflictOpen {
 		open := true
 		key := remoteEditKeyFor(a.session.Meta(), st.conflictPath)
-		if ui.Modal(c.Key("remote-edit-conflict-modal"), &open, func() {
-			ui.Column(c.Key("remote-edit-conflict-body")).Width(430).Padding(18, 18, 14, 18).Gap(10).Children(func() {
-				ui.Text(c, "File changed on the server").FontSize(17).FontWeight(650).TextColor(p.text)
-				ui.Text(c, "The file on the server changed after it was opened for editing. Nothing was written; your edits are still in the local copy.").FontSize(13).TextColor(p.muted).MaxWidth(390).Wrap()
-				ui.Row(c.Key("remote-edit-conflict-actions")).Gap(8).Justify(ui.End).Children(func() {
-					if ui.Button(c.Key("remote-edit-conflict-cancel"), "Close").Label("Close").Clicked() {
-						a.closeRemoteEditConflict()
-					}
-					if ui.PrimaryButton(c.Key("remote-edit-show-copy"), "Show Local Copy").Label("Show Local Copy").Clicked() {
-						a.closeRemoteEditConflict()
-						if entry := st.entries[key]; entry != nil && entry.hasCopy {
-							a.showRemoteEditCopy(entry.copy.Local)
-						}
-					}
-				})
-			})
-		}).Dismissed() {
+		dismissed, cancelled, confirmed := dialogFrame(c, p, "remote-edit-conflict-modal", &open, "File changed on the server", 430, func() {
+			ui.Text(c, "The file on the server changed after it was opened for editing. Nothing was written; your edits are still in the local copy.").FontSize(13).TextColor(p.muted).MaxWidth(390).Wrap()
+		},
+			dialogAction{key: "remote-edit-conflict-cancel", text: "Close", label: "Close"},
+			dialogAction{key: "remote-edit-show-copy", text: "Show Local Copy", label: "Show Local Copy", autoFocus: true})
+		if cancelled || dismissed {
 			a.closeRemoteEditConflict()
+		}
+		if confirmed {
+			a.closeRemoteEditConflict()
+			if entry := st.entries[key]; entry != nil && entry.hasCopy {
+				a.showRemoteEditCopy(entry.copy.Local)
+			}
 		}
 	}
 }
