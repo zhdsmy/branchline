@@ -25,7 +25,7 @@ func (r *Repo) BlameLines(path, rev string) ([]BlameLine, error) {
 	if rev == "" {
 		rev = "HEAD"
 	}
-	out, err := r.run(quick, "blame", "--porcelain", "-w", rev, "--", path)
+	out, err := r.run(slow, "blame", "--porcelain", "-w", rev, "--", path)
 	if err != nil {
 		return nil, err
 	}
