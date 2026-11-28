@@ -130,12 +130,10 @@ func TestBranchRenameThroughContextMenu(t *testing.T) {
 		t.Fatal("renamed non-current branch shows as current")
 	}
 	// The remote-tracking origin/topic row shows topic as its last name
-	// segment, so the old name's absence is checked by the local branch
-	// row's key, never by the visible text.
-	for _, entry := range h.app.refsView.sidebarRows.rows {
-		if entry.kind == sidebarRowBranch && entry.key == "br-refs/heads/topic" {
-			t.Fatal("old name topic kept its branch row in the sidebar")
-		}
+	// segment, so the old name's absence is checked by the list item's
+	// accessible name rather than raw text.
+	if _, ok := h.ui.AccessByRole(ui.RoleListItem, "topic"); ok {
+		t.Fatal("old name topic stayed visible as a branch row in the sidebar")
 	}
 	if hasExactText(h.ui, "Rename Branch") {
 		t.Fatal("rename dialog stayed open after the rename")

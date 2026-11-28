@@ -286,21 +286,29 @@ func (a *app) pruneSidebarFolderPicks(id string) {
 	if path == "" {
 		return
 	}
-	base := ""
+	var kind sidebarRefKind
+	var base string
 	switch scope {
-	case "branches", "tags":
+	case "branches":
+		kind = sidebarRefLocalBranch
+		base = path + "/"
+	case "tags":
+		kind = sidebarRefTag
 		base = path + "/"
 	case "remotes":
+		kind = sidebarRefRemoteBranch
 		base = "refs/remotes/" + remote + "/" + path + "/"
+	default:
+		return
 	}
 	st := &a.refsView
 	changed := false
-	if strings.HasPrefix(st.pickAnchor.name, base) {
+	if st.pickAnchor.kind == kind && strings.HasPrefix(st.pickAnchor.name, base) {
 		st.pickAnchor = sidebarPickKey{}
 		changed = true
 	}
 	for key := range st.pick {
-		if strings.HasPrefix(key.name, base) {
+		if key.kind == kind && strings.HasPrefix(key.name, base) {
 			delete(st.pick, key)
 			changed = true
 		}
@@ -350,6 +358,10 @@ func (a *app) loadSidebarRefSettings() {
 	}
 	st.sidebarClosedLoaded = true
 	st.sidebarClosed = map[string]bool{}
+	a.branchesCollapsed = false
+	a.remotesCollapsed = false
+	a.tagsCollapsed = false
+	a.stashUI().collapsed = false
 	if a.store == nil || !a.session.HasRepo() {
 		return
 	}

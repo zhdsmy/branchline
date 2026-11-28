@@ -620,3 +620,37 @@ func TestSidebarFoldersFrameCostNoRebuild(t *testing.T) {
 	slices.Sort(times)
 	t.Logf("rebuild of 2000 branches in 200 folders: median %v, runs %v", times[runs/2], times)
 }
+
+// Collapsing a folder in one section only prunes selections of that reference
+// kind: collapsing tag folder v1 leaves a selected local branch v1/a selected.
+func TestSidebarFoldersCollapseScopeIsolated(t *testing.T) {
+	repo := newGitRepo(t, "fold-scope-isolated")
+	repo.CommitFile("f.txt", "content\n", "initial commit")
+	repo.CreateBranch("v1/a")
+	repo.CreateTag("v1/rc1")
+
+	h := newTestApp(t)
+	pinAlphabeticalSortOrders(t, h)
+	h.openRepo(repo.StoreRepo())
+	h.drain()
+
+	clickRefRow(t, h, "v1/a")
+	wantPickedRefs(t, h, []string{"v1/a"}, nil, nil)
+
+	// Collapse Branches so the only visible "v1" folder row is under Tags;
+	// section collapse keeps the branch selection intact.
+	if err := h.ui.Click("Branches"); err != nil {
+		t.Fatalf("collapse Branches: %v", err)
+	}
+	h.ui.Frame()
+	clickRefRow(t, h, "v1")
+	if sidebarShowsText(h, "rc1") {
+		t.Fatal("tag v1/rc1 still visible after collapsing tag folder v1")
+	}
+
+	if err := h.ui.Click("Branches"); err != nil {
+		t.Fatalf("expand Branches: %v", err)
+	}
+	h.ui.Frame()
+	wantPickedRefs(t, h, []string{"v1/a"}, nil, nil)
+}

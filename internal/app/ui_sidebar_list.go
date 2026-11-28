@@ -268,7 +268,6 @@ func (a *app) rebuildSidebarRows(rc *sidebarRowCache, refs git.Refs, stashes []g
 
 	pick := a.refsView.pick
 	localPicks := sidebarPickCount(pick, localVisible)
-	remotePicks := sidebarRemotePickCount(pick, remoteSorted)
 	tagPicks := sidebarTagPickCount(pick, tagVisible)
 
 	// The lone selected tag is the one row an action bar unfolds under;
@@ -370,6 +369,7 @@ func (a *app) rebuildSidebarRows(rc *sidebarRowCache, refs git.Refs, stashes []g
 			}
 		}
 	}
+	remotePicks := sidebarRemotePickCount(pick, remoteVisible)
 
 	rows = append(rows, sidebarRowEntry{
 		kind: sidebarRowSection, key: "sec-Tags", title: "Tags", count: len(refs.Tags),
