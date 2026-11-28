@@ -601,9 +601,31 @@ func runAskContext(ctx context.Context, cmd *exec.Cmd, stdin []byte, args []stri
 	return out, err
 }
 
+// streamWriterKey carries an io.Writer in a command's context. The writer
+// receives the command's standard output as it is produced instead of the
+// output being collected. The key is unexported: Repo methods that stream
+// install it, and executors need no knowledge of it.
+type streamWriterKey struct{}
+
+// streamWriter returns a context whose standard output streams to w, the
+// writer the executors hand it through runTo.
+func streamWriter(ctx context.Context, w io.Writer) context.Context {
+	return context.WithValue(ctx, streamWriterKey{}, w)
+}
+
+// runTo runs cmd with its standard error aimed at stderrW and returns what
+// the command prints on standard output. When the context carries a stream
+// writer, that output is written there as it is produced and runTo collects
+// nothing: the returned slice is empty, a failing command's *Error.Stdout is
+// empty, and a command log entry records no standard output, while the
+// *Error's Stderr and ExitCode and the logged arguments and standard error
+// are as they are without a stream writer.
 func runTo(ctx context.Context, cmd *exec.Cmd, stdin []byte, args []string, stderrW io.Writer, stderrText func() string) ([]byte, error) {
 	var stdout bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, stderrW
+	if w, ok := ctx.Value(streamWriterKey{}).(io.Writer); ok && w != nil {
+		cmd.Stdout = w
+	}
 	if stdin != nil {
 		cmd.Stdin = bytes.NewReader(stdin)
 	}
