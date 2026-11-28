@@ -112,13 +112,10 @@ func (st *settingsSSHKeysState) keygenPath() string {
 	return "/usr/bin/ssh-keygen"
 }
 
-// pickKeyFile runs the Open Existing Key file picker, the injected one in
-// tests and the system open dialog in production. The system dialog runs in
-// a background worker, as it blocks until the user answers.
-func (st *settingsSSHKeysState) pickKeyFile(win *mygo.Window) (string, error) {
-	if st.pickKeyFileFn != nil {
-		return st.pickKeyFileFn(win)
-	}
+// systemKeyFilePicker runs the system open dialog for Open Existing Key.
+// It blocks until the user answers, so it runs in a background worker; the
+// injected picker of a test takes its place, captured on the UI thread.
+func systemKeyFilePicker(win *mygo.Window) (string, error) {
 	paths, err := mygo.Dialog.Open(mygo.OpenDialogOptions{
 		Parent: win,
 		Title:  "Open SSH Key",
@@ -522,12 +519,20 @@ func (a *app) openNewSSHKeyDialog() {
 }
 
 // generateSSHKey runs ssh-keygen in the background with the dialog's draft,
+// newSSHKeyCanGenerate reports whether the New SSH Key dialog can start a
+// generation now: no generation in flight and a file name passing the key
+// name rules. The Generate Key button's disabled state mirrors it exactly,
+// and so do the Enter submissions of the dialog's inputs.
+func newSSHKeyCanGenerate(st *settingsSSHKeysState) bool {
+	return !st.newBusy && sshkey.CheckName(st.newName) == nil
+}
+
 // captured on the UI thread. A failure — a name taken since the dialog
 // opened among them — shows in the dialog, which stays open; a success
 // closes it, activates the new key and selects it.
 func (a *app) generateSSHKey() {
 	st := sshKeysStateOf(a)
-	if st.newBusy || sshkey.CheckName(st.newName) != nil {
+	if !newSSHKeyCanGenerate(st) {
 		return
 	}
 	dir, err := sshkey.Dir()
@@ -580,7 +585,10 @@ func (a *app) finishNewSSHKey(key sshkey.Key) {
 }
 
 // openExistingSSHKey runs the file picker in the background and reads the
-// chosen pair. Canceling is silent; a picker failure or a file that is not a
+// chosen pair. The picker itself — the injected one of a test or the system
+// open dialog — is captured on the UI thread, as every other field of the
+// page state is: the worker holds the function value alone and never reads
+// the state. Canceling is silent; a picker failure or a file that is not a
 // key pair shows its error on the page.
 func (a *app) openExistingSSHKey() {
 	st := sshKeysStateOf(a)
@@ -588,13 +596,17 @@ func (a *app) openExistingSSHKey() {
 		return
 	}
 	win := a.settingsWin
+	pick := st.pickKeyFileFn
+	if pick == nil {
+		pick = systemKeyFilePicker
+	}
 	st.openBusy = true
 	st.openErr = ""
 	st.openGen++
 	gen := st.openGen
 
 	a.spawn(func() {
-		path, err := st.pickKeyFile(win)
+		path, err := pick(win)
 		var key sshkey.Key
 		var openErr error
 		if err == nil && path != "" {
@@ -655,41 +667,48 @@ func (a *app) newSSHKeyDialog(c *ui.Context, p palette) {
 	if !st.newOpen {
 		return
 	}
-	ui.Modal(c.Key("ssh-key-new-modal"), &st.newOpen, func() {
-		ui.Column(c.Key("ssh-key-new-body")).Width(460).Padding(18, 18, 14, 18).Gap(10).Children(func() {
-			ui.Text(c, "New SSH Key").FontSize(17).FontWeight(650).TextColor(p.text)
-			ui.Field(c, "File Name", func() {
-				ui.TextInput(c.Key("ssh-key-new-name"), &st.newName).FillWidth().AutoFocus().Label("Key file name").Disabled(st.newBusy)
-			})
-			ui.Field(c, "Email", func() {
-				ui.TextInput(c.Key("ssh-key-new-email"), &st.newEmail).FillWidth().Label("Key comment email").Disabled(st.newBusy)
-			})
-			problem := ""
-			if err := sshkey.CheckName(st.newName); err != nil {
-				problem = err.Error()
+	_, cancelled, confirmed := dialogFrame(c, p, "ssh-key-new", &st.newOpen, "New SSH Key", 460, func() {
+		ui.Field(c, "File Name", func() {
+			// Enter in either input submits through the input itself: a
+			// single-line field takes the key before the frame's window-level
+			// shortcut ever sees it, so the input's submission is the only
+			// consumer. Its condition is the button's, exactly.
+			in := ui.TextInput(c.Key("ssh-key-new-name"), &st.newName).FillWidth().AutoFocus().Label("Key file name").Disabled(st.newBusy)
+			if in.Submitted() && newSSHKeyCanGenerate(st) {
+				a.generateSSHKey()
 			}
-			if problem != "" {
-				ui.Text(c, problem).FontSize(12).TextColor(p.danger)
-			}
-			if st.newBusy {
-				ui.Row(c.Key("ssh-key-new-busy")).FillWidth().Justify(ui.Start).Role(ui.RoleStatus).Label("SSH Key Generation").Busy(true).Gap(8).AlignItems(ui.Center).Children(func() {
-					ui.Spinner(c).AccessHidden(true)
-					ui.Text(c, "Generating key…").FontSize(12).TextColor(p.muted).SingleLine()
-				})
-			} else if st.newErr != "" {
-				ui.Text(c, st.newErr).FontSize(12).TextColor(p.danger).MaxWidth(420)
-			}
-			ui.Row(c.Key("ssh-key-new-actions")).Gap(8).Justify(ui.End).Children(func() {
-				if ui.Button(c.Key("ssh-key-new-cancel"), "Cancel").Label("Cancel New SSH Key").Clicked() {
-					st.newOpen = false
-					st.newGen++
-				}
-				if ui.PrimaryButton(c.Key("ssh-key-new-generate"), "Generate Key").Label("Generate Key").Disabled(st.newBusy || problem != "").Clicked() {
-					a.generateSSHKey()
-				}
-			})
 		})
-	}).Label("New SSH Key")
+		ui.Field(c, "Email", func() {
+			in := ui.TextInput(c.Key("ssh-key-new-email"), &st.newEmail).FillWidth().Label("Key comment email").Disabled(st.newBusy)
+			if in.Submitted() && newSSHKeyCanGenerate(st) {
+				a.generateSSHKey()
+			}
+		})
+		problem := ""
+		if err := sshkey.CheckName(st.newName); err != nil {
+			problem = err.Error()
+		}
+		if problem != "" {
+			ui.Text(c, problem).FontSize(12).TextColor(p.danger)
+		}
+		if st.newBusy {
+			ui.Row(c.Key("ssh-key-new-busy")).FillWidth().Justify(ui.Start).Role(ui.RoleStatus).Label("SSH Key Generation").Busy(true).Gap(8).AlignItems(ui.Center).Children(func() {
+				ui.Spinner(c).AccessHidden(true)
+				ui.Text(c, "Generating key…").FontSize(12).TextColor(p.muted).SingleLine()
+			})
+		} else if st.newErr != "" {
+			ui.Text(c, st.newErr).FontSize(12).TextColor(p.danger).MaxWidth(420)
+		}
+	},
+		dialogAction{key: "ssh-key-new-cancel", text: "Cancel", label: "Cancel New SSH Key"},
+		dialogAction{key: "ssh-key-new-generate", text: "Generate Key", label: "Generate Key", disabled: !newSSHKeyCanGenerate(st)})
+	if cancelled {
+		st.newOpen = false
+		st.newGen++
+	}
+	if confirmed {
+		a.generateSSHKey()
+	}
 	if !st.newOpen {
 		// The dialog was dismissed or canceled: a generation still running
 		// drops its result through the generation counter.
