@@ -47,13 +47,17 @@ func (r *Repo) BlameIncremental(path, rev string, fn func(BlameHunk)) error {
 	// Canceling the Repo's context ends the parsing even while a write is
 	// still in flight: closing the reader fails the write, the copy of the
 	// output stops, and the command the cancellation already killed returns.
+	// The watch ends with the call, whatever happens to the context.
 	base := r.baseCtx()
-	if base.Done() != nil {
-		go func() {
-			<-base.Done()
+	watchDone := make(chan struct{})
+	defer close(watchDone)
+	go func() {
+		select {
+		case <-base.Done():
 			pr.CloseWithError(base.Err())
-		}()
-	}
+		case <-watchDone:
+		}
+	}()
 	p := &blameIncrementalParser{fn: fn, commits: map[string]*blameCommitMeta{}}
 	buf := make([]byte, 32*1024)
 	clean := false
