@@ -21,6 +21,9 @@ func (r *Repo) Refs() (Refs, error) {
 	if err != nil {
 		return Refs{}, err
 	}
+	if len(out) > 0 && len(tags) > 0 && out[len(out)-1] != '\n' {
+		out = append(out, '\n')
+	}
 	refs := ParseRefs(append(out, tags...))
 	// Remotes without branches fetched yet show too.
 	if out, err := r.run(quick, "remote"); err == nil {

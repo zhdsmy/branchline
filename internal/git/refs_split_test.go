@@ -108,9 +108,11 @@ func refsSplitEqual(t *testing.T, got, want git.Refs) {
 // directory the origin remote pushes to. gitRun runs git inside dir and
 // write writes a file inside dir, so the same construction serves a local
 // repository and one on an SSH server.
-func refsSplitBuild(t *testing.T, gitRun func(args ...string) string, write func(relPath, body string), dir, bare string) {
+func refsSplitBuild(t *testing.T, gitRun func(args ...string) string, write func(relPath, body string), dir, bare string) string {
 	t.Helper()
-	gitRun("init", "-q", "-b", "main")
+	// Avoid git init -b so the same fixture runs on Git 2.25 servers too.
+	gitRun("init", "-q")
+	gitRun("symbolic-ref", "HEAD", "refs/heads/main")
 	gitRun("config", "user.name", "Ada")
 	gitRun("config", "user.email", "ada@example.com")
 	gitRun("config", "commit.gpgsign", "false")
@@ -150,11 +152,12 @@ func refsSplitBuild(t *testing.T, gitRun func(args ...string) string, write func
 
 	// spare names a remote no branch was ever fetched from.
 	gitRun("remote", "add", "spare", bare)
+	return gitRun("rev-parse", "refs/tags/ann")
 }
 
 // refsSplitShapes fails when the fixture lost a shape the comparison is
 // meant to exercise, so an equal result cannot be vacuous.
-func refsSplitShapes(t *testing.T, refs git.Refs) {
+func refsSplitShapes(t *testing.T, refs git.Refs, annTagHash string) {
 	t.Helper()
 	branches := map[string]git.Branch{}
 	for _, b := range refs.Branches {
@@ -183,8 +186,11 @@ func refsSplitShapes(t *testing.T, refs git.Refs) {
 	if !ok || ann.Hash != main.Hash {
 		t.Errorf("annotated tag %+v present %v, want the commit main names %s", ann, ok, main.Hash)
 	}
-	if meta, ok := tags["annmeta"]; !ok || meta.Hash != main.Hash {
-		t.Errorf("nested tag %+v present %v, want the commit peeled through ann", meta, ok)
+	// Older Git peels %(*objectname) one layer to ann's tag object while newer
+	// Git peels through to the commit; either way annmeta must peel past its
+	// own tag object and match the one-scan oracle exactly.
+	if meta, ok := tags["annmeta"]; !ok || (meta.Hash != main.Hash && meta.Hash != annTagHash) {
+		t.Errorf("nested tag %+v present %v, want peeled target %s or %s", meta, ok, main.Hash, annTagHash)
 	}
 	if light, ok := tags["light"]; !ok || light.Hash == "" {
 		t.Errorf("lightweight tag %+v present %v", light, ok)
@@ -214,7 +220,7 @@ func TestRefsSplitMatchesOneScanLocally(t *testing.T) {
 	bare := filepath.Join(t.TempDir(), "origin.git")
 	gitRun := func(args ...string) string { return localGit(t, dir, args...) }
 	write := func(relPath, body string) { writeFileLocal(t, dir, relPath, body) }
-	refsSplitBuild(t, gitRun, write, dir, bare)
+	annTagHash := refsSplitBuild(t, gitRun, write, dir, bare)
 
 	repo := git.New(&git.LocalExecutor{Dir: dir, NoGlobalConfig: true})
 	oracle := &git.LocalExecutor{Dir: dir, NoGlobalConfig: true}
@@ -223,7 +229,7 @@ func TestRefsSplitMatchesOneScanLocally(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Refs: %v", err)
 	}
-	refsSplitShapes(t, got)
+	refsSplitShapes(t, got, annTagHash)
 	refsSplitEqual(t, got, refsSplitReference(t, oracle))
 
 	localGit(t, dir, "checkout", "-q", "--detach")
@@ -243,7 +249,8 @@ func TestRefsSplitMatchesOneScanLocally(t *testing.T) {
 // no commit and no tag is not an error, and the result is the oracle's.
 func TestRefsSplitEmptyRepository(t *testing.T) {
 	dir := t.TempDir()
-	localGit(t, dir, "init", "-q", "-b", "main")
+	localGit(t, dir, "init", "-q")
+	localGit(t, dir, "symbolic-ref", "HEAD", "refs/heads/main")
 	localGit(t, dir, "config", "user.name", "Ada")
 	localGit(t, dir, "config", "user.email", "ada@example.com")
 
@@ -256,6 +263,105 @@ func TestRefsSplitEmptyRepository(t *testing.T) {
 	if len(got.Branches)+len(got.Remote)+len(got.Tags) != 0 {
 		t.Errorf("empty repository has %+v", got)
 	}
+}
+
+// TestRefsSplitBoundaryShapes checks the concatenation boundary between the
+// branch scan and the tag scan: branches without tags, tags without branches,
+// both empty, and a branch scan output missing its trailing newline never
+// merges the last branch with the first tag.
+func TestRefsSplitBoundaryShapes(t *testing.T) {
+	t.Run("BranchesOnly", func(t *testing.T) {
+		dir := t.TempDir()
+		localGit(t, dir, "init", "-q")
+		localGit(t, dir, "symbolic-ref", "HEAD", "refs/heads/main")
+		localGit(t, dir, "config", "user.name", "Ada")
+		localGit(t, dir, "config", "user.email", "ada@example.com")
+		localGit(t, dir, "config", "commit.gpgsign", "false")
+		writeFileLocal(t, dir, "a.txt", "one\n")
+		localGit(t, dir, "add", "a.txt")
+		localGit(t, dir, "commit", "-q", "-m", "base")
+		localGit(t, dir, "branch", "feature")
+
+		ex := &git.LocalExecutor{Dir: dir, NoGlobalConfig: true}
+		got, err := git.New(ex).Refs()
+		if err != nil {
+			t.Fatalf("Refs with branches only: %v", err)
+		}
+		if len(got.Branches) != 2 || len(got.Tags) != 0 {
+			t.Fatalf("branches=%+v tags=%+v, want 2 branches and 0 tags", got.Branches, got.Tags)
+		}
+		refsSplitEqual(t, got, refsSplitReference(t, ex))
+	})
+
+	t.Run("TagsOnly", func(t *testing.T) {
+		dir := t.TempDir()
+		localGit(t, dir, "init", "-q")
+		localGit(t, dir, "symbolic-ref", "HEAD", "refs/heads/main")
+		localGit(t, dir, "config", "user.name", "Ada")
+		localGit(t, dir, "config", "user.email", "ada@example.com")
+		localGit(t, dir, "config", "commit.gpgsign", "false")
+		writeFileLocal(t, dir, "a.txt", "one\n")
+		localGit(t, dir, "add", "a.txt")
+		localGit(t, dir, "commit", "-q", "-m", "base")
+		head := localGit(t, dir, "rev-parse", "HEAD")
+		localGit(t, dir, "tag", "light")
+		localGit(t, dir, "tag", "-a", "ann", "-m", "annotated")
+		localGit(t, dir, "checkout", "-q", "--detach")
+		localGit(t, dir, "update-ref", "-d", "refs/heads/main")
+
+		ex := &git.LocalExecutor{Dir: dir, NoGlobalConfig: true}
+		got, err := git.New(ex).Refs()
+		if err != nil {
+			t.Fatalf("Refs with tags only: %v", err)
+		}
+		if len(got.Branches) != 0 || len(got.Remote) != 0 || len(got.Tags) != 2 {
+			t.Fatalf("branches=%+v remote=%+v tags=%+v, want 0 branches and 2 tags", got.Branches, got.Remote, got.Tags)
+		}
+		var annHash string
+		for _, tag := range got.Tags {
+			if tag.Name == "ann" {
+				annHash = tag.Hash
+			}
+		}
+		if annHash != head {
+			t.Fatalf("annotated tag hash = %q, want commit %q", annHash, head)
+		}
+		refsSplitEqual(t, got, refsSplitReference(t, ex))
+	})
+
+	t.Run("MissingTrailingNewline", func(t *testing.T) {
+		ex := &refsSplitOutputStub{
+			branchesOut: []byte("refs/heads/main\x1f1111111\x1f\x1f\x1f*\x1f"),
+			tagsOut:     []byte("refs/tags/v1\x1f2222222\x1f\x1f\x1f\x1f3333333\n"),
+		}
+		got, err := git.New(ex).Refs()
+		if err != nil {
+			t.Fatalf("Refs with unterminated branch output: %v", err)
+		}
+		if len(got.Branches) != 1 || got.Branches[0].Name != "main" {
+			t.Fatalf("branches = %+v, want [main]", got.Branches)
+		}
+		if len(got.Tags) != 1 || got.Tags[0].Name != "v1" || got.Tags[0].Hash != "3333333" {
+			t.Fatalf("tags = %+v, want [v1 -> 3333333]", got.Tags)
+		}
+	})
+}
+
+type refsSplitOutputStub struct {
+	branchesOut []byte
+	tagsOut     []byte
+}
+
+func (e *refsSplitOutputStub) Describe() string { return "output stub" }
+
+func (e *refsSplitOutputStub) Run(_ context.Context, _ []byte, args ...string) ([]byte, error) {
+	if len(args) > 0 && args[0] == "for-each-ref" {
+		if refsSplitHasArg(args, "refs/tags") {
+			return append([]byte(nil), e.tagsOut...), nil
+		}
+		return append([]byte(nil), e.branchesOut...), nil
+	}
+	return nil, nil
 }
 
 // refsSplitRecorder is an Executor that records its invocations and can
@@ -360,22 +466,90 @@ func TestRefsSplitTagScanFailure(t *testing.T) {
 	}
 }
 
+// runRefsSplitOverSSH checks Refs against the one-scan oracle over an SSH
+// target (loopback sshd or a configured Linux server, including Git 2.25),
+// covering full branch/tag/upstream shapes (attached and detached HEAD) plus
+// branches-only, tags-only, and empty repositories.
+func runRefsSplitOverSSH(t *testing.T, srv *sshtest.Target) {
+	t.Helper()
+
+	dir := srv.TempDir(t, "refs-split-repo")
+	bare := srv.TempDir(t, "refs-split-bare")
+	gitRun := func(args ...string) string { return srv.RunGit(t, dir, args...) }
+	write := func(relPath, body string) { srv.WriteFile(t, dir, relPath, []byte(body)) }
+	annTagHash := refsSplitBuild(t, gitRun, write, dir, bare)
+
+	repo := srv.Repo(t, dir)
+	oracle := srv.Executor(t, dir)
+
+	got, err := repo.Refs()
+	if err != nil {
+		t.Fatalf("Refs over SSH: %v", err)
+	}
+	refsSplitShapes(t, got, annTagHash)
+	refsSplitEqual(t, got, refsSplitReference(t, oracle))
+
+	gitRun("checkout", "-q", "--detach")
+	got, err = repo.Refs()
+	if err != nil {
+		t.Fatalf("Refs detached over SSH: %v", err)
+	}
+	refsSplitEqual(t, got, refsSplitReference(t, oracle))
+
+	// Empty repository over SSH.
+	emptyDir := srv.TempDir(t, "refs-split-empty")
+	srv.RunGit(t, emptyDir, "init", "-q")
+	srv.RunGit(t, emptyDir, "symbolic-ref", "HEAD", "refs/heads/main")
+	got, err = srv.Repo(t, emptyDir).Refs()
+	if err != nil {
+		t.Fatalf("Refs on empty SSH repo: %v", err)
+	}
+	refsSplitEqual(t, got, refsSplitReference(t, srv.Executor(t, emptyDir)))
+
+	// Branches-only repository over SSH.
+	branchesDir := srv.TempDir(t, "refs-split-branches-only")
+	srv.RunGit(t, branchesDir, "init", "-q")
+	srv.RunGit(t, branchesDir, "symbolic-ref", "HEAD", "refs/heads/main")
+	srv.RunGit(t, branchesDir, "config", "user.name", "Ada")
+	srv.RunGit(t, branchesDir, "config", "user.email", "ada@example.com")
+	srv.RunGit(t, branchesDir, "config", "commit.gpgsign", "false")
+	srv.WriteFile(t, branchesDir, "a.txt", []byte("one\n"))
+	srv.RunGit(t, branchesDir, "add", "a.txt")
+	srv.RunGit(t, branchesDir, "commit", "-q", "-m", "base")
+	got, err = srv.Repo(t, branchesDir).Refs()
+	if err != nil {
+		t.Fatalf("Refs on branches-only SSH repo: %v", err)
+	}
+	if len(got.Branches) != 1 || len(got.Tags) != 0 {
+		t.Fatalf("branches-only SSH repo: branches=%+v tags=%+v", got.Branches, got.Tags)
+	}
+	refsSplitEqual(t, got, refsSplitReference(t, srv.Executor(t, branchesDir)))
+
+	// Tags-only repository over SSH (detached HEAD, no branches).
+	srv.RunGit(t, branchesDir, "tag", "-a", "only-tag", "-m", "annotated")
+	srv.RunGit(t, branchesDir, "checkout", "-q", "--detach")
+	srv.RunGit(t, branchesDir, "update-ref", "-d", "refs/heads/main")
+	got, err = srv.Repo(t, branchesDir).Refs()
+	if err != nil {
+		t.Fatalf("Refs on tags-only SSH repo: %v", err)
+	}
+	if len(got.Branches) != 0 || len(got.Tags) != 1 {
+		t.Fatalf("tags-only SSH repo: branches=%+v tags=%+v", got.Branches, got.Tags)
+	}
+	refsSplitEqual(t, got, refsSplitReference(t, srv.Executor(t, branchesDir)))
+}
+
 // TestRefsSplitLoopbackSSH checks Refs against the one-scan oracle over
 // loopback SSH, on a repository holding annotated tags and upstream
 // branches. BRANCHLINE_REQUIRE_SSH=1 makes a missing loopback sshd fatal.
 func TestRefsSplitLoopbackSSH(t *testing.T) {
 	srv := sshtest.StartLoopback(t)
-	dir := srv.TempDir(t, "refs-split-repo")
-	bare := srv.TempDir(t, "refs-split-bare")
-	gitRun := func(args ...string) string { return srv.RunGit(t, dir, args...) }
-	write := func(relPath, body string) { srv.WriteFile(t, dir, relPath, []byte(body)) }
-	refsSplitBuild(t, gitRun, write, dir, bare)
+	runRefsSplitOverSSH(t, srv)
+}
 
-	repo := srv.Repo(t, dir)
-	got, err := repo.Refs()
-	if err != nil {
-		t.Fatalf("Refs over SSH: %v", err)
-	}
-	refsSplitShapes(t, got)
-	refsSplitEqual(t, got, refsSplitReference(t, srv.Executor(t, dir)))
+// TestConfiguredLinuxRefsSplit checks Refs against the one-scan oracle on a
+// configured Linux SSH server, including Git 2.25 environments.
+func TestConfiguredLinuxRefsSplit(t *testing.T) {
+	srv := sshtest.ConfiguredLinux(t)
+	runRefsSplitOverSSH(t, srv)
 }
