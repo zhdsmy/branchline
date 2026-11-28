@@ -488,6 +488,26 @@ type readCancel struct {
 // command stops instead of finishing unseen. Only reads of the same scope
 // supersede one another; other scopes keep running.
 func sessionRead[T any](s *repoSession, scope string, work func(*git.Repo) (T, error), done func(T, error)) bool {
+	if work == nil {
+		return false
+	}
+	return sessionReadStream(s, scope, func(repo *git.Repo, _ func(struct{})) (T, error) {
+		return work(repo)
+	}, nil, done)
+}
+
+// sessionReadStream is sessionRead for reads that produce results in pieces:
+// work may call emit with intermediate values while it runs, and each one
+// reaches progress on the UI thread ahead of done. emit is for the worker
+// goroutine of this one read only and must not be called after work returns.
+//
+// A batch is delivered only while both the repository generation and the
+// scope's request sequence still match, exactly like the result: batches of
+// a canceled or superseded read are dropped whenever they arrive. post is a
+// FIFO queue — one mutex-protected slice drained in order — so the batches
+// of one read, all posted by its single worker goroutine, run in the order
+// work emitted them and always before that read's done.
+func sessionReadStream[T, P any](s *repoSession, scope string, work func(*git.Repo, func(P)) (T, error), progress func(P), done func(T, error)) bool {
 	if s == nil || !s.hasRepo || s.repo == nil || work == nil || done == nil {
 		return false
 	}
@@ -502,8 +522,20 @@ func sessionRead[T any](s *repoSession, scope string, work func(*git.Repo) (T, e
 	}
 	s.readCancels[scope] = entry
 
+	emit := func(p P) {
+		if progress == nil {
+			return
+		}
+		s.post(func() {
+			if s.repoGen != repoGen || s.readSeq[scope] != seq {
+				return
+			}
+			progress(p)
+		})
+	}
+
 	s.spawn(func() {
-		res, err := work(repo)
+		res, err := work(repo, emit)
 		cancel()
 		s.post(func() {
 			// The read is over whatever becomes of its result: its context

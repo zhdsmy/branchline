@@ -1,7 +1,11 @@
 package app
 
 import (
+	"errors"
+	"fmt"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/egoist/mygo/ui"
 
@@ -24,6 +28,24 @@ const (
 )
 
 const fileHistoryPageSize = 100
+
+// fileBlameBatchWindow is the longest the streaming blame read collects
+// hunks before another batch goes to the UI: attribution fills in steps of
+// at most one batch per window instead of one post per hunk.
+const fileBlameBatchWindow = 100 * time.Millisecond
+
+// errBlameIncomplete ends a blame read whose hunks did not cover every line
+// of the file.
+var errBlameIncomplete = errors.New("blame did not cover every line")
+
+// fileBlameNow and fileBlameWrapHunk are test seams, as the package's other
+// package-level hooks are: the clock the batching of blame hunks reads, and
+// a decorator around the hunk delivery of the streaming read. A read
+// captures both on the UI thread when it starts; its background worker never
+// reads the variables. Tests replace them and restore the originals with
+// their cleanup.
+var fileBlameNow = time.Now
+var fileBlameWrapHunk func(func(git.BlameHunk)) func(git.BlameHunk)
 
 // fileInspectorState is the UI state of one app instance's file inspector:
 // the unified File History and Blame viewer opened from a file's context
@@ -51,8 +73,14 @@ type fileInspectorState struct {
 	diff        diffPanel
 	splitSize   float32
 
-	// Blame fields. blameLines follows the same nil-until-loaded convention.
+	// Blame fields. blameLines follows the same nil-until-loaded convention,
+	// except that it fills in two steps now: the file's own lines arrive
+	// first, without attribution, and the blame's hunks fill their commit
+	// cells in batches while the blame is still computing. blameCovered
+	// counts the lines a hunk filled, and the read is complete only when it
+	// reaches the line count.
 	blameLines   []git.BlameLine
+	blameCovered int
 	blameLoading bool
 	blameErr     error
 	blameSel     int
@@ -185,39 +213,190 @@ func (a *app) startFileHistoryLogLoad() {
 	}
 }
 
+// fileBlameBatch is one piece of the streaming blame read as it reaches the
+// UI thread. The first batch carries the file's own lines in content — every
+// line of it, attribution empty — and every later batch carries blame hunks
+// to spread over them. content is nil exactly in hunk batches: an empty file
+// arrives as an empty non-nil slice.
+type fileBlameBatch struct {
+	content []git.BlameLine
+	hunks   []git.BlameHunk
+}
+
+// splitBlameLines cuts the whole content of a file into lines exactly as the
+// lines of a blame read them: split at line feeds, the carriage return of a
+// CRLF line staying part of the line's text, and nothing after a trailing
+// line feed counting as a line. An empty file has no lines.
+func splitBlameLines(content []byte) []git.BlameLine {
+	if len(content) == 0 {
+		return []git.BlameLine{}
+	}
+	parts := strings.Split(string(content), "\n")
+	if parts[len(parts)-1] == "" {
+		parts = parts[:len(parts)-1]
+	}
+	lines := make([]git.BlameLine, len(parts))
+	for i, text := range parts {
+		lines[i] = git.BlameLine{Number: i + 1, Text: text}
+	}
+	return lines
+}
+
 // startFileBlameLoad begins the asynchronous read of the line-by-line blame
-// of the inspected file at st.blameRev.
+// of the inspected file at st.blameRev. The one read first loads the file's
+// content at the revision and emits it whole, so the view shows the lines at
+// once; then the blame runs incrementally and its hunks fill the commit
+// cells in batches of at most one per fileBlameBatchWindow. An empty file
+// needs no blame: git blame of it annotates nothing, so the read ends after
+// the content without running the blame command.
 func (a *app) startFileBlameLoad() {
 	st := a.fileInspectorUI()
 	if !st.open || !a.session.HasRepo() {
 		return
 	}
 	path, rev := st.path, st.blameRev
+	now, wrapHunk := fileBlameNow, fileBlameWrapHunk
 	st.blameLoading = true
-	started := sessionRead(a.session, fileBlameScope, func(repo *git.Repo) ([]git.BlameLine, error) {
-		return repo.BlameLines(path, rev)
-	}, func(lines []git.BlameLine, err error) {
-		if !st.open || st.path != path || st.blameRev != rev || st.mode != inspectorModeBlame {
+	started := sessionReadStream(a.session, fileBlameScope,
+		func(repo *git.Repo, emit func(fileBlameBatch)) (struct{}, error) {
+			at := rev
+			if at == "" {
+				at = "HEAD"
+			}
+			content, err := repo.BlobContent(git.BlobSide{Rev: at, Path: path})
+			if err != nil {
+				return struct{}{}, err
+			}
+			lines := splitBlameLines(content)
+			emit(fileBlameBatch{content: lines})
+			if len(lines) == 0 {
+				return struct{}{}, nil
+			}
+
+			// Batching is driven by the arriving hunks, with no timer beside
+			// the read: a hunk finding nothing collected and the last batch
+			// a window or more behind ships at once, so a slow stream shows
+			// every hunk as it comes; a hunk inside the window collects, and
+			// the first hunk past the window flushes the collection ahead of
+			// itself before joining the next one. At most one batch ships
+			// per window either way. The flush after the loop ships what is
+			// left, so no hunk is lost however the stream ends.
+			var pending []git.BlameHunk
+			var lastFlush time.Time
+			flushed := false
+			flush := func() {
+				if len(pending) == 0 {
+					return
+				}
+				batch := append([]git.BlameHunk(nil), pending...)
+				pending = pending[:0]
+				lastFlush = now()
+				flushed = true
+				emit(fileBlameBatch{hunks: batch})
+			}
+			deliver := func(h git.BlameHunk) {
+				elapsed := now().Sub(lastFlush)
+				if len(pending) == 0 && (!flushed || elapsed >= fileBlameBatchWindow) {
+					pending = append(pending, h)
+					flush()
+					return
+				}
+				if len(pending) > 0 && elapsed >= fileBlameBatchWindow {
+					flush()
+				}
+				pending = append(pending, h)
+			}
+			if wrapHunk != nil {
+				deliver = wrapHunk(deliver)
+			}
+			err = repo.BlameIncremental(path, at, deliver)
+			flush()
+			return struct{}{}, err
+		},
+		func(batch fileBlameBatch) {
+			if !st.open || st.path != path || st.blameRev != rev {
+				return
+			}
+			a.applyFileBlameBatch(batch)
+		},
+		func(_ struct{}, err error) {
+			if !st.open || st.path != path || st.blameRev != rev {
+				st.blameLoading = false
+				return
+			}
 			st.blameLoading = false
-			return
-		}
-		st.blameLoading = false
-		if err != nil {
-			st.blameErr = err
-			st.blameLines = nil
-			return
-		}
-		st.blameErr = nil
-		if lines == nil {
-			lines = []git.BlameLine{}
-		}
-		st.blameLines = lines
-		if len(lines) == 0 {
-			st.blameSel = -1
-		}
-	})
+			if err != nil {
+				// The file on screen and the attribution already filled both
+				// stay: the error takes the progress row's place above the
+				// list. When the file itself never arrived blameLines is nil,
+				// and the failure replaces the whole view as before.
+				st.blameErr = err
+				return
+			}
+			st.blameErr = nil
+			if st.blameLines != nil && st.blameCovered != len(st.blameLines) {
+				st.blameErr = errBlameIncomplete
+				return
+			}
+			if len(st.blameLines) == 0 {
+				st.blameSel = -1
+			}
+		})
 	if !started {
 		st.blameLoading = false
+	}
+}
+
+// applyFileBlameBatch applies one batch of the streaming blame read on the
+// UI thread. A content batch replaces the lines wholesale; a hunk batch
+// touches only the lines its hunks cover: their commit fields fill in, and
+// First is recomputed only where it can change — the first line of each
+// hunk and the line right after it. Every other line keeps a First that no
+// new hunk can affect, so no batch ever scans the whole file.
+func (a *app) applyFileBlameBatch(batch fileBlameBatch) {
+	st := a.fileInspectorUI()
+	if batch.content != nil {
+		st.blameLines = batch.content
+		st.blameCovered = 0
+		if len(batch.content) == 0 {
+			st.blameSel = -1
+		}
+		return
+	}
+	if len(st.blameLines) == 0 {
+		return
+	}
+	recompute := func(number int) {
+		if number < 1 || number > len(st.blameLines) {
+			return
+		}
+		l := &st.blameLines[number-1]
+		if l.Hash == "" {
+			l.First = false
+			return
+		}
+		l.First = number == 1 || st.blameLines[number-2].Hash != l.Hash
+	}
+	for _, h := range batch.hunks {
+		for i := 0; i < h.Lines; i++ {
+			n := h.Line + i
+			if n < 1 || n > len(st.blameLines) {
+				continue
+			}
+			l := &st.blameLines[n-1]
+			if l.Hash == "" {
+				st.blameCovered++
+			}
+			l.Hash = h.Hash
+			l.Author = h.Author
+			l.Date = h.Date
+			l.Subject = h.Subject
+			l.First = false
+		}
+	}
+	for _, h := range batch.hunks {
+		recompute(h.Line)
+		recompute(h.Line + h.Lines)
 	}
 }
 
@@ -232,6 +411,7 @@ func (a *app) retryFileBlameLoad() {
 	st := a.fileInspectorUI()
 	st.blameErr = nil
 	st.blameLines = nil
+	st.blameCovered = 0
 	a.startFileBlameLoad()
 }
 
@@ -477,12 +657,16 @@ func (a *app) fileHistoryLoadMoreRow(c *ui.Context, p palette) {
 
 // fileBlameModeView is the Blame mode: the lines of the file with the commit
 // that last changed each, over a bar describing the chosen line's commit.
+// While the blame computes, the lines already show with their commit cells
+// empty and a progress row above the list counts the attribution filled so
+// far; a blame that fails partway keeps the lines and the filled cells and
+// the row reads the error instead, with a retry beside it.
 func (a *app) fileBlameModeView(c *ui.Context, p palette) {
 	st := a.fileInspectorUI()
 	switch {
 	case st.blameLoading && st.blameLines == nil:
 		placeholderCard(c, "Loading blame…", st.path, "", p)
-	case st.blameErr != nil:
+	case st.blameErr != nil && st.blameLines == nil:
 		ui.Column(c.Key("file-blame-error")).Grow(1).FillWidth().Center().Padding(24).Gap(8).Children(func() {
 			ui.Text(c, "Failed to load blame").FontSize(16).FontWeight(600).TextColor(p.danger).TextAlign(ui.Center)
 			ui.Text(c, st.blameErr.Error()).FontSize(12.5).TextColor(p.muted).TextAlign(ui.Center).MaxWidth(520)
@@ -494,10 +678,34 @@ func (a *app) fileBlameModeView(c *ui.Context, p palette) {
 		placeholderCard(c, "This file has no lines", st.path, "", p)
 	default:
 		ui.Column(c.Key("file-blame-body")).Grow(1).FillWidth().MinHeight(0).Children(func() {
+			a.fileBlameProgressRow(c, p)
 			a.fileBlameList(c, p)
 			a.fileBlameInfoBar(c, p)
 		})
 	}
+}
+
+// fileBlameProgressRow is the single row above the blame list while the
+// read is unsettled: the count of attributed lines while the blame computes,
+// or the failure it stopped with and a retry. A finished read draws nothing,
+// so the settled view is exactly the one a whole-file blame always had.
+func (a *app) fileBlameProgressRow(c *ui.Context, p palette) {
+	st := a.fileInspectorUI()
+	if !st.blameLoading && st.blameErr == nil {
+		return
+	}
+	ui.Row(c.Key("file-blame-progress")).Height(28).FillWidth().PaddingX(12).Gap(10).AlignItems(ui.Center).Shrink(0).Children(func() {
+		if st.blameErr != nil {
+			ui.Text(c, "Blame stopped: "+st.blameErr.Error()).FontSize(12).TextColor(p.danger).SingleLine().Ellipsis("…").Shrink(1).MinWidth(0)
+			if ui.Button(c.Key("file-blame-retry-inline"), "Retry").Label("Retry Blame").Clicked() {
+				a.retryFileBlameLoad()
+			}
+			return
+		}
+		ui.Text(c, fmt.Sprintf("Loading blame… %d of %d lines", st.blameCovered, len(st.blameLines))).
+			FontSize(12).TextColor(p.muted).SingleLine().Shrink(0)
+	})
+	ui.Box(c).Height(1).FillWidth().Background(p.hairline).Shrink(0)
 }
 
 // fileBlameList renders the virtualized blame rows. A run of consecutive
@@ -572,13 +780,18 @@ func (a *app) fileBlameRow(c *ui.Context, p palette, selected bool, l git.BlameL
 
 // fileBlameInfoBar is the bottom bar describing the commit of the chosen
 // blame line, so a click on any line — including the empty-celled lines
-// after the first of a run — shows what commit it belongs to.
+// after the first of a run — shows what commit it belongs to. A line whose
+// blame hunk has not arrived yet has no commit to describe, and the bar
+// stays away until one has.
 func (a *app) fileBlameInfoBar(c *ui.Context, p palette) {
 	st := a.fileInspectorUI()
 	if st.blameSel < 0 || st.blameSel >= len(st.blameLines) {
 		return
 	}
 	l := st.blameLines[st.blameSel]
+	if l.Hash == "" {
+		return
+	}
 	ui.Box(c).Height(1).FillWidth().Background(p.hairline).Shrink(0)
 	ui.Row(c.Key("file-blame-info")).FillWidth().Padding(6, 12).Gap(14).AlignItems(ui.Center).Shrink(0).Children(func() {
 		ui.Text(c, shortChangesHash(l.Hash)).Font("monospace").FontSize(11.5).FontWeight(600).TextColor(p.text).SingleLine().Shrink(0)
