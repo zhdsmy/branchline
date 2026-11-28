@@ -146,6 +146,17 @@ func (r *Repo) log(o LogOptions) ([]Commit, error) {
 			}
 			out, err = r.run(quick, retryArgs...)
 		}
+		// An explicit walk of HEAD alone — the history filtered to the
+		// current branch — has no fallback revision to retry with when HEAD
+		// is unborn (an empty repository or a not yet committed --orphan
+		// branch). The structured probe confirming the unborn HEAD means
+		// the walk's answer is no commits, not a failure, so the read
+		// succeeds empty. Only exactly ["HEAD"] earns this: any other
+		// caller-chosen revision failing is the caller's error to see, as
+		// is a corrupt HEAD the probe cannot confirm.
+		if err != nil && len(o.Revs) == 1 && o.Revs[0] == "HEAD" && ExitCode(err) == 128 && r.isUnbornHEAD() {
+			return nil, nil
+		}
 		if err != nil {
 			return nil, err
 		}

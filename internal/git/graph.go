@@ -122,6 +122,24 @@ func Graph(commits []Commit) []GraphRow {
 	return rows
 }
 
+// FirstParentGraph lays out the lanes of commits as Graph does, except that
+// a merge commit continues only toward its first parent: git log
+// --first-parent still reports every parent of a commit, so lines toward the
+// merged-in side branches would end nowhere — the side commits are not in
+// the walk. Truncating each parents list to its first entry before Graph
+// reads it keeps every commit's own Parents untouched while the layout sees
+// exactly the chain the walk followed.
+func FirstParentGraph(commits []Commit) []GraphRow {
+	slim := make([]Commit, len(commits))
+	for i, c := range commits {
+		if len(c.Parents) > 1 {
+			c.Parents = c.Parents[:1]
+		}
+		slim[i] = c
+	}
+	return Graph(slim)
+}
+
 // hasChildAbove reports whether the row above left a line at the bottom of
 // lane col, which the commit at row i continues.
 func hasChildAbove(rows []GraphRow, i, col int) bool {

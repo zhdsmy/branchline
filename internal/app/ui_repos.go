@@ -406,19 +406,12 @@ func (a *app) removeErrorModal(c *ui.Context, st *reposUIState) {
 		return
 	}
 	open := true
-	ui.Modal(c.Key("remove-error-modal"), &open, func() {
-		ui.Column(c).Width(440).Padding(20).Gap(12).Children(func() {
-			ui.Text(c, "Cannot Remove Repository").FontSize(16).FontWeight(600)
-			ui.Text(c, st.removeErr).FontSize(12.5).TextColor(a.pal.muted)
-			ui.Row(c).FillWidth().Children(func() {
-				ui.Spacer(c)
-				if ui.Button(c, "Close").Clicked() {
-					st.removeErr = ""
-				}
-			})
-		})
-	})
-	if !open {
+	dismissed, cancelled, _ := dialogFrame(c, a.pal, "remove-error-modal", &open, "Cannot Remove Repository", 440, func() {
+		ui.Text(c, st.removeErr).FontSize(12.5).TextColor(a.pal.muted)
+	},
+		dialogAction{key: "remove-error-close", text: "Close", label: "Close"},
+		dialogAction{})
+	if dismissed || cancelled {
 		st.removeErr = ""
 	}
 }
@@ -432,37 +425,33 @@ func (a *app) notGitModal(c *ui.Context, st *reposUIState) {
 	if !st.notGitOpen {
 		return
 	}
-	ui.Modal(c.Key("not-git-modal"), &st.notGitOpen, func() {
-		ui.Column(c).Width(440).Padding(20).Gap(12).Children(func() {
-			ui.Text(c, "Not a Git Repository").FontSize(16).FontWeight(600)
-			ui.Text(c, fmt.Sprintf("The '%s' directory is not a Git repository, and neither is any folder above it. Choose a folder inside a Git repository to add it.", st.notGitDir)).
-				FontSize(12.5).TextColor(a.pal.muted)
-			if st.notGitBusy {
-				ui.Row(c.Key("not-git-status")).
-					FillWidth().
-					Role(ui.RoleStatus).
-					Label("Create Repository Status").
-					Busy(true).
-					Gap(8).
-					AlignItems(ui.Center).
-					Children(func() {
-						ui.Spinner(c)
-						ui.Text(c, "Creating…").FontSize(12.5).TextColor(a.pal.muted)
-					})
-			} else if st.notGitErr != "" {
-				ui.Text(c, st.notGitErr).FontSize(12.5).TextColor(a.pal.danger)
-			}
-			ui.Row(c).FillWidth().Gap(8).Children(func() {
-				ui.Spacer(c)
-				if ui.Button(c.Key("not-git-close"), "Close").Disabled(st.notGitBusy).Clicked() {
-					st.notGitOpen = false
-				}
-				if ui.PrimaryButton(c.Key("not-git-create"), "Create Repository Here").Disabled(st.notGitBusy).Clicked() {
-					a.initNewRepoHere(st)
-				}
-			})
-		})
-	})
+	_, cancelled, confirmed := dialogFrame(c, a.pal, "not-git-modal", &st.notGitOpen, "Not a Git Repository", 440, func() {
+		ui.Text(c, fmt.Sprintf("The '%s' directory is not a Git repository, and neither is any folder above it. Choose a folder inside a Git repository to add it.", st.notGitDir)).
+			FontSize(12.5).TextColor(a.pal.muted)
+		if st.notGitBusy {
+			ui.Row(c.Key("not-git-status")).
+				FillWidth().
+				Role(ui.RoleStatus).
+				Label("Create Repository Status").
+				Busy(true).
+				Gap(8).
+				AlignItems(ui.Center).
+				Children(func() {
+					ui.Spinner(c)
+					ui.Text(c, "Creating…").FontSize(12.5).TextColor(a.pal.muted)
+				})
+		} else if st.notGitErr != "" {
+			ui.Text(c, st.notGitErr).FontSize(12.5).TextColor(a.pal.danger)
+		}
+	},
+		dialogAction{key: "not-git-close", text: "Close", label: "Close", disabled: st.notGitBusy},
+		dialogAction{key: "not-git-create", text: "Create Repository Here", label: "Create Repository Here", disabled: st.notGitBusy, autoFocus: true})
+	if cancelled {
+		st.notGitOpen = false
+	}
+	if confirmed {
+		a.initNewRepoHere(st)
+	}
 	if !st.notGitOpen {
 		// The notice closed — Close, Escape or a click outside: the
 		// completion of a create still in flight must not open anything,
@@ -523,83 +512,103 @@ func (a *app) addSSHModal(c *ui.Context, st *reposUIState) {
 		return
 	}
 	p := a.pal
-	ui.Modal(c.Key("add-ssh-modal"), &st.sshOpen, func() {
-		ui.Column(c).Width(520).Padding(20).Gap(14).Children(func() {
-			ui.Text(c, "Add SSH Repository…").FontSize(17).FontWeight(600)
-			ui.Text(c, "Branchline runs git on the server through your ssh, with your ~/.ssh/config, keys and agent. Verify new server keys in Terminal before connecting here.").
-				FontSize(12).TextColor(p.muted)
-			ui.Field(c, "Address", func() {
-				ui.TextInput(c.Key("ssh-address"), &st.sshAddress).Placeholder("user@server:/srv/app  or  ssh://user@server:2222/srv/app").FillWidth().AutoFocus()
-			})
-			ui.Field(c, "Identity file (optional)", func() {
-				ui.TextInput(c.Key("ssh-identity"), &st.sshIdentity).Placeholder("~/.ssh/id_ed25519").FillWidth()
-			})
-			ui.Field(c, "Name (optional)", func() {
-				ui.TextInput(c.Key("ssh-name"), &st.sshName).Placeholder("The repository's folder").FillWidth()
-			})
-			st.reconcileSSHRequest()
-			// The check's outcome is a live region: the label and the role
-			// sit on the keyed outer container so the inner text keeps its own
-			// accessible node and screen readers hear the result text itself
-			// rather than the fixed label. Busy and success share the key so a
-			// finished check announces politely; failures are alerts, which
-			// speak on first appearance even without a busy phase before them.
-			if st.sshBusy {
-				ui.Row(c.Key("ssh-test-result")).
-					FillWidth().
-					Role(ui.RoleStatus).
-					Label("Test Connection Result").
-					Busy(true).
-					Gap(8).
-					AlignItems(ui.Center).
-					Children(func() {
-						ui.Spinner(c)
-						ui.Text(c, "Connecting…").FontSize(12.5).TextColor(p.muted)
-					})
-			} else if st.sshResult != "" {
-				color := ui.Hex("#2f9e4f")
-				if p.dark {
-					color = ui.Hex("#4cc38a")
-				}
-				role := ui.RoleStatus
-				if st.sshFailed {
-					color = p.danger
-					role = ui.RoleAlert
-				}
-				ui.Box(c.Key("ssh-test-result")).
-					FillWidth().
-					Role(role).
-					Label("Test Connection Result").
-					Children(func() {
-						ui.Text(c, st.sshResult).FontSize(12.5).TextColor(color)
-					})
+	// Enter in any of the single-line inputs submits here, never twice: a
+	// focused single-line input takes the key before every window shortcut,
+	// so the frame's Enter cannot fire for the same press. With the address
+	// empty the primary button is disabled and the key does nothing at all.
+	submit := func() {
+		if !st.sshBusy && strings.TrimSpace(st.sshAddress) != "" {
+			a.checkSSHForm(st, true)
+		}
+	}
+	_, cancelled, confirmed := dialogFrame(c, p, "add-ssh-modal", &st.sshOpen, "Add SSH Repository…", 520, func() {
+		ui.Text(c, "Branchline runs git on the server through your ssh, with your ~/.ssh/config, keys and agent. Verify new server keys in Terminal before connecting here.").
+			FontSize(12).TextColor(p.muted)
+		ui.Field(c, "Address", func() {
+			in := ui.TextInput(c.Key("ssh-address"), &st.sshAddress).Placeholder("user@server:/srv/app  or  ssh://user@server:2222/srv/app").FillWidth().AutoFocus()
+			if in.Submitted() {
+				submit()
 			}
-			if st.sshFailed && st.sshHostKey != sshHostKeyNone && st.sshRequest != nil {
-				ui.Row(c).Gap(8).Children(func() {
-					if ui.Button(c, "Copy SSH Command").Disabled(st.sshBusy).Clicked() {
-						c.WriteClipboard(sshHostKeyCommand(st.sshRequest.repo))
-					}
-					if ui.Button(c, "Retry").Disabled(st.sshBusy).Clicked() {
-						a.checkSSHForm(st, st.sshRequest.add)
-					}
-				})
-			}
-			ui.Row(c).FillWidth().Gap(8).Children(func() {
-				ui.Spacer(c)
-				if ui.Button(c, "Cancel").Clicked() {
-					st.sshGen++
-					st.sshBusy = false
-					st.sshOpen = false
-				}
-				if ui.Button(c, "Test Connection").Disabled(st.sshBusy || strings.TrimSpace(st.sshAddress) == "").Clicked() {
-					a.checkSSHForm(st, false)
-				}
-				if ui.PrimaryButton(c, "Add").Disabled(st.sshBusy || strings.TrimSpace(st.sshAddress) == "").Clicked() {
-					a.checkSSHForm(st, true)
-				}
-			})
 		})
-	})
+		ui.Field(c, "Identity file (optional)", func() {
+			in := ui.TextInput(c.Key("ssh-identity"), &st.sshIdentity).Placeholder("~/.ssh/id_ed25519").FillWidth()
+			if in.Submitted() {
+				submit()
+			}
+		})
+		ui.Field(c, "Name (optional)", func() {
+			in := ui.TextInput(c.Key("ssh-name"), &st.sshName).Placeholder("The repository's folder").FillWidth()
+			if in.Submitted() {
+				submit()
+			}
+		})
+		st.reconcileSSHRequest()
+		// The check's outcome is a live region: the label and the role
+		// sit on the keyed outer container so the inner text keeps its own
+		// accessible node and screen readers hear the result text itself
+		// rather than the fixed label. Busy and success share the key so a
+		// finished check announces politely; failures are alerts, which
+		// speak on first appearance even without a busy phase before them.
+		if st.sshBusy {
+			ui.Row(c.Key("ssh-test-result")).
+				FillWidth().
+				Role(ui.RoleStatus).
+				Label("Test Connection Result").
+				Busy(true).
+				Gap(8).
+				AlignItems(ui.Center).
+				Children(func() {
+					ui.Spinner(c)
+					ui.Text(c, "Connecting…").FontSize(12.5).TextColor(p.muted)
+				})
+		} else if st.sshResult != "" {
+			color := ui.Hex("#2f9e4f")
+			if p.dark {
+				color = ui.Hex("#4cc38a")
+			}
+			role := ui.RoleStatus
+			if st.sshFailed {
+				color = p.danger
+				role = ui.RoleAlert
+			}
+			ui.Box(c.Key("ssh-test-result")).
+				FillWidth().
+				Role(role).
+				Label("Test Connection Result").
+				Children(func() {
+					ui.Text(c, st.sshResult).FontSize(12.5).TextColor(color)
+				})
+		}
+		if st.sshFailed && st.sshHostKey != sshHostKeyNone && st.sshRequest != nil {
+			ui.Row(c).Gap(8).Children(func() {
+				if ui.Button(c, "Copy SSH Command").Disabled(st.sshBusy).Clicked() {
+					c.WriteClipboard(sshHostKeyCommand(st.sshRequest.repo))
+				}
+				if ui.Button(c, "Retry").Disabled(st.sshBusy).Clicked() {
+					a.checkSSHForm(st, st.sshRequest.add)
+				}
+			})
+		}
+	},
+		dialogAction{key: "ssh-cancel", text: "Cancel", label: "Cancel"},
+		dialogAction{key: "ssh-add", text: "Add", label: "Add", disabled: st.sshBusy || strings.TrimSpace(st.sshAddress) == ""},
+		dialogAction{
+			key:      "ssh-test-connection",
+			text:     "Test Connection",
+			label:    "Test Connection",
+			disabled: st.sshBusy || strings.TrimSpace(st.sshAddress) == "",
+			onClick: func() {
+				a.checkSSHForm(st, false)
+			},
+		})
+	if cancelled {
+		st.sshGen++
+		st.sshBusy = false
+		st.sshOpen = false
+	}
+	if confirmed {
+		a.checkSSHForm(st, true)
+	}
 	if !st.sshOpen {
 		// The dialog was dismissed (Escape or click outside): invalidate any
 		// in-flight request like Cancel does.

@@ -178,9 +178,10 @@ func (a *app) closeHistorySearch() {
 }
 
 // historySearchHeaderButton is the compact Search entry at the right end of
-// the History list header, opening the search view like Cmd-F does.
+// the History list header, opening the search view like Cmd-F does. The
+// spacer pushing it right belongs to the header itself: the history filter
+// controls sit between the spacer and this button.
 func (a *app) historySearchHeaderButton(c *ui.Context, p palette) {
-	ui.Spacer(c)
 	b := ui.ButtonBase(c.Key("history-search-open")).
 		Height(22).
 		PaddingX(8).
@@ -811,6 +812,12 @@ func (a *app) applyPendingHistoryReveal(snap repository.Snapshot) {
 	}
 	if (!snap.More || st.pendingRevealSteps >= st.revealMaxSteps) && !a.session.Loading() && !a.session.Busy() {
 		st.pendingRevealHash = ""
-		a.toast = "Could not find the commit in the loaded history."
+		if a.session.HistoryCurrentBranch() || a.session.HistoryFirstParent() {
+			// A filter that keeps the commit out of the walk is the one
+			// cause the user can undo, so the toast says so.
+			a.toast = "Could not find the commit in the filtered history."
+		} else {
+			a.toast = "Could not find the commit in the loaded history."
+		}
 	}
 }
