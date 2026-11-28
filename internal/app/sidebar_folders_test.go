@@ -217,6 +217,40 @@ func TestSidebarFoldersRemoteFoldersIndependent(t *testing.T) {
 	}
 }
 
+// A Shift-click range over remote-tracking branches follows the rows as
+// shown: with origin's feature folder collapsed, a range reaching from the
+// row before the folder to the row after it selects exactly the visible
+// rows and never the hidden branches inside the folder.
+func TestSidebarFoldersRemoteShiftRangeSkipsCollapsed(t *testing.T) {
+	repo := newGitRepo(t, "fold-remote-range")
+	repo.CommitFile("f.txt", "content\n", "initial commit")
+	repo.Git("remote", "add", "origin", repo.Path())
+	repo.Git("remote", "add", "upstream", repo.Path())
+	for _, ref := range []string{
+		"refs/remotes/origin/early", "refs/remotes/origin/feature/a", "refs/remotes/origin/feature/b", "refs/remotes/origin/plain",
+		"refs/remotes/upstream/feature/c", "refs/remotes/upstream/main",
+	} {
+		repo.Git("update-ref", ref, "HEAD")
+	}
+
+	h := newTestApp(t)
+	pinAlphabeticalSortOrders(t, h)
+	h.openRepo(repo.StoreRepo())
+	h.drain()
+
+	// origin shows, in order: early, the feature folder with a and b
+	// inside, plain. Collapsing the folder hides a and b; the range from
+	// early to plain then crosses exactly where they were.
+	clickRefRow(t, h, "origin/feature")
+	if sidebarShowsText(h, "a") {
+		t.Fatal("origin/feature/a visible after collapsing origin/feature")
+	}
+
+	clickRefRow(t, h, "origin/early")
+	shiftClickRefRow(t, h, "origin/plain")
+	wantPickedRefs(t, h, nil, []string{"origin/early", "origin/plain"}, nil)
+}
+
 // Tags group by their slashed names exactly as branches do.
 func TestSidebarFoldersGroupTags(t *testing.T) {
 	repo := newGitRepo(t, "fold-tags")

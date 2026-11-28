@@ -287,12 +287,7 @@ func (a *app) remoteBranchRow(c *ui.Context, rb git.Branch, refs git.Refs, sorte
 		ui.Text(c, sidebarLastSegment(rb.Name)).FontSize(12).TextColor(p.muted).SingleLine().Shrink(1).MinWidth(0)
 	})
 	if row.Clicked() {
-		a.clickSidebarRemoteBranch(rb, row.ClickModifiers(), refs)
-		// The remote range keys follow the display order of every row,
-		// folders hidden or not, so a range reaching across a collapsed
-		// folder takes its rows along; the selection only ever holds rows
-		// the user can see, so the hidden ones drop back out at once.
-		a.dropHiddenSidebarPicks()
+		a.clickSidebarRemoteBranch(rb, row.ClickModifiers(), sorted)
 	}
 	row.ContextMenu(func(m *ui.Menu) {
 		pick := a.refsView.pick
