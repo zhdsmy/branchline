@@ -398,7 +398,10 @@ func writeSlowBlameGit(t *testing.T, releaseDir string) string {
 	}, "\n")
 	script := "#!/bin/sh\n" +
 		"printf '%s\\n' " + ShellQuote(entry1) + "\n" +
-		"while [ ! -f " + ShellQuote(filepath.Join(releaseDir, "release")) + " ]; do sleep 0.2; done\n" +
+		// The watch ends with the release file, but also with the directory
+		// itself: the test's cleanup removes it whether or not the release
+		// was written, and a loop polling a deleted path would never end.
+		"while [ ! -f " + ShellQuote(filepath.Join(releaseDir, "release")) + " ]; do [ -d " + ShellQuote(releaseDir) + " ] || exit 0; sleep 0.2; done\n" +
 		"printf '%s\\n' " + ShellQuote(entry2) + "\n"
 	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
 		t.Fatalf("write slow fake git: %v", err)
