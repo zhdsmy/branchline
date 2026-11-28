@@ -15,10 +15,11 @@ import (
 // Show in Finder reveals a local repository's folder and disables on the
 // server paths of SSH repositories, Open in Terminal opens the repository
 // in the chosen terminal — a local folder directly, a server through an
-// SSH login — for either kind, Rename… opens the display-name dialog,
-// Copy Location copies what the row shows as the repository's address, and
-// Remove from List is the row-end minus button's removal, which never
-// touches a file.
+// SSH login — for either kind, Open in Editor opens a local repository's
+// folder in the chosen editor and disables on SSH rows as Show in Finder
+// does, Rename… opens the display-name dialog, Copy Location copies what
+// the row shows as the repository's address, and Remove from List is the
+// row-end minus button's removal, which never touches a file.
 //
 // Copy Location cannot write the clipboard itself: the menu build receives
 // no *ui.Context. Like the branch management items it records the text, and
@@ -34,6 +35,9 @@ func (a *app) repoRowMenuItems(m *ui.Menu, r store.Repo, st *reposUIState) {
 	}
 	if m.Item("Open in Terminal").Chosen() {
 		a.openInTerminal(r)
+	}
+	if m.Item("Open in Editor").Disabled(r.Kind == store.SSH).Chosen() {
+		a.openInEditor(r)
 	}
 	if m.Item("Rename…").Chosen() {
 		st.renOpen = true
