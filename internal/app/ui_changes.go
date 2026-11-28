@@ -60,6 +60,12 @@ type changesState struct {
 	collapsedStaged   map[string]bool
 	collapseRev       uint64
 
+	// folderClipboard is the folder path a Copy Path menu choice recorded.
+	// The menu build has no *ui.Context, so the text waits for the flush
+	// mounted with the page, as the branch and commit menus do.
+	folderClipboard    string
+	hasFolderClipboard bool
+
 	// list is the place of the virtual file list, and listCache the
 	// derivation of the current snapshot's status the list and the
 	// selection lookups share. Both are owned by the UI thread.
@@ -234,6 +240,8 @@ func (a *app) resetChangesForRepo() {
 	s.collapsedUnstaged = nil
 	s.collapsedStaged = nil
 	s.collapseRev++
+	s.folderClipboard = ""
+	s.hasFolderClipboard = false
 	s.list = ui.ListState{}
 	s.listCache.invalidate()
 }
@@ -533,6 +541,15 @@ func (a *app) changesPage(c *ui.Context) {
 		})
 		a.commitOperationBanner(c, p)
 
+		// The flush precedes the page body so a Copy Path choice lands on the
+		// clipboard in the frame after the choice whichever state the page is
+		// in; the menu build recording it never receives a *ui.Context.
+		if s.hasFolderClipboard {
+			c.WriteClipboard(s.folderClipboard)
+			s.folderClipboard = ""
+			s.hasFolderClipboard = false
+		}
+
 		switch {
 		case a.session.LoadErr() != nil:
 			placeholderCard(c, "Failed to load repository status", a.session.LoadErr().Error(), "", p)
@@ -755,13 +772,98 @@ func (a *app) changesFileEmptyHint(c *ui.Context, staged bool, filteredOut bool)
 // changesTreeIndent is the indentation step of one tree level in points.
 const changesTreeIndent = 14
 
+// changesFolderFiles returns the files of the section the derivation was
+// built from — cache.unstaged or cache.staged — that sit under folderPath
+// and that the cache's normalized filter keeps. The folder prefix carries
+// its trailing slash so src/app never matches src/application. Entries the
+// unmerged status marks 'U' stay out in every section: the unstaged scan
+// starts from the whole unstaged list, which holds them, while the section
+// the folder row belongs to never does, so a folder action must not stage
+// or discard a conflicted file. The scan runs only on demand, when a
+// folder button is clicked or a menu item chosen: computing it for every
+// folder row of every frame would cost what the tree's derivation saves.
+func changesFolderFiles(files []git.FileChange, filter, folderPath string) []git.FileChange {
+	prefix := folderPath + "/"
+	var out []git.FileChange
+	for _, f := range files {
+		if !strings.HasPrefix(f.Path, prefix) {
+			continue
+		}
+		if f.Status == 'U' {
+			continue
+		}
+		if changeMatchesFilter(f, filter) {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// stageChangesFolder stages every shown file of the unstaged section under
+// the folder, as the section's bulk Stage does for the section: explicit
+// paths only, conflicted entries already out of the scan.
+func (a *app) stageChangesFolder(cache *changesListCache, folderPath string) {
+	files := changesFolderFiles(cache.unstaged, cache.filter, folderPath)
+	paths := make([]string, 0, len(files))
+	for _, f := range files {
+		paths = append(paths, f.Path)
+	}
+	a.stageChanges(paths, false)
+}
+
+// unstageChangesFolder unstages every shown file of the staged section
+// under the folder, renames carrying their original path so the working
+// tree gets the old name back, exactly as the section's bulk Unstage does.
+func (a *app) unstageChangesFolder(cache *changesListCache, folderPath string) {
+	files := changesFolderFiles(cache.staged, cache.filter, folderPath)
+	a.unstageChanges(unstageBulkPaths(files), false)
+}
+
+// discardChangesFolder asks to discard every shown file of the unstaged
+// section under the folder, through the same confirmation the file rows
+// and the section's bulk Discard share.
+func (a *app) discardChangesFolder(cache *changesListCache, folderPath string) {
+	a.askDiscardChanges(changesFolderFiles(cache.unstaged, cache.filter, folderPath))
+}
+
+// changesFolderContextMenu is the context menu of a folder row: the
+// section's folder actions, disabled while a repository write runs, and
+// Copy Path, which records the folder's repository-relative path for the
+// clipboard flush mounted with the page — the menu build never receives
+// the frame's *ui.Context.
+func (a *app) changesFolderContextMenu(m *ui.Menu, cache *changesListCache, row changesRow, staged bool) {
+	folderPath := row.folderPath
+	busy := a.session.Busy()
+	if staged {
+		if m.Item("Unstage Folder").ID("folder-unstage").Disabled(busy).Chosen() {
+			a.unstageChangesFolder(cache, folderPath)
+		}
+	} else {
+		if m.Item("Stage Folder").ID("folder-stage").Disabled(busy).Chosen() {
+			a.stageChangesFolder(cache, folderPath)
+		}
+		if m.Item("Discard Folder…").ID("folder-discard").Disabled(busy).Chosen() {
+			a.discardChangesFolder(cache, folderPath)
+		}
+	}
+	m.Separator()
+	if m.Item("Copy Path").ID("folder-copy-path").Chosen() {
+		a.changesView.folderClipboard = folderPath
+		a.changesView.hasFolderClipboard = true
+	}
+}
+
 // changesFolderRow renders one folder of the tree: its indentation, the
 // collapse arrow, the merged name and the count of files under it at every
-// level. Clicking the row, or pressing space or enter on it, toggles the
-// collapse; Right expands and Left collapses. Under a filter every folder
-// is force-expanded: the arrow leaves and the click does nothing, because
-// collapsing a filtered view would hide matches the filter asks for.
-func (a *app) changesFolderRow(c *ui.Context, row changesRow) {
+// level, then the action buttons of the folder — Discard and Stage in the
+// unstaged section, Unstage in the staged one — as a file row carries its
+// own. Clicking the row, or pressing space or enter on it, toggles the
+// collapse; Right expands and Left collapses. The buttons and the context
+// menu act on the files under the folder without touching the collapse
+// state. Under a filter every folder is force-expanded: the arrow leaves
+// and the click does nothing, because collapsing a filtered view would
+// hide matches the filter asks for.
+func (a *app) changesFolderRow(c *ui.Context, cache *changesListCache, row changesRow) {
 	p := a.pal
 	s := &a.changesView
 	staged := row.kind == changesRowStagedFolder
@@ -779,50 +881,72 @@ func (a *app) changesFolderRow(c *ui.Context, row changesRow) {
 	}
 	rowLabel := fmt.Sprintf("%s Folder %s, %d %s", title, row.folderPath, row.count, noun)
 
-	b := ui.ButtonBase(c.Key("change-folder-" + title + "-" + row.folderPath)).
-		FillWidth().
-		MinWidth(0).
-		Height(28).
-		PaddingStart(6 + changesTreeIndent*float32(row.depth)).
-		PaddingEnd(6).
-		Gap(4).
-		Radius(7).
-		AlignItems(ui.Center).
-		Justify(ui.Start).
-		Label(rowLabel).
-		Expanded(!collapsed).
-		FocusRing(false)
-	bg := ui.Transparent
-	if b.Hovered() {
-		bg = p.hover
-	}
-	b.Background(b.AnimateColor(colorAnimKey{"bg", p.gen}, bg, ui.Animation{Duration: 110 * time.Millisecond}))
-	b.Children(func() {
-		ui.Box(c).Width(14).Shrink(0).Center().Children(func() {
-			if !filterActive {
-				icon, fb := "chevron.down", fallbackDown
-				if collapsed {
-					icon, fb = "chevron.right", fallbackFwd
+	ui.Row(c.Key("change-folder-row-" + title + "-" + row.folderPath)).FillWidth().Gap(4).AlignItems(ui.Center).Children(func() {
+		b := ui.ButtonBase(c.Key("change-folder-" + title + "-" + row.folderPath)).
+			Grow(1).
+			MinWidth(0).
+			Height(28).
+			PaddingStart(6 + changesTreeIndent*float32(row.depth)).
+			PaddingEnd(6).
+			Gap(4).
+			Radius(7).
+			AlignItems(ui.Center).
+			Justify(ui.Start).
+			Label(rowLabel).
+			Expanded(!collapsed).
+			FocusRing(false)
+		bg := ui.Transparent
+		if b.Hovered() {
+			bg = p.hover
+		}
+		b.Background(b.AnimateColor(colorAnimKey{"bg", p.gen}, bg, ui.Animation{Duration: 110 * time.Millisecond}))
+		b.Children(func() {
+			ui.Box(c).Width(14).Shrink(0).Center().Children(func() {
+				if !filterActive {
+					icon, fb := "chevron.down", fallbackDown
+					if collapsed {
+						icon, fb = "chevron.right", fallbackFwd
+					}
+					symbolIcon(c, icon, fb, 10, p.faint)
 				}
-				symbolIcon(c, icon, fb, 10, p.faint)
-			}
+			})
+			ui.Text(c, row.display).FontSize(12.5).TextColor(p.text).SingleLine().Ellipsis("…").Shrink(1).MinWidth(0)
+			ui.Spacer(c)
+			ui.Text(c, fmt.Sprintf("%d %s", row.count, noun)).FontSize(11).TextColor(p.faint).SingleLine().Shrink(0)
 		})
-		ui.Text(c, row.display).FontSize(12.5).TextColor(p.text).SingleLine().Ellipsis("…").Shrink(1).MinWidth(0)
-		ui.Spacer(c)
-		ui.Text(c, fmt.Sprintf("%d %s", row.count, noun)).FontSize(11).TextColor(p.faint).SingleLine().Shrink(0)
-	})
-	if !filterActive {
-		if b.Clicked() {
-			a.setChangesFolderCollapsed(staged, row.folderPath, !collapsed)
-		}
-		if collapsed {
-			if b.Shortcut(0, ui.KeyRight) {
-				a.setChangesFolderCollapsed(staged, row.folderPath, false)
+		b.ContextMenu(func(m *ui.Menu) {
+			a.changesFolderContextMenu(m, cache, row, staged)
+		})
+		if !filterActive {
+			if b.Clicked() {
+				a.setChangesFolderCollapsed(staged, row.folderPath, !collapsed)
 			}
-		} else if b.Shortcut(0, ui.KeyLeft) {
-			a.setChangesFolderCollapsed(staged, row.folderPath, true)
+			if collapsed {
+				if b.Shortcut(0, ui.KeyRight) {
+					a.setChangesFolderCollapsed(staged, row.folderPath, false)
+				}
+			} else if b.Shortcut(0, ui.KeyLeft) {
+				a.setChangesFolderCollapsed(staged, row.folderPath, true)
+			}
 		}
-	}
+
+		if !staged {
+			if ui.Button(c.Key("discard-folder-"+row.folderPath), "Discard").Label("Discard Folder "+row.folderPath).FontSize(11).Padding(2, 6).Disabled(a.session.Busy()).Clicked() {
+				a.discardChangesFolder(cache, row.folderPath)
+			}
+		}
+		verb := "Stage"
+		if staged {
+			verb = "Unstage"
+		}
+		if ui.Button(c.Key(verb+"-folder-"+row.folderPath), verb).Label(verb+" Folder "+row.folderPath).FontSize(11).Padding(2, 6).Disabled(a.session.Busy()).Clicked() {
+			if staged {
+				a.unstageChangesFolder(cache, row.folderPath)
+			} else {
+				a.stageChangesFolder(cache, row.folderPath)
+			}
+		}
+	})
 }
 
 // changesFileRow renders one file of a section. depth is the indentation
