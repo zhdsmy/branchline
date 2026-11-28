@@ -37,20 +37,34 @@ func (r *Repo) RemoveBranches(list []RemoveBranchOptions) error {
 	return errors.Join(errs...)
 }
 
-// deleteOnRemote deletes refs from one remote in a single push. A ref the
-// remote no longer has is not an error: it is already gone. git refuses
-// the whole push for one such ref, so the others then go one by one.
-// withDashdash puts the remote and the refs behind "--" when one starts
-// with "-": the tag references never can, but the remote name is read from
-// the repository's configuration, and without the separator such a name
-// would be parsed as the push's own options.
-func (r *Repo) deleteOnRemote(remote string, refs []string) error {
+// deleteOnRemote deletes refs from one remote in a single push, every
+// reference pinned by a force-with-lease on the object id the caller
+// verified the remote reference to hold: a reference someone moved or
+// recreated since the check fails its lease and keeps its new value, and
+// the porcelain answer names every reference the push rejected. Nothing
+// else stops the batch: the references whose leases hold delete in the
+// same push, and the error lists the ones that did not. A push rejected
+// only for references the remote lost in the meantime retries them one by
+// one, where a missing reference is not an error — it is already gone.
+func (r *Repo) deleteOnRemote(remote string, refs []string, leases map[string]string) error {
 	if len(refs) == 0 {
 		return nil
 	}
-	args := withDashdash([]string{"push", "--delete"}, append([]string{remote}, refs...)...)
-	_, err := r.run(slow, args...)
-	if err == nil || !onlyMissingRefs(err) {
+	args := []string{"push", "--porcelain", "--delete"}
+	for _, ref := range refs {
+		args = append(args, "--force-with-lease="+ref+":"+leases[ref])
+	}
+	args = append(args, "--", remote)
+	args = append(args, refs...)
+	out, err := r.run(slow, args...)
+	if err == nil {
+		return nil
+	}
+	if rejected := rejectedTagDeletes(string(out), refs); len(rejected) > 0 {
+		return fmt.Errorf("failed to delete %s on %s (the server tags changed or were already deleted; Fetch first and try again)",
+			joinTagNames(rejected), remote)
+	}
+	if !onlyMissingRefs(err) {
 		return err
 	}
 	if len(refs) == 1 {
@@ -58,11 +72,48 @@ func (r *Repo) deleteOnRemote(remote string, refs []string) error {
 	}
 	var errs []error
 	for _, ref := range refs {
-		if _, err := r.run(slow, withDashdash([]string{"push", "--delete"}, remote, ref)...); err != nil && !onlyMissingRefs(err) {
+		one := []string{"push", "--porcelain", "--force-with-lease=" + ref + ":" + leases[ref], "--delete", "--", remote, ref}
+		if _, err := r.run(slow, one...); err != nil && !onlyMissingRefs(err) {
 			errs = append(errs, err)
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// rejectedTagDeletes reads the porcelain answer of a failed batch delete
+// push for the references git rejected, returning the matching refs in the
+// order refs lists them. A rejection line of a delete names the reference
+// as (delete):<ref>: anything else — a transport failure, a missing ref —
+// has no such line and the caller falls back to the push's own error.
+func rejectedTagDeletes(out string, refs []string) []string {
+	rejected := map[string]bool{}
+	for _, line := range strings.Split(out, "\n") {
+		if !strings.HasPrefix(line, "!\t(delete):") {
+			continue
+		}
+		rest := strings.TrimPrefix(line, "!\t(delete):")
+		ref, _, _ := strings.Cut(rest, "\t")
+		if strings.HasPrefix(ref, "refs/tags/") {
+			rejected[ref] = true
+		}
+	}
+	var list []string
+	for _, ref := range refs {
+		if rejected[ref] {
+			list = append(list, ref)
+		}
+	}
+	return list
+}
+
+// joinTagNames formats tag references for an error message: the bare tag
+// names, comma-separated.
+func joinTagNames(refs []string) string {
+	names := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		names = append(names, strings.TrimPrefix(ref, "refs/tags/"))
+	}
+	return strings.Join(names, ", ")
 }
 
 // onlyMissingRefs reports whether every ref a push rejected was missing
@@ -82,7 +133,21 @@ func onlyMissingRefs(err error) bool {
 }
 
 // DeleteTags deletes several tags here and, for each of remotes, from
-// that remote in one push. A remote without some of the tags skips them.
+// that remote. Before anything is deleted, every remote answers one
+// ls-remote for the object ids its copies of the tags point at: a remote
+// copy pointing anywhere else than the local tag's own object — a tag
+// someone moved, or an annotated tag recreated onto even the same commit —
+// refuses the whole batch without deleting a single tag, here or on any
+// server, and so does a remote that cannot be read at all. A tag the
+// remote never had is skipped, exactly as before.
+//
+// Only after every remote checks out do the local tags go, in one git
+// tag -d, and then each remote receives one push deleting its verified
+// copies, every reference pinned by a force-with-lease on the object id
+// the check read. A copy moved between the check and the push fails its
+// lease: it keeps its new value, the error names it, and the tags already
+// deleted locally stay deleted. Without remotes the deletion is the one
+// git tag -d it has always been.
 func (r *Repo) DeleteTags(names, remotes []string) error {
 	var tags, refs []string
 	for _, name := range names {
@@ -94,15 +159,72 @@ func (r *Repo) DeleteTags(names, remotes []string) error {
 	if len(tags) == 0 {
 		return fmt.Errorf("deleting tags needs their names")
 	}
+	var servers []string
+	for _, remote := range remotes {
+		if remote = strings.TrimSpace(remote); remote != "" {
+			servers = append(servers, remote)
+		}
+	}
+
+	// The verification compares the exact objects the references hold, one
+	// level deep: an annotated tag is its tag object, a lightweight one the
+	// object it names. That is the value ls-remote reports for the exact
+	// reference, and the only value a force-with-lease can pin.
+	leases := map[string]map[string]string{}
+	if len(servers) > 0 {
+		var problems []string
+		local := map[string]string{}
+		objects, err := r.TagObjectIDs(tags)
+		if err != nil {
+			problems = append(problems, fmt.Sprintf("cannot delete tags: reading the local tags failed; nothing was deleted: %s", err))
+		} else {
+			for _, name := range tags {
+				object, ok := objects[name]
+				if !ok || !validOID(object.Object) {
+					problems = append(problems, fmt.Sprintf("cannot delete tags: %s does not exist locally; nothing was deleted", name))
+					continue
+				}
+				local[name] = object.Object
+			}
+		}
+		if len(problems) == 0 {
+			for _, remote := range servers {
+				oids, err := r.RemoteTagOIDs(remote, tags)
+				if err != nil {
+					problems = append(problems, fmt.Sprintf("cannot delete tags: cannot read the tags on %s; nothing was deleted, here or on any remote: %s", remote, err))
+					continue
+				}
+				leases[remote] = map[string]string{}
+				for _, name := range tags {
+					oid, ok := oids[name]
+					if !ok {
+						continue // the remote never had this tag: it is skipped.
+					}
+					if oid != local[name] {
+						problems = append(problems, fmt.Sprintf("cannot delete tags: %s on %s does not match the local tag; nothing was deleted, here or on any remote", name, remote))
+						continue
+					}
+					leases[remote]["refs/tags/"+name] = oid
+				}
+			}
+		}
+		if len(problems) > 0 {
+			return errors.New(strings.Join(problems, "\n"))
+		}
+	}
+
 	if _, err := r.run(quick, withDashdash([]string{"tag", "-d"}, tags...)...); err != nil {
 		return err
 	}
 	var failed []string
-	for _, remote := range remotes {
-		if remote = strings.TrimSpace(remote); remote == "" {
-			continue
+	for _, remote := range servers {
+		var remoteRefs []string
+		for _, ref := range refs {
+			if leases[remote][ref] != "" {
+				remoteRefs = append(remoteRefs, ref)
+			}
 		}
-		if err := r.deleteOnRemote(remote, refs); err != nil {
+		if err := r.deleteOnRemote(remote, remoteRefs, leases[remote]); err != nil {
 			failed = append(failed, remote+": "+err.Error())
 		}
 	}
