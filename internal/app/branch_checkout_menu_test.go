@@ -134,6 +134,16 @@ func TestBranchCheckoutMenuDisabledDuringMerge(t *testing.T) {
 	if got := currentBranch(t, repo); got != "main" {
 		t.Fatalf("current branch moved to %q despite disabled Checkout", got)
 	}
+
+	// Double-clicking the branch row shares the same guard: it must not start
+	// a checkout while the merge is in progress either.
+	doubleClickCheckout(t, h, "feature")
+	if err := h.app.session.ActionErr(); err != nil {
+		t.Fatalf("double-click during merge started a failing checkout: %v", err)
+	}
+	if got := currentBranch(t, repo); got != "main" {
+		t.Fatalf("current branch moved to %q after double-click during merge", got)
+	}
 	repo.Git("merge", "--abort")
 }
 
@@ -147,6 +157,9 @@ func TestBranchCheckoutMenuKeyboardShiftF10(t *testing.T) {
 	openSyncRepo(t, h, repo.StoreRepo())
 
 	clickBranchRow(t, h, "feature")
+	if info := sidebarAccessInfo(t, h, "feature"); info.Selected {
+		t.Fatalf("feature row Selected = true before checkout, want false: %+v", info)
+	}
 	h.ui.Key(ui.Shift, ui.KeyF10)
 	h.ui.Frame()
 
@@ -164,6 +177,9 @@ func TestBranchCheckoutMenuKeyboardShiftF10(t *testing.T) {
 	}
 	if got := currentBranch(t, repo); got != "feature" {
 		t.Fatalf("current branch after keyboard Checkout = %q, want feature", got)
+	}
+	if info := sidebarAccessInfo(t, h, "feature"); !info.Selected {
+		t.Fatalf("feature row Selected = false after keyboard checkout, want true: %+v", info)
 	}
 }
 

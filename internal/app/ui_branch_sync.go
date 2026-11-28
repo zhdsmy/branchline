@@ -73,7 +73,7 @@ func (a *app) branchSyncMenuItems(m *ui.Menu, br git.Branch) {
 		}
 	}
 	if showCheckout {
-		checkoutDisabled := busy || snap.Status.State != ""
+		checkoutDisabled := !a.canCheckoutLocalBranch()
 		if m.Item("Checkout").Disabled(checkoutDisabled).Chosen() {
 			a.checkoutLocalBranch(br.Name)
 		}
@@ -114,10 +114,20 @@ func (a *app) branchSyncMenuItems(m *ui.Menu, br git.Branch) {
 	}
 }
 
-// checkoutLocalBranch checks out a local branch exactly as double-clicking
-// its sidebar row does: the write rejects itself while another one is in
-// progress and the snapshot reloads once it finishes.
+// canCheckoutLocalBranch reports whether a direct local branch checkout is
+// allowed right now: no write is in progress and no multi-step Git operation
+// (merge, rebase, cherry-pick, revert) is active. Both the Checkout menu item
+// and double-clicking a sidebar branch row share this guard.
+func (a *app) canCheckoutLocalBranch() bool {
+	return !a.session.Busy() && a.session.Snapshot().Status.State == ""
+}
+
+// checkoutLocalBranch checks out a local branch through the shared guard used
+// by both the context menu item and double-clicking its sidebar row.
 func (a *app) checkoutLocalBranch(name string) {
+	if !a.canCheckoutLocalBranch() {
+		return
+	}
 	a.session.do("Checkout "+name, func(r *git.Repo) error {
 		return r.Checkout(name)
 	})

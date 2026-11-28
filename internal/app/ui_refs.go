@@ -199,10 +199,7 @@ func (a *app) branchRow(c *ui.Context, br git.Branch, inflight bool, ordered []g
 		a.clickSidebarBranch(br.Name, row.ClickModifiers(), ordered)
 	}
 	if row.DoubleClicked() && !br.Current {
-		name := br.Name
-		a.session.do("Checkout "+name, func(r *git.Repo) error {
-			return r.Checkout(name)
-		})
+		a.checkoutLocalBranch(br.Name)
 	}
 	row.ContextMenu(func(m *ui.Menu) {
 		pick := a.refsView.pick

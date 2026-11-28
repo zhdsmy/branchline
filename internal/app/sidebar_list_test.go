@@ -541,6 +541,7 @@ var sidebarAccessBaselineMenu = []string{
 	"-",
 	"Tracking",
 	"-",
+	"Checkout",
 	"Push to 'origin'…",
 	"-",
 	"Rename…",
