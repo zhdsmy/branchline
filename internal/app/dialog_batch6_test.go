@@ -404,3 +404,49 @@ func TestDialogBatch6RenameRepositoryEnterInField(t *testing.T) {
 		t.Fatalf("the dialog shows the error %q after the Enter rename — the submission ran twice or failed", st.renErr)
 	}
 }
+
+// A conflict confirmation title carrying a long nested file path wraps inside
+// the shared dialog frame without widening the 430-DIP dialog panel.
+func TestDialogBatch6ConflictResolveLongPathTitleWrapsInPanel(t *testing.T) {
+	repo := newGitRepo(t, "b6-conflict-long-title")
+	longPath := "packages/deeply/nested/workspace/components/really_long_directory_name/very_long_conflicted_filename_without_spaces.txt"
+	repo.CommitFile(longPath, "base\n", "base commit")
+	repo.Git("checkout", "-q", "-b", "side")
+	repo.CommitFile(longPath, "side\n", "side edits")
+	repo.Git("checkout", "-q", "main")
+	repo.Git("rm", "-q", longPath)
+	repo.Git("commit", "-m", "main deletes")
+	if out, err := tryGitCommand(repo.Path(), "merge", "--no-edit", "side"); err == nil {
+		t.Fatalf("fixture: merge unexpectedly succeeded: %s", out)
+	}
+
+	h := openConflictedMerge(t, repo)
+	mustClick(t, h, "Conflicted "+longPath)
+	h.drain()
+	mustClick(t, h, "Use Ours (Delete File)")
+	h.ui.Frame()
+
+	wantTitle := "Delete " + longPath + "?"
+	dlg, ok := h.ui.AccessByRole(ui.RoleDialog, wantTitle)
+	if !ok {
+		t.Fatalf("long-path resolve confirmation did not open; texts=%q", h.ui.Texts())
+	}
+	assertDialogLayout(t, h, "Cancel", "Confirm Resolve")
+	// The shared dialog frame fixes the body column to 430 DIPs and Modal adds
+	// 20 DIPs padding on each side (470 DIPs total). A long path title must
+	// wrap inside that width instead of widening the panel.
+	if dlg.Bounds.W > 472 {
+		t.Fatalf("long-path dialog widened to %.1f DIPs (bounds=%+v), want <= 472", dlg.Bounds.W, dlg.Bounds)
+	}
+	titleNode, ok := h.ui.AccessByRole(ui.RoleText, wantTitle)
+	if !ok {
+		t.Fatalf("title text node %q missing; texts=%q", wantTitle, h.ui.Texts())
+	}
+	assertInside(t, titleNode.Bounds, dlg.Bounds, "conflict title")
+	if titleNode.Bounds.W > 396 {
+		t.Fatalf("title text width = %.1f DIPs, want <= 396 inside 430-DIP body with 18-DIP padding", titleNode.Bounds.W)
+	}
+	if titleNode.Bounds.H <= 30 {
+		t.Fatalf("title text height = %.1f DIPs, want multi-line wrapped height > 30", titleNode.Bounds.H)
+	}
+}

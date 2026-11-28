@@ -8,8 +8,6 @@ import (
 	"testing"
 
 	"github.com/egoist/mygo"
-
-	"github.com/zhdsmy/branchline/internal/git"
 )
 
 // menuBarRig attaches a menu bar built for the harness app and records every
@@ -636,12 +634,15 @@ func TestMenuBarNewTagTarget(t *testing.T) {
 		t.Fatalf("tag target without a selection = %q, want HEAD", st.newTarget)
 	}
 
-	// A commit selected on the History page becomes the target, with its
-	// short hash in the hint.
-	h.app.open(route{page: pageHistory})
+	// A commit selected on the History page through the real commit list
+	// becomes the target, with its short hash in the hint.
 	h.ui.Frame()
-	h.app.historyView.sel = first
-	h.app.historyView.commit = git.Commit{Hash: first, Subject: "initial commit"}
+	mustClick(t, h, "Cancel")
+	h.ui.Frame()
+	clickMenuItem(t, rig, menuIDHistory)
+	h.ui.Frame()
+	clickCommitRow(t, h, first, "initial commit")
+	h.drain()
 	clickMenuItem(t, rig, menuIDNewTag)
 	if st.newTarget != first {
 		t.Fatalf("tag target with a selection = %q, want the selected commit %q", st.newTarget, first)
@@ -650,14 +651,16 @@ func TestMenuBarNewTagTarget(t *testing.T) {
 		t.Fatalf("tag target hint = %q, want the short hash %q", st.newTargetHint, first[:7])
 	}
 
-	// Back on the Changes page — or with no selection — the target is HEAD
-	// again, even though the second commit is the tip.
-	h.app.open(route{page: pageChanges})
+	// Back on the Local Changes page, the target returns to HEAD even while
+	// History still remembers the earlier selection.
 	h.ui.Frame()
-	h.app.historyView.sel = ""
+	mustClick(t, h, "Cancel")
+	h.ui.Frame()
+	clickMenuItem(t, rig, menuIDLocalChanges)
+	h.ui.Frame()
 	clickMenuItem(t, rig, menuIDNewTag)
 	if st.newTarget != "HEAD" {
-		t.Fatalf("tag target after leaving the selection = %q, want HEAD", st.newTarget)
+		t.Fatalf("tag target after leaving History = %q, want HEAD", st.newTarget)
 	}
 	if strings.TrimSpace(repo.Git("rev-parse", "HEAD")) != second {
 		t.Fatalf("the repository tip moved during the test; HEAD = %q, want %q", strings.TrimSpace(repo.Git("rev-parse", "HEAD")), second)
@@ -803,6 +806,14 @@ func TestMenuBarRefreshReloadsRepository(t *testing.T) {
 
 	h := newTestApp(t)
 	rig := installMenuBar(h)
+	clickMenuItem(t, rig, menuIDRefresh)
+	if ran := h.queue.Drain(t); ran != 0 {
+		t.Fatalf("Refresh without a repository posted %d callback(s), want 0", ran)
+	}
+	if h.app.session.Loading() || h.app.session.ActionErr() != nil {
+		t.Fatalf("Refresh without a repository mutated session: loading=%v err=%v", h.app.session.Loading(), h.app.session.ActionErr())
+	}
+
 	h.openRepo(repo.StoreRepo())
 	h.drain()
 
@@ -814,5 +825,21 @@ func TestMenuBarRefreshReloadsRepository(t *testing.T) {
 	h.drain()
 	if got := h.app.session.Snapshot().Status.Head; got != second {
 		t.Fatalf("after Refresh the snapshot HEAD = %q, want %q", got, second)
+	}
+}
+
+// Every custom menu click tolerates a nil app before startup assigns mainApp.
+func TestMenuBarNilAppClickIsNoOp(t *testing.T) {
+	menu := appMenuBar(func() *app { return nil })
+	clicked := 0
+	for _, it := range allMenuItems(menu.Items()) {
+		if it.Click == nil {
+			continue
+		}
+		clicked++
+		it.Click(it, nil)
+	}
+	if clicked == 0 {
+		t.Fatal("found no custom Click handlers in appMenuBar")
 	}
 }
