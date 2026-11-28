@@ -397,39 +397,73 @@ func TestDialogRemoteRefDiscardLinesEnterDoesNotDiscard(t *testing.T) {
 	}
 }
 
-// Enter in the file name field of New SSH Key submits exactly once: the key
-// pair generates and no error shows. The field opens focused and takes the
-// key before the frame's window-level shortcut, so the input's submission is
-// the only consumer.
+// Enter in either the file name field or the email field of New SSH Key
+// submits exactly once: the key pair generates and no error shows. Each
+// single-line input takes the key before the frame's window-level shortcut, so
+// the input's submission is the only consumer.
 func TestDialogRemoteRefNewSSHKeyEnterGeneratesOnce(t *testing.T) {
-	home := isolateSSHKeysTest(t)
-	dir := filepath.Join(home, ".ssh")
+	t.Run("file name input", func(t *testing.T) {
+		home := isolateSSHKeysTest(t)
+		dir := filepath.Join(home, ".ssh")
 
-	h := newTestApp(t)
-	tt := openSSHKeysPage(t, h)
-	if err := tt.Click("New SSH Key"); err != nil {
-		t.Fatalf("click New SSH Key…: %v; texts=%q", err, tt.Texts())
-	}
-	tt.Frame()
+		h := newTestApp(t)
+		tt := openSSHKeysPage(t, h)
+		if err := tt.Click("New SSH Key"); err != nil {
+			t.Fatalf("click New SSH Key…: %v; texts=%q", err, tt.Texts())
+		}
+		tt.Frame()
 
-	typeInSettingsField(t, tt, "Key file name", "enterkey")
-	tt.Key(0, ui.KeyEnter)
-	tt.Frame()
-	drainSettings(t, h, tt)
+		typeInSettingsField(t, tt, "Key file name", "enterkey")
+		tt.Key(0, ui.KeyEnter)
+		tt.Frame()
+		drainSettings(t, h, tt)
 
-	priv := filepath.Join(dir, "enterkey")
-	if _, err := os.Stat(priv); err != nil {
-		t.Fatalf("Enter in the name field generated no key: %v", err)
-	}
-	if _, err := os.Stat(priv + ".pub"); err != nil {
-		t.Fatalf("the public half of the key pair is missing: %v", err)
-	}
-	if st := sshKeysStateOf(h.app); st.newErr != "" {
-		t.Fatalf("the dialog shows the error %q — the key submitted twice or not at all", st.newErr)
-	}
-	if _, ok := tt.AccessByRole(ui.RoleDialog, "New SSH Key"); ok {
-		t.Error("the New SSH Key dialog stayed open after the Enter generation")
-	}
+		priv := filepath.Join(dir, "enterkey")
+		if _, err := os.Stat(priv); err != nil {
+			t.Fatalf("Enter in the name field generated no key: %v", err)
+		}
+		if _, err := os.Stat(priv + ".pub"); err != nil {
+			t.Fatalf("the public half of the key pair is missing: %v", err)
+		}
+		if st := sshKeysStateOf(h.app); st.newErr != "" {
+			t.Fatalf("the dialog shows the error %q — the key submitted twice or not at all", st.newErr)
+		}
+		if _, ok := tt.AccessByRole(ui.RoleDialog, "New SSH Key"); ok {
+			t.Error("the New SSH Key dialog stayed open after the Enter generation")
+		}
+	})
+
+	t.Run("email input", func(t *testing.T) {
+		home := isolateSSHKeysTest(t)
+		dir := filepath.Join(home, ".ssh")
+
+		h := newTestApp(t)
+		tt := openSSHKeysPage(t, h)
+		if err := tt.Click("New SSH Key"); err != nil {
+			t.Fatalf("click New SSH Key…: %v; texts=%q", err, tt.Texts())
+		}
+		tt.Frame()
+
+		typeInSettingsField(t, tt, "Key file name", "emailenterkey")
+		typeInSettingsField(t, tt, "Key comment email", "dev@example.com")
+		tt.Key(0, ui.KeyEnter)
+		tt.Frame()
+		drainSettings(t, h, tt)
+
+		priv := filepath.Join(dir, "emailenterkey")
+		if _, err := os.Stat(priv); err != nil {
+			t.Fatalf("Enter in the email field generated no key: %v", err)
+		}
+		if _, err := os.Stat(priv + ".pub"); err != nil {
+			t.Fatalf("the public half of the key pair is missing: %v", err)
+		}
+		if st := sshKeysStateOf(h.app); st.newErr != "" {
+			t.Fatalf("the dialog shows the error %q — the key submitted twice or not at all", st.newErr)
+		}
+		if _, ok := tt.AccessByRole(ui.RoleDialog, "New SSH Key"); ok {
+			t.Error("the New SSH Key dialog stayed open after the Enter generation")
+		}
+	})
 }
 
 // The Open Existing Key picker is captured on the UI thread when the button

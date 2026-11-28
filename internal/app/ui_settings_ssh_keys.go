@@ -518,7 +518,6 @@ func (a *app) openNewSSHKeyDialog() {
 	st.newGen++
 }
 
-// generateSSHKey runs ssh-keygen in the background with the dialog's draft,
 // newSSHKeyCanGenerate reports whether the New SSH Key dialog can start a
 // generation now: no generation in flight and a file name passing the key
 // name rules. The Generate Key button's disabled state mirrors it exactly,
@@ -527,6 +526,7 @@ func newSSHKeyCanGenerate(st *settingsSSHKeysState) bool {
 	return !st.newBusy && sshkey.CheckName(st.newName) == nil
 }
 
+// generateSSHKey runs ssh-keygen in the background with the dialog's draft,
 // captured on the UI thread. A failure — a name taken since the dialog
 // opened among them — shows in the dialog, which stays open; a success
 // closes it, activates the new key and selects it.

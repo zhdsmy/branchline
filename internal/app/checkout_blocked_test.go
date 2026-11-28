@@ -123,6 +123,45 @@ func TestCheckoutBlockedBranchDoubleClickPanel(t *testing.T) {
 	assertNoCheckoutBlockedPanel(t, h)
 }
 
+// A blocked Checkout context-menu action on a local branch opens the same
+// dialog instead of an error banner, and canceling it leaves the branch,
+// HEAD and modified file untouched.
+func TestCheckoutBlockedBranchMenuItemPanel(t *testing.T) {
+	repo := checkoutBlockedFixture(t, "cb-panel-branch-menu")
+	mainTip := strings.TrimSpace(repo.Git("rev-parse", "HEAD"))
+
+	h := newTestApp(t)
+	h.openRepo(repo.StoreRepo())
+	h.drain()
+
+	if err := h.ui.RightClick("feature"); err != nil {
+		t.Fatalf("right-click feature: %v\ntexts=%q", err, h.ui.Texts())
+	}
+	if err := h.ui.ChooseMenuItem("Checkout"); err != nil {
+		t.Fatalf("choose Checkout: %v", err)
+	}
+	h.drain()
+
+	assertCheckoutBlockedPanel(t, h, "feature", []string{"shared.txt"}, nil)
+	cancelCheckoutBlocked(t, h)
+	h.drain()
+
+	assertNoCheckoutBlockedPanel(t, h)
+	if got := currentBranch(t, repo); got != "main" {
+		t.Fatalf("branch after canceling menu checkout = %q, want main", got)
+	}
+	if got := strings.TrimSpace(repo.Git("rev-parse", "HEAD")); got != mainTip {
+		t.Fatalf("HEAD after canceling menu checkout = %q, want %q", got, mainTip)
+	}
+	assertFileBytes(t, repo, "shared.txt", "dirty-l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\n")
+	if err := h.app.session.ActionErr(); err != nil {
+		t.Fatalf("canceling menu checkout left an action error: %v", err)
+	}
+	if row, ok := findAccessNode(t, h.ui, "main"); !ok || !row.Selected {
+		t.Fatalf("main row after canceling menu checkout = %+v (found=%v), want selected", row, ok)
+	}
+}
+
 // A blocked checkout of a remote-tracking branch opens the dialog listing
 // the untracked file in the way.
 func TestCheckoutBlockedRemoteBranchPanel(t *testing.T) {

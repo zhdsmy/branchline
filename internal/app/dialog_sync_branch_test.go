@@ -177,6 +177,36 @@ func TestDialogSyncBranchPushForceEnterNeverPushes(t *testing.T) {
 		t.Fatalf("Enter ran a write that failed: %v", err)
 	}
 
+	// Enter on the focused agreement checkbox may have unticked it; re-tick
+	// and verify Confirm Force Push is enabled again before focusing the
+	// destination text input, so refusal there rests solely on the !st.force
+	// guard rather than a disabled button.
+	if box, ok := h.ui.AccessByRole(ui.RoleCheckBox, "Confirm force push with lease"); ok && !box.Checked {
+		tickBox(t, h, "Confirm force push with lease")
+	}
+	if btn, ok := h.ui.AccessByRole(ui.RoleButton, "Confirm Force Push"); !ok || btn.Disabled {
+		t.Fatalf("Confirm Force Push before input Enter = %+v (found=%v), want enabled", btn, ok)
+	}
+	if err := h.ui.Click("Push Remote Branch"); err != nil {
+		t.Fatalf("focus remote branch input: %v\ntexts=%q", err, h.ui.Texts())
+	}
+	if box, ok := h.ui.AccessByRole(ui.RoleTextField, "Push Remote Branch"); !ok || !box.Focused {
+		t.Fatalf("destination input not focused after its click: %+v found=%v", box, ok)
+	}
+	h.ui.Key(0, ui.KeyEnter)
+	h.ui.Frame()
+	h.drain()
+
+	if !pushDialogUI(h.app).open {
+		t.Fatal("Enter in the destination input closed the destructive force-push dialog")
+	}
+	if got := strings.TrimSpace(runGitCommand(t, bareDir, "rev-parse", "refs/heads/main")); got != before {
+		t.Fatalf("bare refs/heads/main = %q, want unchanged %q — Enter in destination input force-pushed", got, before)
+	}
+	if err := h.app.session.ActionErr(); err != nil {
+		t.Fatalf("Enter in destination input ran a write that failed: %v", err)
+	}
+
 	// The dialog closes by its cancel, as always.
 	if err := h.ui.Click("Cancel"); err != nil {
 		t.Fatalf("dialog is gone or its cancel is unreachable after Enter: %v\ntexts=%q", err, h.ui.Texts())
