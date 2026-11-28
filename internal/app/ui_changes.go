@@ -1118,20 +1118,15 @@ func (a *app) changesDiscardModal(c *ui.Context) {
 	if !s.confirmDiscard {
 		return
 	}
-	if ui.Modal(c.Key("discard-modal"), &s.confirmDiscard, func() {
-		ui.Column(c.Key("discard-modal-body")).Width(430).Padding(18, 18, 14, 18).Gap(10).Children(func() {
-			ui.Text(c, "Discard changes?").FontSize(17).FontWeight(650).TextColor(p.text)
-			ui.Text(c, discardConfirmMessage(s.discardTargets)).FontSize(13).TextColor(p.muted).MaxWidth(390)
-			ui.Row(c.Key("discard-modal-actions")).Gap(8).Justify(ui.End).Children(func() {
-				if ui.Button(c.Key("discard-cancel"), "Cancel").Label("Cancel").Clicked() {
-					a.cancelDiscardChanges()
-				}
-				if ui.PrimaryButton(c.Key("discard-confirm"), "Discard").Label("Confirm Discard").Clicked() {
-					a.confirmDiscardChanges()
-				}
-			})
-		})
-	}).Dismissed() {
+	dismissed, cancelled, confirmed := dialogFrame(c, p, "discard-modal", &s.confirmDiscard, "Discard changes?", 430, func() {
+		ui.Text(c, discardConfirmMessage(s.discardTargets)).FontSize(13).TextColor(p.muted).MaxWidth(390)
+	},
+		dialogAction{key: "discard-cancel", text: "Cancel", label: "Cancel"},
+		dialogAction{key: "discard-confirm", text: "Discard", label: "Confirm Discard", destructive: true})
+	if cancelled || dismissed {
 		a.cancelDiscardChanges()
+	}
+	if confirmed {
+		a.confirmDiscardChanges()
 	}
 }
