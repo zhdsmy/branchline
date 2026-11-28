@@ -303,14 +303,31 @@ func asksUser(args []string) bool {
 	return false
 }
 
+// printfScriptFormat is the script as the format string of the printf that
+// writes it: newlines as \n, backslashes doubled, % doubled, and ! as the
+// octal \041. The octal is not for printf but for the shells a command can
+// be parsed by before /bin/sh ever sees it: csh and tcsh expand ! even
+// inside single quotes, while \ is only a backslash there, so the byte
+// reaches printf as the octal it prints.
+func printfScriptFormat(script string) string {
+	return strings.NewReplacer(
+		`\`, `\\`,
+		`%`, `%%`,
+		"\n", `\n`,
+		`!`, `\041`,
+	).Replace(script)
+}
+
 // remoteAskSetup writes the askpass script on the server for one command,
 // in a file only the login can read; remoteAskCleanup removes it. The
 // script holds no secret. The variables need export: assignments on their
 // own never leave the shell, so git would not see them. The script is
 // written when the command is built, so that it holds the deadline of
-// that moment.
+// that moment. It goes through printf as one format string rather than as
+// an argument: csh and tcsh reject a newline inside single quotes, so the
+// script's own newlines cannot travel in the command.
 func remoteAskSetup() string {
-	return `__bl_ap=$(mktemp "${TMPDIR:-/tmp}/branchline-askpass.XXXXXXXX") && printf '%s' ` + ShellQuote(scriptFor("R")) +
+	return `__bl_ap=$(mktemp "${TMPDIR:-/tmp}/branchline-askpass.XXXXXXXX") && printf ` + ShellQuote(printfScriptFormat(scriptFor("R"))) +
 		` > "$__bl_ap" && chmod 700 "$__bl_ap" && export GIT_ASKPASS="$__bl_ap" SSH_ASKPASS="$__bl_ap" SSH_ASKPASS_REQUIRE=force DISPLAY="${DISPLAY:-branchline:0}"`
 }
 
