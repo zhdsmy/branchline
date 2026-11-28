@@ -397,6 +397,36 @@ func TestSidebarFoldersSectionCollapsePersists(t *testing.T) {
 	}
 }
 
+// Collapsing the Branches section hides its rows without touching the
+// selection: feature/a selected before the collapse is still selected after
+// the section expands again, exactly as the flat sidebar always behaved.
+func TestSidebarFoldersSectionCollapseKeepsSelection(t *testing.T) {
+	repo := sidebarFolderFixture(t, "fold-section-selection")
+
+	h := newTestApp(t)
+	pinAlphabeticalSortOrders(t, h)
+	h.openRepo(repo.StoreRepo())
+	h.drain()
+
+	clickRefRow(t, h, "feature/a")
+	wantPickedRefs(t, h, []string{"feature/a"}, nil, nil)
+
+	if err := h.ui.Click("Branches"); err != nil {
+		t.Fatalf("collapse Branches: %v", err)
+	}
+	h.ui.Frame()
+	if _, ok := h.ui.Find("menu"); ok {
+		t.Fatal("rows of feature visible after collapsing Branches")
+	}
+	wantPickedRefs(t, h, []string{"feature/a"}, nil, nil)
+
+	if err := h.ui.Click("Branches"); err != nil {
+		t.Fatalf("expand Branches: %v", err)
+	}
+	h.ui.Frame()
+	wantPickedRefs(t, h, []string{"feature/a"}, nil, nil)
+}
+
 // Collapsing a folder deselects the references inside it: of the selected
 // feature/a and main only main survives. A Shift-click range reaching from
 // bugfix/x to main across the collapsed folder selects exactly the visible

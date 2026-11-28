@@ -17,12 +17,11 @@ package app
 // repositories reads them back, so a folder collapsed in one repository shows
 // expanded under the same name in another until it is collapsed there too.
 //
-// Collapsing a folder deselects the references inside it, because the
-// sidebar's selection only ever holds rows the user can see; a collapse of a
-// whole section deselects the rows of its folders the same way, while the
-// rows without a folder keep exactly the selection behavior they always had.
-// Range clicks select along the rows as shown, so a hidden row can never join
-// a range either.
+// Collapsing a folder — or one of its ancestor folders — deselects the
+// references inside it, because the sidebar's selection only ever holds
+// rows the user can see; collapsing a whole section hides its rows without
+// touching the selection, exactly as it always did. Range clicks select
+// along the rows as shown, so a hidden row can never join a range either.
 
 import (
 	"fmt"
@@ -311,102 +310,6 @@ func (a *app) pruneSidebarFolderPicks(id string) {
 	}
 }
 
-// sidebarRowFoldered reports whether the reference key names a row nested
-// inside a folder anywhere in the current row table. The table is the
-// sidebar's own truth of what groups where, so the answer needs no parsing
-// of names or remotes.
-func (a *app) sidebarRowFoldered(key sidebarPickKey) bool {
-	for _, entry := range a.refsView.sidebarRows.rows {
-		if entry.depth == 0 {
-			continue
-		}
-		switch key.kind {
-		case sidebarRefLocalBranch:
-			if entry.kind == sidebarRowBranch && entry.branch.Name == key.name {
-				return true
-			}
-		case sidebarRefRemoteBranch:
-			if entry.kind == sidebarRowRemoteBranch && entry.branch.FullName == key.name {
-				return true
-			}
-		case sidebarRefTag:
-			if entry.kind == sidebarRowTag && entry.tag.Name == key.name {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// pruneSidebarSectionPicks drops the selection keys of the rows nested in
-// folders of one collapsing section — the rows the collapse hides along with
-// their folders — and the anchor when it names one of them. Rows without a
-// folder keep their selection exactly as the flat sidebar always did.
-func (a *app) pruneSidebarSectionPicks(kind sidebarRefKind) {
-	st := &a.refsView
-	changed := false
-	if st.pickAnchor.kind == kind && st.pickAnchor.name != "" && a.sidebarRowFoldered(st.pickAnchor) {
-		st.pickAnchor = sidebarPickKey{}
-		changed = true
-	}
-	for key := range st.pick {
-		if key.kind == kind && a.sidebarRowFoldered(key) {
-			delete(st.pick, key)
-			changed = true
-		}
-	}
-	if changed {
-		st.pickVersion++
-	}
-}
-
-// dropHiddenSidebarPicks drops every key of the selection whose row a
-// collapsed folder hides, in whichever section. A click never needs it — the
-// visible-order range already skips hidden rows — but a remote branch range
-// walks every remote-tracking row, hidden included, so its clicks prune
-// afterwards to keep the selection exactly the visible rows.
-func (a *app) dropHiddenSidebarPicks() {
-	st := &a.refsView
-	rc := &a.refsView.sidebarRows
-	changed := false
-	visible := func(key sidebarPickKey) bool {
-		switch key.kind {
-		case sidebarRefLocalBranch:
-			for _, br := range rc.localVisible {
-				if br.Name == key.name {
-					return true
-				}
-			}
-		case sidebarRefRemoteBranch:
-			for _, rb := range rc.remoteVisible {
-				if rb.FullName == key.name {
-					return true
-				}
-			}
-		case sidebarRefTag:
-			for _, tag := range rc.tagVisible {
-				if tag.Name == key.name {
-					return true
-				}
-			}
-		}
-		return false
-	}
-	if st.pickAnchor.name != "" && !visible(st.pickAnchor) {
-		st.pickAnchor = sidebarPickKey{}
-		changed = true
-	}
-	for key := range st.pick {
-		if !visible(key) {
-			delete(st.pick, key)
-			changed = true
-		}
-	}
-	if changed {
-		st.pickVersion++
-	}
-}
-
 // sidebarSectionKind identifies one collapsible sidebar section.
 type sidebarSectionKind int
 
@@ -418,21 +321,11 @@ const (
 )
 
 // sidebarSectionToggled runs after the user flipped a section's collapse:
-// the new state saves into the repository's SidebarSections, and a collapse
-// of a reference section drops the rows of its folders from the selection,
-// the same hidden-rows-never-selected rule collapsing one folder applies.
-// The rows without a folder keep their selection exactly as they always did.
+// the new state saves into the repository's SidebarSections. The selection
+// is untouched — collapsing a section hides rows without changing what is
+// selected, exactly as it always did; only collapsing a folder or one of
+// its ancestors deselects the references inside it.
 func (a *app) sidebarSectionToggled(section sidebarSectionKind, collapsed bool) {
-	if collapsed {
-		switch section {
-		case sidebarSectionBranches:
-			a.pruneSidebarSectionPicks(sidebarRefLocalBranch)
-		case sidebarSectionRemotes:
-			a.pruneSidebarSectionPicks(sidebarRefRemoteBranch)
-		case sidebarSectionTags:
-			a.pruneSidebarSectionPicks(sidebarRefTag)
-		}
-	}
 	a.saveSidebarSectionCollapsed(section, collapsed)
 }
 
