@@ -723,3 +723,201 @@ func TestHistoryPagingSearchFindNextAcrossPages(t *testing.T) {
 	}
 	assertMatchesFullLoad(t, h, loaded, false)
 }
+
+// Paging git.Repo.Log with an explicit branch filter (Revs) and Skip using
+// the same overlap join as loadMorePage produces no duplicate or missing
+// commits, excludes commits reachable only from other branches, and matches a
+// single-shot Log with the same Revs and ordering.
+func TestHistoryPagingLogRevsWithSkip(t *testing.T) {
+	repo := newGitRepo(t, "paging-revs")
+	var b strings.Builder
+	ts0 := 1700000000
+	for i := 1; i <= 40; i++ {
+		msg := fmt.Sprintf("main %d", i)
+		content := fmt.Sprintf("m%d\n", i)
+		fmt.Fprintf(&b, "commit refs/heads/main\nmark :%d\n", i)
+		fmt.Fprintf(&b, "author Branchline Test <test@branchline.local> %d +0000\n", ts0+i*100)
+		fmt.Fprintf(&b, "committer Branchline Test <test@branchline.local> %d +0000\n", ts0+i*100)
+		fmt.Fprintf(&b, "data %d\n%s\n", len(msg), msg)
+		if i > 1 {
+			fmt.Fprintf(&b, "from :%d\n", i-1)
+		}
+		fmt.Fprintf(&b, "M 100644 inline m.txt\ndata %d\n%s\n", len(content), content)
+	}
+	// feature forks from main commit 10, merges main commit 25 mid-way, and
+	// interleaves timestamps with main so topo and date order differ.
+	for j := 1; j <= 35; j++ {
+		mark := 1000 + j
+		msg := fmt.Sprintf("feature %d", j)
+		content := fmt.Sprintf("f%d\n", j)
+		fmt.Fprintf(&b, "commit refs/heads/feature\nmark :%d\n", mark)
+		fmt.Fprintf(&b, "author Branchline Test <test@branchline.local> %d +0000\n", ts0+1050+j*130)
+		fmt.Fprintf(&b, "committer Branchline Test <test@branchline.local> %d +0000\n", ts0+1050+j*130)
+		fmt.Fprintf(&b, "data %d\n%s\n", len(msg), msg)
+		if j == 1 {
+			fmt.Fprintf(&b, "from :10\n")
+		} else {
+			fmt.Fprintf(&b, "from :%d\n", mark-1)
+		}
+		if j == 20 {
+			fmt.Fprintf(&b, "merge :25\n")
+		}
+		fmt.Fprintf(&b, "M 100644 inline f.txt\ndata %d\n%s\n", len(content), content)
+	}
+	// other forks from main commit 5 and must never appear when Revs selects
+	// feature or main+feature.
+	for k := 1; k <= 15; k++ {
+		mark := 2000 + k
+		msg := fmt.Sprintf("other %d", k)
+		content := fmt.Sprintf("o%d\n", k)
+		fmt.Fprintf(&b, "commit refs/heads/other\nmark :%d\n", mark)
+		fmt.Fprintf(&b, "author Branchline Test <test@branchline.local> %d +0000\n", ts0+5000+k*100)
+		fmt.Fprintf(&b, "committer Branchline Test <test@branchline.local> %d +0000\n", ts0+5000+k*100)
+		fmt.Fprintf(&b, "data %d\n%s\n", len(msg), msg)
+		if k == 1 {
+			fmt.Fprintf(&b, "from :5\n")
+		} else {
+			fmt.Fprintf(&b, "from :%d\n", mark-1)
+		}
+		fmt.Fprintf(&b, "M 100644 inline o.txt\ndata %d\n%s\n", len(content), content)
+	}
+	historyPagingImport(t, repo, b.String())
+
+	r := defaultOpenGitRepo(repo.StoreRepo())
+	refs, err := r.Refs()
+	if err != nil {
+		t.Fatalf("read refs: %v", err)
+	}
+
+	cases := []struct {
+		name      string
+		revs      []string
+		dateOrder bool
+		wantCount int
+	}{
+		{"single-branch-topo", []string{"refs/heads/feature"}, false, 60},
+		{"single-branch-date", []string{"refs/heads/feature"}, true, 60},
+		{"multi-branch-topo", []string{"refs/heads/main", "refs/heads/feature"}, false, 75},
+		{"multi-branch-date", []string{"refs/heads/main", "refs/heads/feature"}, true, 75},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			const step = 17
+			base, err := r.Log(git.LogOptions{Limit: step, Revs: tc.revs, DateOrder: tc.dateOrder})
+			if err != nil {
+				t.Fatalf("first page: %v", err)
+			}
+			git.FixRefKinds(base, refs)
+
+			for {
+				n := len(base)
+				page, err := r.Log(git.LogOptions{
+					Limit:     step + 1,
+					Skip:      n - 1,
+					Revs:      tc.revs,
+					DateOrder: tc.dateOrder,
+				})
+				if err != nil {
+					t.Fatalf("page at skip %d: %v", n-1, err)
+				}
+				if len(page) == 0 || page[0].Hash != base[n-1].Hash {
+					t.Fatalf("seam mismatch at skip %d: got %d commits", n-1, len(page))
+				}
+				git.FixRefKinds(page, refs)
+				merged := make([]git.Commit, 0, n+len(page)-1)
+				merged = append(merged, base...)
+				merged = append(merged, page[1:]...)
+				base = merged
+				if len(page) < step+1 {
+					break
+				}
+			}
+
+			if len(base) != tc.wantCount {
+				t.Fatalf("paged count = %d, want %d", len(base), tc.wantCount)
+			}
+			seen := make(map[string]bool, len(base))
+			for i, cm := range base {
+				if seen[cm.Hash] {
+					t.Fatalf("duplicate commit %s at index %d", cm.Hash, i)
+				}
+				seen[cm.Hash] = true
+				if strings.HasPrefix(cm.Subject, "other ") {
+					t.Fatalf("excluded branch commit leaked into filtered walk: %q", cm.Subject)
+				}
+			}
+
+			full, err := r.Log(git.LogOptions{Limit: tc.wantCount + 10, Revs: tc.revs, DateOrder: tc.dateOrder})
+			if err != nil {
+				t.Fatalf("full filtered log: %v", err)
+			}
+			git.FixRefKinds(full, refs)
+			if !reflect.DeepEqual(base, full) {
+				t.Fatalf("filtered paged commits differ from full log: %s", firstCommitDiff(base, full))
+			}
+			if !reflect.DeepEqual(git.Graph(base), git.Graph(full)) {
+				t.Fatal("filtered paged graph differs from full log graph")
+			}
+		})
+	}
+}
+
+// Load More and automatic refresh running concurrently discard stale results
+// through loadGen: an in-flight auto-refresh poll started before Load More is
+// ignored once Load More advances loadGen, and while Load More is loading an
+// auto-refresh tick does not launch a second concurrent check.
+func TestHistoryPagingAutoRefreshConcurrency(t *testing.T) {
+	repo := newGitRepo(t, "paging-autorefresh")
+	historyPagingImport(t, repo, historyPagingLinearStream(90, ""))
+
+	h := newTestApp(t)
+	h.openRepo(repo.StoreRepo())
+	h.drain()
+
+	step := 30
+	h.app.session.logLimit = step
+	h.app.session.Reload()
+	h.drain()
+
+	st := autoRefresh(h.app)
+	// Start a passive auto-refresh poll while the session is idle and settled,
+	// pausing its worker before it finishes.
+	h.queue.PauseWorkers()
+	startAutoRefreshCheck(h.app, st, false)
+	pollWorker := h.queue.WaitWorker(t)
+	h.queue.ResumeWorkers()
+
+	// Start Load More while the passive poll is still in flight. Load More
+	// advances loadGen and marks the session loading.
+	h.queue.PauseWorkers()
+	h.app.session.LoadMore(step)
+	pageWorker := h.queue.WaitWorker(t)
+	h.queue.ResumeWorkers()
+
+	// While Load More is in flight, autoRefreshCanCheck stays false so a tick
+	// cannot start another poll.
+	if autoRefreshCanCheck(h.app, st) {
+		t.Fatal("autoRefreshCanCheck = true while Load More is in flight")
+	}
+
+	// Release the older poll first: its completion must be dropped by loadGen
+	// mismatch without clearing Loading or interrupting Load More.
+	h.queue.ReleaseWorker(pollWorker)
+	h.queue.RunNext(t)
+	if !h.app.session.Loading() {
+		t.Fatal("stale auto-refresh poll cleared session.Loading while Load More was in flight")
+	}
+
+	// Now let Load More finish and verify the full 60-commit paged result.
+	h.queue.ReleaseWorker(pageWorker)
+	h.drain()
+
+	if err := h.app.session.LoadErr(); err != nil {
+		t.Fatalf("load error after concurrent poll and Load More: %v", err)
+	}
+	if got := len(h.app.session.Snapshot().Commits); got != 60 {
+		t.Fatalf("loaded commits = %d, want 60", got)
+	}
+	assertMatchesFullLoad(t, h, 60, false)
+}

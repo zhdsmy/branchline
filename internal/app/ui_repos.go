@@ -432,7 +432,7 @@ type sshFormRequest struct {
 }
 
 func (r *sshFormRequest) matches(st *reposUIState) bool {
-	return r.address == strings.TrimSpace(st.sshAddress) &&
+	return r.address == st.sshAddress &&
 		r.identity == strings.TrimSpace(st.sshIdentity) &&
 		r.name == strings.TrimSpace(st.sshName)
 }
@@ -585,7 +585,7 @@ func (a *app) checkSSHForm(st *reposUIState, add bool) {
 	st.sshGen++
 	request := &sshFormRequest{
 		repo:     r,
-		address:  strings.TrimSpace(st.sshAddress),
+		address:  st.sshAddress,
 		identity: r.Identity,
 		name:     r.Name,
 		add:      add,

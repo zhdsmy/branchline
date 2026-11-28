@@ -1942,3 +1942,88 @@ func TestRepoAddSSHRejectsEdgeSpacesAdd(t *testing.T) {
 	}
 	closeDialog(t, h)
 }
+
+// Appending a trailing space to Address while an Add check is in flight
+// invalidates that request instead of matching it through TrimSpace, and
+// appending a space after a successful Test Connection clears the stale
+// result.
+func TestRepoAddSSHRejectsEdgeSpacesEditInvalidatesInFlight(t *testing.T) {
+	local := newGitRepo(t, "ssh-edge-edit")
+	local.CommitFile("a.txt", "a\n", "init")
+
+	h := newTestApp(t)
+	h.app.openRepoFn = func(meta store.Repo) *git.Repo {
+		return git.New(&git.LocalExecutor{Dir: local.Path()})
+	}
+
+	const addr = "user@server:/srv/app"
+	openSSHForm(t, h)
+	typeSSHForm(t, h, addr, "", "")
+	h.ui.Frame()
+
+	// Start an Add check, then append a trailing space before it finishes:
+	// the stale completion must be dropped without saving or opening.
+	h.queue.PauseWorkers()
+	if err := h.ui.Click("Add"); err != nil {
+		t.Fatalf("click Add: %v", err)
+	}
+	h.ui.Frame()
+	worker := h.queue.WaitWorker(t)
+	h.queue.ResumeWorkers()
+
+	focusField(t, h, "Address")
+	h.ui.Key(ui.Cmd, ui.KeyA)
+	h.ui.Frame()
+	h.ui.Type(addr + " ")
+	h.ui.Frame()
+	h.queue.ReleaseWorker(worker)
+	h.drain()
+
+	st := sshFormState(h)
+	if !st.sshOpen {
+		t.Fatal("dialog closed after trailing space invalidated in-flight Add")
+	}
+	if st.sshBusy {
+		t.Fatal("dialog stayed busy after trailing space invalidated in-flight Add")
+	}
+	if st.sshResult != "" {
+		t.Fatalf("stale Add result published after adding trailing space: %q", st.sshResult)
+	}
+	if len(h.store.Repos()) != 0 {
+		t.Fatalf("store saved a repository despite trailing-space edit: %+v", h.store.Repos())
+	}
+	if h.app.session.HasRepo() {
+		t.Fatal("repository opened despite trailing-space edit")
+	}
+
+	// Now run a clean Test Connection, confirm it succeeds, then append a
+	// trailing space: the green Connected banner must clear rather than
+	// claiming the space-suffixed address succeeded.
+	focusField(t, h, "Address")
+	h.ui.Key(ui.Cmd, ui.KeyA)
+	h.ui.Frame()
+	h.ui.Type(addr)
+	h.ui.Frame()
+	if err := h.ui.Click("Test Connection"); err != nil {
+		t.Fatalf("click Test Connection: %v", err)
+	}
+	h.ui.Frame()
+	h.drain()
+
+	st = sshFormState(h)
+	if st.sshFailed || !strings.HasPrefix(st.sshResult, "Connected:") {
+		t.Fatalf("clean Test Connection result = %q (failed=%v), want Connected", st.sshResult, st.sshFailed)
+	}
+
+	focusField(t, h, "Address")
+	h.ui.Key(ui.Cmd, ui.KeyA)
+	h.ui.Frame()
+	h.ui.Type(addr + " ")
+	h.ui.Frame()
+
+	st = sshFormState(h)
+	if st.sshResult != "" {
+		t.Fatalf("Connected banner survived trailing-space edit: %q", st.sshResult)
+	}
+	closeDialog(t, h)
+}

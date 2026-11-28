@@ -4,6 +4,7 @@ import (
 	"errors"
 	"maps"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/zhdsmy/branchline/internal/git"
@@ -332,6 +333,7 @@ func (s *repoSession) loadMorePage(step int) {
 	n := len(base)
 	lastHash := base[n-1].Hash
 	logOpts := s.loadOptions().Log
+	logOpts.Revs = slices.Clone(logOpts.Revs)
 	logOpts.Limit = step + 1
 	logOpts.Skip = n - 1
 	refs := s.snapshot.Refs
