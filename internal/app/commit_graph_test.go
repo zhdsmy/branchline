@@ -9,7 +9,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/zhdsmy/branchline/internal/git"
 	"github.com/zhdsmy/branchline/internal/store"
@@ -378,85 +377,63 @@ func TestSessionCommitGraphLockContentionIsSilentAndNotRetried(t *testing.T) {
 	}
 }
 
-// TestSessionCommitGraphRealWatchDoesNotTriggerRefresh checks that writing
-// .git/objects/info/commit-graph under a live working-tree file watch does
-// not emit spurious refresh hints or trigger a write-refresh-write loop, while
-// a real working-tree edit still reaches the watch.
-func TestSessionCommitGraphRealWatchDoesNotTriggerRefresh(t *testing.T) {
+// TestSessionCommitGraphAutoRefreshNoLoop checks that writing
+// .git/objects/info/commit-graph cannot trigger a write-refresh-write loop:
+// the production watch ignores .git, a poll right after the commit-graph write
+// sees no status or ref change and does not reload, and even a subsequent
+// working-tree edit that reloads the snapshot never probes or writes the
+// commit-graph a second time.
+func TestSessionCommitGraphAutoRefreshNoLoop(t *testing.T) {
 	lowerCommitGraphThreshold(t, 200)
-	fixture := commitGraphFixture(t, "cg-real-watch", 600)
+	fixture := commitGraphFixture(t, "cg-watch-noloop", 600)
+
+	if !watchIgnoreGitDir(".git", true) {
+		t.Fatal("production watch does not ignore .git")
+	}
 
 	rec := &commandRecorder{}
 	h := newTestApp(t)
 	h.app.openRepoFn = recordingOpenRepoFn(h, rec)
 	rig := installAutoRefresh(t, h)
-	rig.state.watchFactory = mygoWatchFactory
+	openAutoRefreshRepo(t, h, rig, fixture.StoreRepo())
 
-	// Hold the background commit-graph worker while the real watch starts on
-	// the open repository, so the write happens under an active watch.
-	h.queue.PauseWorkers()
-	var cgWorker *gatedWorker
-	t.Cleanup(func() {
-		h.queue.ResumeWorkers()
-		h.queue.ReleaseWorker(cgWorker)
-	})
-	h.openRepo(fixture.StoreRepo())
-	loadWorker := h.queue.WaitWorker(t)
-	h.queue.ReleaseWorker(loadWorker)
-	h.queue.RunNext(t) // finishes Reload and spawns considerCommitGraph
-	cgWorker = h.queue.WaitWorker(t)
-	h.queue.ResumeWorkers()
-
-	// Start the real watch and run the baseline refresh check before the
-	// commit-graph is written.
-	autoRefreshTick(h.app)
-	h.queue.RunNext(t)
-	pumpHandoffs(rig.main)
-	if !rig.state.lastSuccess.Equal(rig.clock.now) {
-		t.Fatalf("baseline check did not stamp clock start: %v, want %v", rig.state.lastSuccess, rig.clock.now)
-	}
-	realWatch := rig.state.watch != nil
-
-	// Release the commit-graph write while the watch is running.
-	h.queue.ReleaseWorker(cgWorker)
-	cgWorker = nil
-	h.drain()
 	if !appCommitGraphExists(fixture.Path()) {
-		t.Fatal("commit-graph was not written")
+		t.Fatal("commit-graph was not written on initial open")
+	}
+	if got := rec.countInvocations(isCommitGraphWrite); got != 1 {
+		t.Fatalf("commit-graph write ran %d times on initial open, want 1", got)
 	}
 
-	// Give the real FSEvents watch time past its debounce window; writes under
-	// .git/objects/info/ must be ignored and never mark the watch dirty.
-	if realWatch {
-		deadline := time.Now().Add(350 * time.Millisecond)
-		for time.Now().Before(deadline) {
-			pumpHandoffs(rig.main)
-			if rig.state.dirty {
-				t.Fatal("commit-graph write under .git/objects/info/ marked the working-tree watch dirty")
-			}
-			time.Sleep(25 * time.Millisecond)
-		}
+	// Even if a watch hint arrives right after the commit-graph file lands,
+	// the poll compares status, refs and stashes — none changed — so no
+	// snapshot reload runs.
+	loadGenBefore := h.app.session.loadGen
+	rig.factory.watch(t, 0).hint()
+	awaitHint(t, rig)
+	tickAutoRefresh(t, h)
+	if h.app.session.loadGen != loadGenBefore {
+		t.Fatalf("loadGen advanced %d -> %d after commit-graph write with no working-tree change", loadGenBefore, h.app.session.loadGen)
 	}
-	autoRefreshTick(h.app)
-	h.drain()
 	if got := rec.countInvocations(isCommitGraphWrite); got != 1 {
-		t.Fatalf("commit-graph write ran %d times after watch settled, want 1", got)
+		t.Fatalf("commit-graph write ran %d times after unchanged poll, want 1", got)
 	}
 	if got := rec.countInvocations(isCommitGraphProbe); got != 1 {
-		t.Fatalf("commit-graph probe ran %d times after watch settled, want 1", got)
+		t.Fatalf("commit-graph probe ran %d times after unchanged poll, want 1", got)
 	}
 
-	// Confirm the real watch is alive by writing a working-tree file: it must
-	// raise a dirty hint and refresh without re-running the commit-graph write.
-	if realWatch {
-		fixture.WriteFile("watch-probe.txt", "hello\n")
-		awaitHint(t, rig)
-		tickAutoRefresh(t, h)
-		if got := rec.countInvocations(isCommitGraphWrite); got != 1 {
-			t.Fatalf("commit-graph write ran %d times after working-tree refresh, want 1", got)
-		}
-		if got := rec.countInvocations(isCommitGraphProbe); got != 1 {
-			t.Fatalf("commit-graph probe ran %d times after working-tree refresh, want 1", got)
-		}
+	// A real working-tree edit does reload the snapshot, and the once-per-run
+	// guard still prevents a second probe or write.
+	fixture.WriteFile("watch-probe.txt", "hello\n")
+	rig.factory.watch(t, 0).hint()
+	awaitHint(t, rig)
+	tickAutoRefresh(t, h)
+	if h.app.session.loadGen == loadGenBefore {
+		t.Fatal("working-tree edit did not trigger a snapshot reload")
+	}
+	if got := rec.countInvocations(isCommitGraphWrite); got != 1 {
+		t.Fatalf("commit-graph write ran %d times after working-tree refresh, want 1", got)
+	}
+	if got := rec.countInvocations(isCommitGraphProbe); got != 1 {
+		t.Fatalf("commit-graph probe ran %d times after working-tree refresh, want 1", got)
 	}
 }
