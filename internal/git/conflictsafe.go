@@ -282,7 +282,8 @@ func (r *Repo) verifyConflictIdentity(path string, expected ConflictIdentity) (C
 // SafeTakeConflictSide resolves an unmerged path to one side of the
 // merge: "ours" or "theirs". A side that does not exist resolves to a
 // deletion. The conflict must still be exactly as expected describes it,
-// or nothing is changed.
+// or nothing is changed, and a path obstructed by untracked or ignored
+// content is refused rather than destroying it.
 func (r *Repo) SafeTakeConflictSide(path, side string, expected ConflictIdentity) error {
 	switch side {
 	case "ours", "theirs":
@@ -295,6 +296,12 @@ func (r *Repo) SafeTakeConflictSide(path, side string, expected ConflictIdentity
 	}
 	if stage.IsSubmodule() {
 		return fmt.Errorf("%s is a submodule conflict: resolve it inside the submodule", path)
+	}
+	// Whatever the resolution writes at the path's place — the side's
+	// content or the deletion — an obstructing directory of untracked or
+	// ignored files is never part of it, and git would destroy it silently.
+	if err := r.checkWorktreeObstructions([]string{path}); err != nil {
+		return err
 	}
 	have := stage.HaveOurs()
 	if side == "theirs" {
@@ -364,7 +371,9 @@ func (r *Repo) SafeMarkConflictResolved(path string, expected ConflictIdentity) 
 // writes the object, updates the index keeping the file's mode, and
 // checks the file out, atomically enough that a failed write never
 // touches the working tree. Content that still has conflict markers is
-// refused before anything runs.
+// refused before anything runs, and a path obstructed by untracked or
+// ignored content is refused before even the object is written, so the
+// resolution stays with the caller exactly as a failed write left it.
 func (r *Repo) SafeWriteResolvedConflict(path, content string, expected ConflictIdentity) error {
 	if HasConflictMarkers(content) {
 		return fmt.Errorf("%s: %w", path, ErrConflictMarkersRemain)
@@ -387,6 +396,14 @@ func (r *Repo) SafeWriteResolvedConflict(path, content string, expected Conflict
 			mode = "100755"
 			break
 		}
+	}
+	// Writing the resolution where a directory of untracked or ignored
+	// files stands would make checkout-index destroy them silently, and
+	// they are never part of the resolution: refuse before anything runs,
+	// so the resolution stays with the caller exactly as a failed write
+	// always left it.
+	if err := r.checkWorktreeObstructions([]string{path}); err != nil {
+		return err
 	}
 	out, err := r.runInput(quick, []byte(content), "hash-object", "-w", "--stdin")
 	if err != nil {

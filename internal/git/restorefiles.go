@@ -17,7 +17,8 @@ func (r *Repo) EmptyTree() (string, error) {
 
 // ResetFiles puts several files, in the working tree and in the index, back
 // to the revision named. A file the revision does not have is removed. The
-// rest of the tree stays.
+// rest of the tree stays. A path obstructed by untracked or ignored content
+// refuses the whole batch untouched rather than destroying it.
 func (r *Repo) ResetFiles(rev string, paths ...string) error {
 	if strings.TrimSpace(rev) == "" || len(paths) == 0 {
 		return fmt.Errorf("missing revision or paths")
@@ -46,6 +47,14 @@ func (r *Repo) ResetFiles(rev string, paths ...string) error {
 		} else {
 			drop = append(drop, p)
 		}
+	}
+	// Restoring or removing a path whose place a directory of untracked or
+	// ignored files took — or whose parent directory an untracked or ignored
+	// file blocks — would make git destroy that content without a word, so
+	// one obstructed path refuses the whole reset before anything is
+	// written.
+	if err := r.checkWorktreeObstructions(paths); err != nil {
+		return err
 	}
 	if len(keep) > 0 {
 		co := append([]string{"--literal-pathspecs"}, withEndOfOptions([]string{"checkout"}, rev)...)
