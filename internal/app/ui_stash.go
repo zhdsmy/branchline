@@ -50,6 +50,9 @@ type stashUIState struct {
 	saveOpen      bool
 	saveMessage   string
 	saveUntracked bool
+	saveScope     int
+	saveChecked   map[string]bool
+	saveList      ui.ListState
 
 	applyOpen   bool
 	applyTarget stashTarget
@@ -378,61 +381,152 @@ func (a *app) popStash(s git.Stash) {
 	})
 }
 
-// stashSaveCanSubmit reports whether the Save Stash dialog can submit: not
-// busy, and the snapshot shows something the chosen options would stash.
-func (a *app) stashSaveCanSubmit() bool {
+// stashSaveProblemFor is the live explanation of the Save Stash dialog's
+// current scope: the whole-tree answer for All changes, or the selected
+// files' own answer — an unborn repository, a conflicted working tree, or
+// no file checked — for Selected files.
+func (a *app) stashSaveProblemFor(files []stashFileEntry) string {
 	st := a.stashUI()
+	status := a.session.Snapshot().Status
+	if st.saveScope == stashScopeSelected {
+		return stashSaveSelectedProblem(status, files, st.saveChecked)
+	}
+	return stashSaveProblem(status, st.saveUntracked)
+}
+
+// stashSaveCanSubmit reports whether the Save Stash dialog can submit: not
+// busy, and the snapshot shows something the chosen scope would stash.
+func (a *app) stashSaveCanSubmit() bool {
 	if a.session.Busy() {
 		return false
 	}
-	return stashSaveProblem(a.session.Snapshot().Status, st.saveUntracked) == ""
+	files := stashSelectedFiles(a.session.Snapshot().Status, a.stashUI().saveUntracked)
+	return a.stashSaveProblemFor(files) == ""
 }
 
 // saveStashDialog is the modal stashing the working tree: an optional
-// message, the untracked-files choice, and a live explanation that disables
-// the confirm button when there is nothing the chosen options would stash.
+// message, the untracked-files choice, the scope — the whole working tree
+// or only the files checked in the list below — and a live explanation that
+// disables the confirm button when there is nothing the chosen options
+// would stash. The list is virtual, so a tree of thousands of changed files
+// still builds only the rows in view.
 func (a *app) saveStashDialog(c *ui.Context) {
 	p := a.pal
 	st := a.stashUI()
 	if !st.saveOpen {
 		return
 	}
-	ui.Modal(c.Key("stash-save-modal"), &st.saveOpen, func() {
-		ui.Column(c).Width(440).Padding(4).Gap(10).Children(func() {
-			ui.Text(c, "Save Stash").FontSize(16).FontWeight(600).TextColor(p.text)
-			ui.Field(c, "Message:", func() {
-				in := ui.TextInput(c.Key("stash-save-message"), &st.saveMessage).FillWidth().AutoFocus().Placeholder("Stash message (optional)").Label("Stash message")
-				if in.Submitted() && a.stashSaveCanSubmit() {
-					a.submitSaveStash()
-				}
-			})
-			ui.Checkbox(c.Key("stash-save-untracked"), &st.saveUntracked, "Include untracked files")
-			if problem := stashSaveProblem(a.session.Snapshot().Status, st.saveUntracked); problem != "" {
-				ui.Text(c, problem).FontSize(12).TextColor(p.danger)
+	status := a.session.Snapshot().Status
+	files := stashSelectedFiles(status, st.saveUntracked)
+	if st.saveChecked == nil {
+		st.saveChecked = map[string]bool{}
+	}
+	stashSaveReconcile(files, st.saveChecked)
+
+	_, cancelled, confirmed := dialogFrame(c, p, "stash-save-modal", &st.saveOpen, "Save Stash", 460, func() {
+		ui.Field(c, "Message:", func() {
+			in := ui.TextInput(c.Key("stash-save-message"), &st.saveMessage).FillWidth().AutoFocus().Placeholder("Stash message (optional)").Label("Stash message")
+			if in.Submitted() && a.stashSaveCanSubmit() {
+				a.submitSaveStash()
 			}
-			ui.Row(c).Gap(8).Justify(ui.End).Children(func() {
-				if ui.Button(c.Key("stash-save-cancel"), "Cancel").Clicked() {
-					a.closeSaveStashDialog()
-				}
-				confirm := ui.Button(c.Key("stash-save-confirm"), "Save Stash").Label("Confirm Save Stash").Disabled(!a.stashSaveCanSubmit())
-				if confirm.Clicked() {
-					a.submitSaveStash()
-				}
-			})
 		})
-	})
+		ui.Checkbox(c.Key("stash-save-untracked"), &st.saveUntracked, "Include untracked files")
+		scope := st.saveScope
+		seg := ui.Segmented(c.Key("stash-save-scope"), &scope, "All changes", "Selected files").Label("Stash Scope")
+		if seg.Changed() {
+			st.saveScope = scope
+			if scope == stashScopeSelected {
+				// Entering the file choice starts from everything checked,
+				// so a Save Stash right away takes the same files All
+				// changes would.
+				stashSaveAllChecked(stashSelectedFiles(status, st.saveUntracked), st.saveChecked)
+			}
+		}
+		if st.saveScope == stashScopeSelected {
+			a.saveStashFileList(c, files)
+		}
+		if problem := a.stashSaveProblemFor(files); problem != "" {
+			ui.Text(c, problem).FontSize(12).TextColor(p.danger).MaxWidth(424)
+		}
+	},
+		dialogAction{key: "stash-save-cancel", text: "Cancel", label: "Cancel"},
+		dialogAction{key: "stash-save-confirm", text: "Save Stash", label: "Confirm Save Stash", disabled: !a.stashSaveCanSubmit()})
+	if cancelled {
+		a.closeSaveStashDialog()
+	}
+	if confirmed {
+		a.submitSaveStash()
+	}
 	if !st.saveOpen {
 		a.closeSaveStashDialog()
 	}
 }
 
-// closeSaveStashDialog closes the Save Stash dialog and resets its draft so
-// the next open starts clean.
+// saveStashFileList renders the checkable files of the Selected files
+// scope. Only the rows in view are built: the list is virtual, so a working
+// tree of thousands of changed files costs one frame's rows, not one row
+// per file.
+func (a *app) saveStashFileList(c *ui.Context, files []stashFileEntry) {
+	p := a.pal
+	st := a.stashUI()
+	st.saveList.Key = func(row int) any { return files[row].path }
+	st.saveList.Label = func(row int) string { return "Stash file " + files[row].path }
+	ui.List(c.Key("stash-save-files-scroll"), &st.saveList, len(files)).
+		MaxHeight(240).FillWidth().
+		Rows(func(r ui.ListRow) {
+			a.saveStashFileRow(r.Context, p, files[r.Index])
+		})
+}
+
+// saveStashFileRow renders one file of the Selected files list: the
+// checkbox that includes the file in the stash, its status letter and its
+// path.
+func (a *app) saveStashFileRow(c *ui.Context, p palette, f stashFileEntry) {
+	st := a.stashUI()
+	checked := st.saveChecked[f.path]
+	ui.Row(c.Key("stash-save-row-" + f.path)).FillWidth().Gap(8).AlignItems(ui.Center).PaddingX(2).Children(func() {
+		ui.Box(c).Size(16, 16).Radius(4).Background(historyStatusColor(p, f.status).Alpha(0.18)).Center().Shrink(0).Children(func() {
+			ui.Text(c, string(f.status)).FontSize(9.5).FontWeight(700).TextColor(historyStatusColor(p, f.status)).SingleLine()
+		})
+		cb := ui.Checkbox(c.Key("stash-save-check-"+f.path), &checked, f.path).Label("Stash " + f.path).Shrink(1).MinWidth(0)
+		if cb.Changed() {
+			if st.saveChecked == nil {
+				st.saveChecked = map[string]bool{}
+			}
+			if checked {
+				st.saveChecked[f.path] = true
+			} else {
+				delete(st.saveChecked, f.path)
+			}
+		}
+	})
+}
+
+// closeSaveStashDialog closes the Save Stash dialog and resets its draft —
+// the message, the untracked choice, the scope and every check mark — so
+// the next open starts clean with All changes.
 func (a *app) closeSaveStashDialog() {
 	st := a.stashUI()
 	st.saveOpen = false
 	st.saveMessage = ""
 	st.saveUntracked = true
+	st.saveScope = stashScopeAll
+	st.saveChecked = nil
+	st.saveList = ui.ListState{}
+}
+
+// openSaveStashForFile opens the Save Stash dialog in the Selected files
+// scope with exactly one file checked, for the Stash Changes item of the
+// file's context menu. An untracked file also ticks the untracked choice,
+// without which its checkbox could not even appear.
+func (a *app) openSaveStashForFile(f git.FileChange) {
+	st := a.stashUI()
+	st.saveOpen = true
+	st.saveMessage = ""
+	st.saveUntracked = true
+	st.saveScope = stashScopeSelected
+	st.saveChecked = map[string]bool{f.Path: true}
+	st.saveList = ui.ListState{}
 }
 
 // submitSaveStash captures the dialog values on the UI thread, closes the
@@ -442,6 +536,15 @@ func (a *app) submitSaveStash() {
 	st := a.stashUI()
 	message := strings.TrimSpace(st.saveMessage)
 	untracked := st.saveUntracked
+	if st.saveScope == stashScopeSelected {
+		files := stashSelectedFiles(a.session.Snapshot().Status, untracked)
+		paths := stashSaveSubmitPaths(files, st.saveChecked)
+		a.closeSaveStashDialog()
+		a.session.do("Save Stash", func(r *git.Repo) error {
+			return stashSaveSelectedWithGuard(r, message, paths, untracked)
+		})
+		return
+	}
 	a.closeSaveStashDialog()
 	a.session.do("Save Stash", func(r *git.Repo) error {
 		return stashSaveWithGuard(r, message, untracked)

@@ -629,7 +629,7 @@ func TestTagMenuRemoteDeleteSuccessKeepsLocal(t *testing.T) {
 }
 
 // While the probe is held in flight the dialog reports it is checking and
-// renders no confirm button at all; releasing the probe brings the button.
+// renders the confirm button disabled; releasing the probe enables it.
 func TestTagMenuRemoteDeleteCheckingHasNoConfirm(t *testing.T) {
 	repo, _, _, _ := tagsPushSidebarRepo(t, "tagmenu-rmdel-checking")
 	repo.Git("push", "origin", "refs/tags/lw")
@@ -646,11 +646,21 @@ func TestTagMenuRemoteDeleteCheckingHasNoConfirm(t *testing.T) {
 	if !h.ui.HasText("Checking remote tag on origin") {
 		t.Fatalf("checking note missing; texts=%q", h.ui.Texts())
 	}
-	if btn, ok := h.ui.AccessByRole(ui.RoleButton, "Confirm Delete Remote Tag"); ok {
-		t.Fatalf("Confirm Delete Remote Tag present while checking: %+v", btn)
+	if btn, ok := h.ui.AccessByRole(ui.RoleButton, "Confirm Delete Remote Tag"); !ok || !btn.Disabled {
+		t.Fatalf("Confirm Delete Remote Tag while checking = %+v (found=%v), want present and disabled", btn, ok)
 	}
-	if err := h.ui.Click("Confirm Delete Remote Tag"); err == nil {
-		t.Fatal("Confirm Delete Remote Tag was clickable while checking")
+	// Clicking the disabled button is a no-op: the dialog stays exactly as it
+	// is, still checking, and nothing is submitted.
+	_ = h.ui.Click("Confirm Delete Remote Tag")
+	h.ui.Frame()
+	if !h.ui.HasText("Checking remote tag on origin") {
+		t.Fatalf("checking note changed after clicking the disabled confirm; texts=%q", h.ui.Texts())
+	}
+	if !h.app.tagsMenuUI().rdOpen || !h.app.tagsMenuUI().rdChecking {
+		t.Fatal("clicking the disabled confirm changed the dialog's probe state")
+	}
+	if btn, ok := h.ui.AccessByRole(ui.RoleButton, "Confirm Delete Remote Tag"); !ok || !btn.Disabled {
+		t.Fatalf("Confirm Delete Remote Tag after the click = %+v (found=%v), want still disabled", btn, ok)
 	}
 
 	h.queue.ReleaseWorker(probe)
@@ -666,8 +676,9 @@ func TestTagMenuRemoteDeleteCheckingHasNoConfirm(t *testing.T) {
 }
 
 // When the probe cannot read the remote it shows the real error and renders
-// no confirm button; when the remote has no such tag the dialog says so and
-// renders none either. Nothing is deleted in either state.
+// the confirm button disabled; when the remote has no such tag the dialog
+// says so and renders it disabled there too. Nothing is deleted in either
+// state.
 func TestTagMenuRemoteDeleteFailureAndAbsentHaveNoConfirm(t *testing.T) {
 	repo, bare, _, _ := tagsPushSidebarRepo(t, "tagmenu-rmdel-noconfirm")
 	repo.Git("push", "origin", "refs/tags/lw")
@@ -684,11 +695,18 @@ func TestTagMenuRemoteDeleteFailureAndAbsentHaveNoConfirm(t *testing.T) {
 	if !h.ui.HasText("does not appear to be a git repository") {
 		t.Fatalf("probe failure error text missing; texts=%q", h.ui.Texts())
 	}
-	if btn, ok := h.ui.AccessByRole(ui.RoleButton, "Confirm Delete Remote Tag"); ok {
-		t.Fatalf("Confirm Delete Remote Tag present after a failed probe: %+v", btn)
+	if btn, ok := h.ui.AccessByRole(ui.RoleButton, "Confirm Delete Remote Tag"); !ok || !btn.Disabled {
+		t.Fatalf("Confirm Delete Remote Tag after a failed probe = %+v (found=%v), want present and disabled", btn, ok)
 	}
-	if err := h.ui.Click("Confirm Delete Remote Tag"); err == nil {
-		t.Fatal("Confirm Delete Remote Tag was clickable after the probe failed")
+	// Clicking the disabled button is a no-op: the failure and the error text
+	// stay on the open dialog exactly as they are, and nothing is submitted.
+	_ = h.ui.Click("Confirm Delete Remote Tag")
+	h.ui.Frame()
+	if !h.ui.HasText("Cannot verify the remote tag") {
+		t.Fatalf("probe failure warning changed after clicking the disabled confirm; texts=%q", h.ui.Texts())
+	}
+	if !h.app.tagsMenuUI().rdOpen || h.app.tagsMenuUI().rdErr == nil {
+		t.Fatal("clicking the disabled confirm changed the dialog's failure state")
 	}
 	if err := h.ui.Click("Cancel"); err != nil {
 		t.Fatalf("click Cancel: %v", err)
@@ -705,8 +723,18 @@ func TestTagMenuRemoteDeleteFailureAndAbsentHaveNoConfirm(t *testing.T) {
 	if !h.ui.HasText("no tag named ann") {
 		t.Fatalf("absent-remote note missing; texts=%q", h.ui.Texts())
 	}
-	if btn, ok := h.ui.AccessByRole(ui.RoleButton, "Confirm Delete Remote Tag"); ok {
-		t.Fatalf("Confirm Delete Remote Tag present for an absent remote tag: %+v", btn)
+	if btn, ok := h.ui.AccessByRole(ui.RoleButton, "Confirm Delete Remote Tag"); !ok || !btn.Disabled {
+		t.Fatalf("Confirm Delete Remote Tag for an absent remote tag = %+v (found=%v), want present and disabled", btn, ok)
+	}
+	// Clicking the disabled button is a no-op here too: the absent-remote
+	// note stays on the open dialog and nothing is submitted.
+	_ = h.ui.Click("Confirm Delete Remote Tag")
+	h.ui.Frame()
+	if !h.ui.HasText("no tag named ann") {
+		t.Fatalf("absent-remote note changed after clicking the disabled confirm; texts=%q", h.ui.Texts())
+	}
+	if !h.app.tagsMenuUI().rdOpen || h.app.tagsMenuUI().rdExists {
+		t.Fatal("clicking the disabled confirm changed the dialog's absent state")
 	}
 	if err := h.ui.Click("Cancel"); err != nil {
 		t.Fatalf("click Cancel: %v", err)
