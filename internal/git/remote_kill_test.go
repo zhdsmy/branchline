@@ -74,9 +74,11 @@ func rkWaitServerGone(t *testing.T, token string, deadline time.Time, what strin
 // writes on standard error by the given number of seconds: the process-group
 // marker the server's shell writes first reaches the app that much later
 // than the command's own start on the server, which is the ordering a fast
-// cancellation meets on a loaded machine. The real stderr still arrives in
-// order — it is spooled in a file and replayed — and the replayer is ended
-// once ssh exits so nothing is left behind.
+// cancellation meets on a loaded machine. The spooled standard error is
+// replayed once, after the delay — the marker the tests care about is the
+// first thing written, long before the delay passes — and the replayer is a
+// short-lived cat rather than a follower, so even a wrapper ended with
+// SIGKILL leaves nothing behind.
 func rkDelayedSSH(t *testing.T, innerSSH string, seconds string) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -86,9 +88,7 @@ func rkDelayedSSH(t *testing.T, innerSSH string, seconds string) string {
 	}
 	script := "#!/bin/sh\n" +
 		"_f=$(mktemp " + ShellQuote(filepath.Join(logDir, "err.XXXXXXXX")) + ") || exit 1\n" +
-		"( sleep " + seconds + "; exec tail -f -n +1 \"$_f\" 1>&2 ) &\n" +
-		"_tp=$!\n" +
-		"trap 'kill \"$_tp\" 2>/dev/null; rm -f \"$_f\"' EXIT\n" +
+		"( sleep " + seconds + "; cat \"$_f\" 1>&2 2>/dev/null; rm -f \"$_f\" ) &\n" +
 		ShellQuote(innerSSH) + " \"$@\" 2>\"$_f\"\n"
 	wrapper := filepath.Join(dir, "ssh")
 	if err := os.WriteFile(wrapper, []byte(script), 0o755); err != nil {
