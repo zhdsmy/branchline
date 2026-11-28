@@ -330,21 +330,16 @@ func (d *diffPanel) discardDiffLinesModal(c *ui.Context, s *repoSession, scope s
 		d.cancelDiscardDiffLines()
 		return
 	}
-	if ui.Modal(c.Key("discard-lines-modal"), &st.open, func() {
-		ui.Column(c.Key("discard-lines-modal-body")).Width(430).Padding(18, 18, 14, 18).Gap(10).Children(func() {
-			ui.Text(c, st.title).FontSize(17).FontWeight(650).TextColor(p.text)
-			ui.Text(c, st.body).FontSize(13).TextColor(p.muted).MaxWidth(390)
-			ui.Row(c.Key("discard-lines-modal-actions")).Gap(8).Justify(ui.End).Children(func() {
-				if ui.Button(c.Key("discard-lines-cancel"), "Cancel").Label("Cancel").Clicked() {
-					d.cancelDiscardDiffLines()
-				}
-				if ui.PrimaryButton(c.Key("discard-lines-confirm"), "Discard").Label("Confirm Discard").Disabled(s.Busy()).Clicked() {
-					d.confirmDiscardDiffLines(s, scope)
-				}
-			})
-		})
-	}).Dismissed() {
+	dismissed, cancelled, confirmed := dialogFrame(c, p, "discard-lines", &st.open, st.title, 430, func() {
+		ui.Text(c, st.body).FontSize(13).TextColor(p.muted).MaxWidth(390)
+	},
+		dialogAction{key: "discard-lines-cancel", text: "Cancel", label: "Cancel"},
+		dialogAction{key: "discard-lines-confirm", text: "Discard", label: "Confirm Discard", disabled: s.Busy(), destructive: true})
+	if cancelled || dismissed {
 		d.cancelDiscardDiffLines()
+	}
+	if confirmed {
+		d.confirmDiscardDiffLines(s, scope)
 	}
 }
 

@@ -378,8 +378,9 @@ func TestTagMenuCheckoutGuardHeadMoved(t *testing.T) {
 }
 
 // Checking out a tag whose file version differs from a locally modified file
-// makes Git itself refuse: the checkout is never forced, so the error shows
-// and every byte of the local modification survives.
+// opens the dialog offering to stash or discard the changes instead of an
+// error banner. Canceling it leaves every byte of the local modification
+// intact.
 func TestTagMenuCheckoutConflictRefusedWithBytesIntact(t *testing.T) {
 	repo := newGitRepo(t, "tagmenu-conflict")
 	first := repo.CommitFile("f.txt", "v1\n", "add f v1")
@@ -397,7 +398,12 @@ func TestTagMenuCheckoutConflictRefusedWithBytesIntact(t *testing.T) {
 	}
 	h.drain()
 
-	assertRepoErrorShown(t, h, "local changes")
+	// The dialog opens with the file in the way, instead of an error banner.
+	assertCheckoutBlockedPanel(t, h, "lw", []string{"f.txt"}, nil)
+
+	cancelCheckoutBlocked(t, h)
+	h.drain()
+
 	assertStillOnBranch(t, repo.Path(), "main", second)
 	assertFileBytes(t, repo, "f.txt", "local edits\n")
 

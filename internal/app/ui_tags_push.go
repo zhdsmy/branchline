@@ -193,7 +193,12 @@ type tagOIDProbe struct {
 // pushTagDialog is the modal pushing one tag to a remote. The default push is
 // never forced; ticking the force box starts the remote probe, and only its
 // successful answer — plus, while the remote already has the tag, the user's
-// explicit overwrite agreement — renders an enabled Force Push Tag button.
+// explicit overwrite agreement — enables the Force Push Tag button. That
+// force spelling is the frame's destructive one: red, with Enter never
+// confirming it. Where the pre-frame dialog rendered no confirm button at
+// all while the probe ran or after it failed, the frame's fixed footer shows
+// the destructive button disabled instead; the state that is unknown is
+// never overwritten either way.
 func (a *app) pushTagDialog(c *ui.Context) {
 	p := a.pal
 	st := a.tagsPushUI()
@@ -202,78 +207,70 @@ func (a *app) pushTagDialog(c *ui.Context) {
 	}
 	refs := a.session.Snapshot().Refs
 	remotes := refs.Remotes
-	if ui.Modal(c.Key("push-tag-modal"), &st.pushOpen, func() {
-		ui.Column(c.Key("push-tag-body")).Width(460).Padding(18, 18, 14, 18).Gap(10).Children(func() {
-			ui.Text(c, "Push Tag").FontSize(17).FontWeight(650).TextColor(p.text)
-			ui.Field(c, "Tag:", func() {
-				ui.Text(c, st.pushTag).Font("monospace").FontSize(12).TextColor(p.text)
-			})
-			switch {
-			case len(remotes) == 0:
-				ui.Text(c, "The repository has no remote to push to.").FontSize(12).TextColor(p.danger)
-			default:
-				ui.Field(c, "Remote:", func() {
-					if ui.Select(c, &st.pushRemote, remotes).FillWidth().Label("Push Tag remote").Changed() && st.force {
-						a.startTagForceProbe(st.pushTag, st.pushRemote)
-					}
-				})
-			}
-			forceBox := ui.Checkbox(c.Key("push-tag-force"), &st.force, "Force push (overwrite existing remote tag)").Label("Force push")
-			if forceBox.Changed() {
-				if st.force {
-					a.startTagForceProbe(st.pushTag, st.pushRemote)
-				} else {
-					a.session.cancelRead("tags-remote-check")
-					st.forceChecking = false
-					st.forceErr = nil
-					st.forceOID = ""
-					st.forceExists = false
-					st.forceAgree = false
-				}
-			}
-			if st.force {
-				switch {
-				case st.forceChecking:
-					ui.Text(c, "Checking remote tag on "+st.pushRemote+"…").FontSize(12).TextColor(p.muted)
-				case st.forceErr != nil:
-					ui.Text(c, "Cannot verify the remote tag. It will not be overwritten.").FontSize(12).TextColor(p.danger)
-					ui.Text(c, st.forceErr.Error()).FontSize(12).TextColor(p.danger)
-				case st.forceExists:
-					ui.Text(c, "The remote tag points at "+shortTagHash(st.forceOID)+" and will be overwritten for everyone.").FontSize(12).TextColor(p.danger)
-					ui.Checkbox(c.Key("push-tag-agree"), &st.forceAgree, "I understand, overwrite remote tag").Label("Agree to overwrite remote tag")
-				default:
-					ui.Text(c, "The remote has no tag named "+st.pushTag+" yet. It is still pushed with an empty lease: one created in the meantime is never overwritten.").FontSize(12).TextColor(p.muted)
-				}
-			}
-			ui.Row(c.Key("push-tag-actions")).Gap(8).Justify(ui.End).Children(func() {
-				if ui.Button(c.Key("push-tag-cancel"), "Cancel").Label("Cancel").Clicked() {
-					a.closePushTagDialog()
-				}
-				canSubmit := len(remotes) > 0 && !a.session.Busy()
-				if st.force {
-					// The confirm button of a force push does not exist while
-					// the probe runs and does not exist when it failed: a
-					// remote state that is unknown is never overwritten.
-					if !st.forceChecking && st.forceErr == nil {
-						ready := canSubmit && (!st.forceExists || st.forceAgree)
-						if ui.PrimaryButton(c.Key("push-tag-force-confirm"), "Force Push Tag").
-							Label("Confirm Force Push Tag").
-							Disabled(!ready).
-							Clicked() {
-							a.submitForcePushTag()
-						}
-					}
-				} else {
-					if ui.PrimaryButton(c.Key("push-tag-confirm"), "Push Tag").
-						Label("Confirm Push Tag").
-						Disabled(!canSubmit).
-						Clicked() {
-						a.submitPushTag()
-					}
-				}
-			})
+	canSubmit := len(remotes) > 0 && !a.session.Busy()
+	primary := dialogAction{key: "push-tag-confirm", text: "Push Tag", label: "Confirm Push Tag", disabled: !canSubmit, autoFocus: true}
+	if st.force {
+		// The confirm button of a force push stays disabled while the probe
+		// runs and when it failed: a remote state that is unknown is never
+		// overwritten.
+		ready := canSubmit && !st.forceChecking && st.forceErr == nil && (!st.forceExists || st.forceAgree)
+		primary = dialogAction{key: "push-tag-force-confirm", text: "Force Push Tag", label: "Confirm Force Push Tag", disabled: !ready, destructive: true}
+	}
+	dismissed, cancelled, confirmed := dialogFrame(c, p, "push-tag", &st.pushOpen, "Push Tag", 460, func() {
+		ui.Field(c, "Tag:", func() {
+			ui.Text(c, st.pushTag).Font("monospace").FontSize(12).TextColor(p.text)
 		})
-	}).Dismissed() {
+		switch {
+		case len(remotes) == 0:
+			ui.Text(c, "The repository has no remote to push to.").FontSize(12).TextColor(p.danger)
+		default:
+			ui.Field(c, "Remote:", func() {
+				if ui.Select(c, &st.pushRemote, remotes).FillWidth().Label("Push Tag remote").Changed() && st.force {
+					a.startTagForceProbe(st.pushTag, st.pushRemote)
+				}
+			})
+		}
+		forceBox := ui.Checkbox(c.Key("push-tag-force"), &st.force, "Force push (overwrite existing remote tag)").Label("Force push")
+		if forceBox.Changed() {
+			if st.force {
+				a.startTagForceProbe(st.pushTag, st.pushRemote)
+			} else {
+				a.session.cancelRead("tags-remote-check")
+				st.forceChecking = false
+				st.forceErr = nil
+				st.forceOID = ""
+				st.forceExists = false
+				st.forceAgree = false
+			}
+		}
+		if st.force {
+			switch {
+			case st.forceChecking:
+				ui.Text(c, "Checking remote tag on "+st.pushRemote+"…").FontSize(12).TextColor(p.muted)
+			case st.forceErr != nil:
+				ui.Text(c, "Cannot verify the remote tag. It will not be overwritten.").FontSize(12).TextColor(p.danger)
+				ui.Text(c, st.forceErr.Error()).FontSize(12).TextColor(p.danger)
+			case st.forceExists:
+				ui.Text(c, "The remote tag points at "+shortTagHash(st.forceOID)+" and will be overwritten for everyone.").FontSize(12).TextColor(p.danger)
+				ui.Checkbox(c.Key("push-tag-agree"), &st.forceAgree, "I understand, overwrite remote tag").Label("Agree to overwrite remote tag")
+			default:
+				ui.Text(c, "The remote has no tag named "+st.pushTag+" yet. It is still pushed with an empty lease: one created in the meantime is never overwritten.").FontSize(12).TextColor(p.muted)
+			}
+		}
+	},
+		dialogAction{key: "push-tag-cancel", text: "Cancel", label: "Cancel"},
+		primary)
+	if cancelled {
+		a.closePushTagDialog()
+	}
+	if confirmed {
+		if st.force {
+			a.submitForcePushTag()
+		} else {
+			a.submitPushTag()
+		}
+	}
+	if dismissed {
 		a.closePushTagDialog()
 	}
 }

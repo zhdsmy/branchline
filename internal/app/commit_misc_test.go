@@ -402,9 +402,9 @@ func TestCommitCheckoutGuardStatusFailure(t *testing.T) {
 }
 
 // Checking out a commit whose version of a locally modified file differs
-// makes Git itself refuse: the checkout is never forced, so the error shows
-// in the toolbar, HEAD and the branch stay, and every byte of the local
-// modification survives.
+// opens the dialog offering to stash or discard the changes instead of an
+// error banner. Canceling it keeps HEAD and the branch where they were, and
+// every byte of the local modification survives.
 func TestCommitCheckoutConflictRefusedWithBytesIntact(t *testing.T) {
 	repo := newGitRepo(t, "checkout-conflict")
 	c1 := repo.CommitFile("f.txt", "v1\n", "add f v1")
@@ -420,13 +420,16 @@ func TestCommitCheckoutConflictRefusedWithBytesIntact(t *testing.T) {
 	}
 	h.drain()
 
-	// Git refuses: f.txt is locally modified and differs between HEAD and
-	// the target. Nothing may move or change.
-	assertRepoErrorShown(t, h, "local changes")
+	// The dialog opens with the file in the way, instead of an error banner.
+	assertCheckoutBlockedPanel(t, h, shortTagHash(c1), []string{"f.txt"}, nil)
+
+	cancelCheckoutBlocked(t, h)
+	h.drain()
+
 	assertStillOnBranch(t, repo.Path(), "main", head)
 	assertFileBytes(t, repo, "f.txt", "local edits\n")
 	if got := h.app.session.Snapshot().Status.Branch; got != "main" {
-		t.Fatalf("snapshot branch after the refused checkout = %q, want main", got)
+		t.Fatalf("snapshot branch after the canceled checkout = %q, want main", got)
 	}
 
 	// Once the user discards the conflicting edit themselves, the same

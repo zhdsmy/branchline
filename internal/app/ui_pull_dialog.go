@@ -150,54 +150,43 @@ func pullDialogCanSubmit(st *pullDialogState, busy bool, opState string) bool {
 
 // pullDialog is the modal of the toolbar Pull: the remote and the branch on
 // it to pull into the current branch, with rebase and stash as the two
-// choices of the pull. Enter submits like the confirm button — except while
-// the button is disabled — and Cancel, Escape, the backdrop and a
-// repository switch close without pulling or remembering anything.
+// choices of the pull. The shared frame makes Enter submit like the confirm
+// button — except while the button is disabled — and Cancel, Escape, the
+// backdrop and a repository switch close without pulling or remembering
+// anything.
 func (a *app) pullDialog(c *ui.Context) {
 	p := a.pal
 	st := &syncStateFor(a).pullDlg
 	if !st.open {
 		return
 	}
-	if ui.Modal(c.Key("pull-dialog-modal"), &st.open, func() {
-		ui.Column(c.Key("pull-dialog-body")).Width(460).Padding(18, 18, 14, 18).Gap(10).Children(func() {
-			ui.Text(c, "Pull").FontSize(17).FontWeight(650).TextColor(p.text)
-			ui.Field(c, "Remote:", func() {
-				if ui.Select(c, &st.remote, st.remotes).FillWidth().Label("Pull Remote").Changed() {
-					// A different remote lists its own branches and the choice
-					// starts from that remote's default again.
-					pullDialogResetBranches(st)
-				}
-			})
-			ui.Field(c, "Branch:", func() {
-				ui.Select(c, &st.branch, st.branches).FillWidth().Label("Pull Branch")
-			})
-			ui.Field(c, "Into:", func() {
-				ui.Text(c, st.into).Font("monospace").FontSize(12).TextColor(p.text)
-			})
-			ui.Checkbox(c.Key("pull-dialog-rebase"), &st.rebase, "Rebase instead of merge").Label("Rebase instead of merge").Tooltip("--rebase")
-			ui.Checkbox(c.Key("pull-dialog-stash"), &st.stash, "Stash and reapply local changes").Label("Stash and reapply local changes")
-			ui.Row(c.Key("pull-dialog-actions")).Gap(8).Justify(ui.End).Children(func() {
-				if ui.Button(c.Key("pull-dialog-cancel"), "Cancel").Label("Cancel").Clicked() {
-					a.closePullDialog()
-				}
-				if ui.PrimaryButton(c.Key("pull-dialog-confirm"), "Pull").
-					Label("Confirm Pull").
-					Disabled(!pullDialogCanSubmit(st, a.session.Busy(), a.session.Snapshot().Status.State)).
-					AutoFocus().
-					Clicked() {
-					a.submitPullDialog()
-				}
-			})
-			// Enter is the confirm button, as in every dialog: a focused
-			// control that takes the key — an open remote or branch choice, a
-			// focused button — consumes it first, so this fires only for the
-			// Enter nothing else claimed.
-			if c.Shortcut(0, ui.KeyEnter) && pullDialogCanSubmit(st, a.session.Busy(), a.session.Snapshot().Status.State) {
-				a.submitPullDialog()
+	canSubmit := pullDialogCanSubmit(st, a.session.Busy(), a.session.Snapshot().Status.State)
+	dismissed, cancelled, confirmed := dialogFrame(c, p, "pull-dialog", &st.open, "Pull", 460, func() {
+		ui.Field(c, "Remote:", func() {
+			if ui.Select(c, &st.remote, st.remotes).FillWidth().Label("Pull Remote").Changed() {
+				// A different remote lists its own branches and the choice
+				// starts from that remote's default again.
+				pullDialogResetBranches(st)
 			}
 		})
-	}).Dismissed() {
+		ui.Field(c, "Branch:", func() {
+			ui.Select(c, &st.branch, st.branches).FillWidth().Label("Pull Branch")
+		})
+		ui.Field(c, "Into:", func() {
+			ui.Text(c, st.into).Font("monospace").FontSize(12).TextColor(p.text)
+		})
+		ui.Checkbox(c.Key("pull-dialog-rebase"), &st.rebase, "Rebase instead of merge").Label("Rebase instead of merge").Tooltip("--rebase")
+		ui.Checkbox(c.Key("pull-dialog-stash"), &st.stash, "Stash and reapply local changes").Label("Stash and reapply local changes")
+	},
+		dialogAction{key: "pull-dialog-cancel", text: "Cancel", label: "Cancel"},
+		dialogAction{key: "pull-dialog-confirm", text: "Pull", label: "Confirm Pull", disabled: !canSubmit, autoFocus: true})
+	if cancelled {
+		a.closePullDialog()
+	}
+	if confirmed {
+		a.submitPullDialog()
+	}
+	if dismissed {
 		a.closePullDialog()
 	}
 }

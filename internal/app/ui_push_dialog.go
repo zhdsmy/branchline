@@ -201,7 +201,9 @@ func pushDialogCanSubmit(st *pushDialogUIState, busy bool) bool {
 // remote and the branch name there, upstream tracking, and the two options.
 // A ticked force push unfolds its warning and the explicit agreement the
 // confirm button is gated on; the button itself switches between Push and
-// Force Push with the choice.
+// Force Push with the choice, and the force spelling is the frame's
+// destructive one — red, with Enter never confirming it, in the destination
+// input included.
 func (a *app) pushDialog(c *ui.Context) {
 	p := a.pal
 	st := pushDialogUI(a)
@@ -212,90 +214,85 @@ func (a *app) pushDialog(c *ui.Context) {
 	for i, b := range st.branches {
 		branchNames[i] = b.Name
 	}
-	if ui.Modal(c.Key("push-dialog-modal"), &st.open, func() {
-		ui.Column(c.Key("push-dialog-body")).Width(460).Padding(18, 18, 14, 18).Gap(10).Children(func() {
-			ui.Text(c, "Push").FontSize(17).FontWeight(650).TextColor(p.text)
-			ui.Field(c, "Branch:", func() {
-				if ui.Select(c, &st.branch, branchNames).FillWidth().Label("Push Local Branch").Changed() {
-					// A different branch starts from its own upstream state:
-					// the remote, the destination and the tracking default are
-					// recomputed, the typed destination is forgotten, and no
-					// force push of the previous branch can follow the choice.
-					if b := pushDialogBranch(st); b != nil {
-						st.remote, st.dest, st.setUpstream = pushDialogDefaults(*b, st.remotes)
-					}
-					st.destEdited = false
-					st.force = false
-					st.forceAgree = false
+	canSubmit := pushDialogCanSubmit(st, a.session.Busy())
+	primary := dialogAction{key: "push-dialog-confirm", text: "Push", label: "Confirm Push", disabled: !canSubmit, destructive: st.force}
+	if st.force {
+		primary.text = "Force Push"
+		primary.label = "Confirm Force Push"
+	}
+	dismissed, cancelled, confirmed := dialogFrame(c, p, "push-dialog", &st.open, "Push", 460, func() {
+		ui.Field(c, "Branch:", func() {
+			if ui.Select(c, &st.branch, branchNames).FillWidth().Label("Push Local Branch").Changed() {
+				// A different branch starts from its own upstream state:
+				// the remote, the destination and the tracking default are
+				// recomputed, the typed destination is forgotten, and no
+				// force push of the previous branch can follow the choice.
+				if b := pushDialogBranch(st); b != nil {
+					st.remote, st.dest, st.setUpstream = pushDialogDefaults(*b, st.remotes)
 				}
-			})
-			ui.Field(c, "Remote:", func() {
-				if ui.Select(c, &st.remote, st.remotes).FillWidth().Label("Push Remote").Changed() {
-					// A destination the user typed stays; a default one follows
-					// the new remote: the upstream's branch name when this is
-					// the upstream's remote, the branch's own name otherwise.
-					if !st.destEdited {
-						if b := pushDialogBranch(st); b != nil {
-							if upRemote, upBranch, ok := liveUpstreamOf(*b, st.remotes); ok && upRemote == st.remote {
-								st.dest = upBranch
-							} else {
-								st.dest = b.Name
-							}
-						}
-					}
-					st.forceAgree = false
-				}
-			})
-			ui.Field(c, "Remote branch:", func() {
-				in := ui.TextInput(c.Key("push-dialog-dest"), &st.dest).FillWidth().Label("Push Remote Branch")
-				if in.Changed() {
-					st.destEdited = true
-					st.forceAgree = false
-				}
-				if in.Submitted() && pushDialogCanSubmit(st, a.session.Busy()) {
-					a.submitPushDialog()
-				}
-			})
-			if problem := pushDestProblem(st.dest); problem != "" {
-				ui.Text(c, problem).FontSize(12).TextColor(p.danger)
-			}
-			ui.Checkbox(c.Key("push-dialog-upstream"), &st.setUpstream, "Set upstream tracking").Label("Set upstream tracking").Tooltip("--set-upstream")
-			if ui.Checkbox(c.Key("push-dialog-force"), &st.force, "Force push (with lease)").Label("Force push (with lease)").Tooltip("--force-with-lease").Changed() {
-				// The agreement never survives the box flipping in either
-				// direction: unticking retires it, and ticking again starts
-				// from disagreement.
+				st.destEdited = false
+				st.force = false
 				st.forceAgree = false
 			}
-			if st.force {
-				target := st.remote + "/" + strings.TrimSpace(st.dest)
-				ui.Text(c, "Force pushing may overwrite commits on "+target+" for everyone.").FontSize(12).TextColor(p.danger).Wrap()
-				ui.Text(c, "--force-with-lease protects you: if the remote branch was updated since your last fetch, the push is rejected instead of overwriting it.").FontSize(12).TextColor(p.muted).Wrap()
-				ui.Checkbox(c.Key("push-dialog-agree"), &st.forceAgree, "I understand, force push with lease").Label("Confirm force push with lease")
-			}
-			ui.Checkbox(c.Key("push-dialog-tags"), &st.tags, "Push all tags").Label("Push all tags").Tooltip("--tags")
-			ui.Row(c.Key("push-dialog-actions")).Gap(8).Justify(ui.End).Children(func() {
-				if ui.Button(c.Key("push-dialog-cancel"), "Cancel").Label("Cancel").Clicked() {
-					a.closePushDialog()
-				}
-				canSubmit := pushDialogCanSubmit(st, a.session.Busy())
-				if st.force {
-					if ui.PrimaryButton(c.Key("push-dialog-confirm"), "Force Push").
-						Label("Confirm Force Push").
-						Disabled(!canSubmit).
-						Clicked() {
-						a.submitPushDialog()
-					}
-				} else {
-					if ui.PrimaryButton(c.Key("push-dialog-confirm"), "Push").
-						Label("Confirm Push").
-						Disabled(!canSubmit).
-						Clicked() {
-						a.submitPushDialog()
-					}
-				}
-			})
 		})
-	}).Dismissed() {
+		ui.Field(c, "Remote:", func() {
+			if ui.Select(c, &st.remote, st.remotes).FillWidth().Label("Push Remote").Changed() {
+				// A destination the user typed stays; a default one follows
+				// the new remote: the upstream's branch name when this is
+				// the upstream's remote, the branch's own name otherwise.
+				if !st.destEdited {
+					if b := pushDialogBranch(st); b != nil {
+						if upRemote, upBranch, ok := liveUpstreamOf(*b, st.remotes); ok && upRemote == st.remote {
+							st.dest = upBranch
+						} else {
+							st.dest = b.Name
+						}
+					}
+				}
+				st.forceAgree = false
+			}
+		})
+		ui.Field(c, "Remote branch:", func() {
+			in := ui.TextInput(c.Key("push-dialog-dest"), &st.dest).FillWidth().Label("Push Remote Branch")
+			if in.Changed() {
+				st.destEdited = true
+				st.forceAgree = false
+			}
+			// Enter in the input submits the plain push, as it always did —
+			// the input takes the key before every shortcut, so the frame's
+			// Enter never double-submits. A ticked force push is destructive,
+			// so no Enter anywhere confirms it, here included.
+			if in.Submitted() && !st.force && pushDialogCanSubmit(st, a.session.Busy()) {
+				a.submitPushDialog()
+			}
+		})
+		if problem := pushDestProblem(st.dest); problem != "" {
+			ui.Text(c, problem).FontSize(12).TextColor(p.danger)
+		}
+		ui.Checkbox(c.Key("push-dialog-upstream"), &st.setUpstream, "Set upstream tracking").Label("Set upstream tracking").Tooltip("--set-upstream")
+		if ui.Checkbox(c.Key("push-dialog-force"), &st.force, "Force push (with lease)").Label("Force push (with lease)").Tooltip("--force-with-lease").Changed() {
+			// The agreement never survives the box flipping in either
+			// direction: unticking retires it, and ticking again starts
+			// from disagreement.
+			st.forceAgree = false
+		}
+		if st.force {
+			target := st.remote + "/" + strings.TrimSpace(st.dest)
+			ui.Text(c, "Force pushing may overwrite commits on "+target+" for everyone.").FontSize(12).TextColor(p.danger).Wrap()
+			ui.Text(c, "--force-with-lease protects you: if the remote branch was updated since your last fetch, the push is rejected instead of overwriting it.").FontSize(12).TextColor(p.muted).Wrap()
+			ui.Checkbox(c.Key("push-dialog-agree"), &st.forceAgree, "I understand, force push with lease").Label("Confirm force push with lease")
+		}
+		ui.Checkbox(c.Key("push-dialog-tags"), &st.tags, "Push all tags").Label("Push all tags").Tooltip("--tags")
+	},
+		dialogAction{key: "push-dialog-cancel", text: "Cancel", label: "Cancel"},
+		primary)
+	if cancelled {
+		a.closePushDialog()
+	}
+	if confirmed {
+		a.submitPushDialog()
+	}
+	if dismissed {
 		a.closePushDialog()
 	}
 }
