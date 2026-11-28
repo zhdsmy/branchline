@@ -249,20 +249,54 @@ func splitBlameLines(content []byte) []git.BlameLine {
 // cells in batches of at most one per fileBlameBatchWindow. An empty file
 // needs no blame: git blame of it annotates nothing, so the read ends after
 // the content without running the blame command.
+//
+// A revisionless blame — the Local Changes entries pass "HEAD" — pins itself
+// to the snapshot's HEAD commit here on the UI thread before the read
+// starts: the file's blame at one commit never changes, so the read runs at
+// the exact commit and its finished result caches under it, and a HEAD that
+// moved on since never poisons a later lookup. The badge keeps showing the
+// original "HEAD" either way. Only a snapshot without commits leaves the
+// revision unresolved: the read then runs at the literal HEAD and its result
+// is never cached.
+//
+// A cached finished blame of the same file at the same commit needs no read
+// at all: the inspector fills from the cache at once, with no progress row
+// and no git invocation.
 func (a *app) startFileBlameLoad() {
 	st := a.fileInspectorUI()
 	if !st.open || !a.session.HasRepo() {
 		return
 	}
 	path, rev := st.path, st.blameRev
+
+	// Resolve the revision on the UI thread, where the snapshot is stable:
+	// the background worker never re-reads it.
+	at := rev
+	if at == "" || at == "HEAD" {
+		if head := a.session.Snapshot().Status.Head; head != "" {
+			at = head
+		} else {
+			at = "HEAD"
+		}
+	}
+
+	if at != "HEAD" {
+		if lines, ok := a.fileBlameCache().get(at, path, a.session.Generation()); ok {
+			st.blameLines = lines
+			st.blameCovered = len(lines)
+			st.blameLoading = false
+			st.blameErr = nil
+			if len(lines) == 0 {
+				st.blameSel = -1
+			}
+			return
+		}
+	}
+
 	now, wrapHunk := fileBlameNow, fileBlameWrapHunk
 	st.blameLoading = true
 	started := sessionReadStream(a.session, fileBlameScope,
 		func(repo *git.Repo, emit func(fileBlameBatch)) (struct{}, error) {
-			at := rev
-			if at == "" {
-				at = "HEAD"
-			}
 			content, err := repo.BlobContent(git.BlobSide{Rev: at, Path: path})
 			if err != nil {
 				return struct{}{}, err
@@ -340,6 +374,13 @@ func (a *app) startFileBlameLoad() {
 			}
 			if len(st.blameLines) == 0 {
 				st.blameSel = -1
+			}
+			// Only a finished read — no error, every line covered — is worth
+			// caching, and only at a resolved commit: a read that still ran at
+			// the literal HEAD would cache its result under a moving target.
+			// The stored slice is never written again (see fileBlameCache).
+			if at != "HEAD" {
+				a.fileBlameCache().put(at, path, st.blameLines, a.session.Generation())
 			}
 		})
 	if !started {
