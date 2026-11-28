@@ -306,6 +306,17 @@ func (a *app) runClone(st *cloneUIState) {
 		a.runCloneSSH(st)
 		return
 	}
+	// A folder or name whose edge is whitespace is refused rather than
+	// trimmed into a different path: the dialog shows the error and nothing
+	// is created or started.
+	if msg := edgeSpaceError(st.parent, "Parent Folder"); msg != "" {
+		st.err = msg
+		return
+	}
+	if msg := edgeSpaceError(st.name, "Folder Name"); msg != "" {
+		st.err = msg
+		return
+	}
 	url := strings.TrimSpace(st.url)
 	parentInput := strings.TrimSpace(st.parent)
 	name := strings.TrimSpace(st.name)
@@ -376,6 +387,17 @@ func cloneInto(ctx context.Context, url, parentInput, name string, prefs store.S
 // as an SSH address is an error of the draft itself: the dialog shows it
 // without connecting.
 func (a *app) runCloneSSH(st *cloneUIState) {
+	// The same refusal as the parent folder of a local clone, before the
+	// address is read: an edge-whitespace folder or name is never trimmed
+	// into a different server path, and nothing connects.
+	if msg := edgeSpaceError(st.serverFolder, "Server Folder"); msg != "" {
+		st.err = msg
+		return
+	}
+	if msg := edgeSpaceError(st.name, "Folder Name"); msg != "" {
+		st.err = msg
+		return
+	}
 	url := strings.TrimSpace(st.url)
 	folderInput := strings.TrimSpace(st.serverFolder)
 	identity := strings.TrimSpace(st.serverIdentity)
