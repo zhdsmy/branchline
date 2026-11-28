@@ -142,26 +142,21 @@ func (a *app) tagCheckoutDialog(c *ui.Context) {
 	if !st.coOpen {
 		return
 	}
-	if ui.Modal(c.Key("tag-checkout-modal"), &st.coOpen, func() {
-		ui.Column(c.Key("tag-checkout-body")).Width(460).Padding(18, 18, 14, 18).Gap(10).Children(func() {
-			ui.Text(c, "Checkout Commit").FontSize(17).FontWeight(650).TextColor(p.text)
-			ui.Field(c, "Tag:", func() {
-				ui.Text(c, st.coTag).Font("monospace").FontSize(12).TextColor(p.text)
-			})
-			ui.Text(c, "HEAD will be detached at "+shortTagHash(st.coCommit)).FontSize(12.5).TextColor(p.muted).SingleLine()
-			ui.Row(c.Key("tag-checkout-actions")).Gap(8).Justify(ui.End).Children(func() {
-				if ui.Button(c.Key("tag-checkout-cancel"), "Cancel").Label("Cancel").Clicked() {
-					a.closeTagCheckoutDialog()
-				}
-				if ui.PrimaryButton(c.Key("tag-checkout-confirm"), "Checkout").
-					Label("Confirm Checkout Tag Commit").
-					Disabled(a.session.Busy()).
-					Clicked() {
-					a.submitTagCheckout()
-				}
-			})
+	dismissed, cancelled, confirmed := dialogFrame(c, p, "tag-checkout-modal", &st.coOpen, "Checkout Commit", 460, func() {
+		ui.Field(c, "Tag:", func() {
+			ui.Text(c, st.coTag).Font("monospace").FontSize(12).TextColor(p.text)
 		})
-	}).Dismissed() {
+		ui.Text(c, "HEAD will be detached at "+shortTagHash(st.coCommit)).FontSize(12.5).TextColor(p.muted).SingleLine()
+	},
+		dialogAction{key: "tag-checkout-cancel", text: "Cancel", label: "Cancel"},
+		dialogAction{key: "tag-checkout-confirm", text: "Checkout", label: "Confirm Checkout Tag Commit", disabled: a.session.Busy(), autoFocus: true})
+	if cancelled {
+		a.closeTagCheckoutDialog()
+	}
+	if confirmed {
+		a.submitTagCheckout()
+	}
+	if dismissed {
 		a.closeTagCheckoutDialog()
 	}
 }

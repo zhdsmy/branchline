@@ -276,43 +276,38 @@ func (a *app) pushPRDialog(c *ui.Context) {
 	if !st.pushOpen {
 		return
 	}
-	ui.Modal(c.Key("push-pr-modal"), &st.pushOpen, func() {
-		ui.Column(c.Key("push-pr-body")).Width(460).Padding(18, 18, 14, 18).Gap(10).Children(func() {
-			ui.Text(c, "Push and Create Pull Request").FontSize(16).FontWeight(600).TextColor(p.text)
-			ui.Field(c, "Branch:", func() {
-				ui.Text(c, st.pushBranch).Font("monospace").FontSize(12).TextColor(p.text)
-			})
-			ui.Field(c, "Remote:", func() {
-				if len(st.pushRemotes) == 1 {
-					ui.Text(c, pushPRRemoteDisplay(st.pushRemotes[0])).FontSize(12).TextColor(p.text)
-				} else {
-					options := make([]string, len(st.pushRemotes))
-					for i, r := range st.pushRemotes {
-						options[i] = pushPRRemoteDisplay(r)
-					}
-					if _, ok := pushPRSelected(st); !ok {
-						st.pushSelText = options[0]
-					}
-					ui.Select(c, &st.pushSelText, options).Label("Push PR Remote")
-				}
-			})
-			service := ""
-			if r, ok := pushPRSelected(st); ok {
-				service = r.service
-			}
-			ui.Text(c, "This pushes the branch to the remote, sets it as the branch's upstream, and opens the new pull request page on "+service+" when the push succeeds.").FontSize(12).TextColor(p.muted).Wrap()
-			ui.Row(c.Key("push-pr-actions")).Gap(8).Justify(ui.End).Children(func() {
-				cancel := ui.Button(c.Key("push-pr-cancel"), "Cancel").Label("Cancel")
-				if cancel.Clicked() {
-					clearPushPRDraft(st)
-				}
-				confirm := ui.PrimaryButton(c.Key("push-pr-confirm"), "Push and Create Pull Request").Label("Confirm Push and Create Pull Request").Disabled(a.session.Busy())
-				if confirm.Clicked() {
-					a.submitPushPR()
-				}
-			})
+	_, cancelled, confirmed := dialogFrame(c, p, "push-pr-modal", &st.pushOpen, "Push and Create Pull Request", 460, func() {
+		ui.Field(c, "Branch:", func() {
+			ui.Text(c, st.pushBranch).Font("monospace").FontSize(12).TextColor(p.text)
 		})
-	})
+		ui.Field(c, "Remote:", func() {
+			if len(st.pushRemotes) == 1 {
+				ui.Text(c, pushPRRemoteDisplay(st.pushRemotes[0])).FontSize(12).TextColor(p.text)
+			} else {
+				options := make([]string, len(st.pushRemotes))
+				for i, r := range st.pushRemotes {
+					options[i] = pushPRRemoteDisplay(r)
+				}
+				if _, ok := pushPRSelected(st); !ok {
+					st.pushSelText = options[0]
+				}
+				ui.Select(c, &st.pushSelText, options).Label("Push PR Remote")
+			}
+		})
+		service := ""
+		if r, ok := pushPRSelected(st); ok {
+			service = r.service
+		}
+		ui.Text(c, "This pushes the branch to the remote, sets it as the branch's upstream, and opens the new pull request page on "+service+" when the push succeeds.").FontSize(12).TextColor(p.muted).Wrap()
+	},
+		dialogAction{key: "push-pr-cancel", text: "Cancel", label: "Cancel"},
+		dialogAction{key: "push-pr-confirm", text: "Push and Create Pull Request", label: "Confirm Push and Create Pull Request", disabled: a.session.Busy(), autoFocus: true})
+	if cancelled {
+		clearPushPRDraft(st)
+	}
+	if confirmed {
+		a.submitPushPR()
+	}
 	if !st.pushOpen {
 		clearPushPRDraft(st)
 	}

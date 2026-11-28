@@ -131,20 +131,17 @@ func (a *app) checkoutCommitModal(c *ui.Context) {
 		return
 	}
 
-	ui.Modal(c.Key("commit-checkout-modal"), &st.checkoutOpen, func() {
-		ui.Column(c.Key("commit-checkout-modal-body")).Width(460).Padding(18, 18, 14, 18).Gap(10).Children(func() {
-			ui.Text(c, "Checkout Commit").FontSize(17).FontWeight(650).TextColor(p.text)
-			ui.Text(c, "HEAD will be detached at "+st.checkoutTarget.Short()+" "+st.checkoutTarget.Subject).FontSize(12.5).TextColor(p.muted).SingleLine().Ellipsis("…")
-			ui.Row(c.Key("commit-checkout-modal-actions")).Gap(8).Justify(ui.End).Children(func() {
-				if ui.Button(c.Key("checkout-cancel"), "Cancel").Label("Cancel").Clicked() {
-					a.closeCheckoutModal()
-				}
-				if ui.PrimaryButton(c.Key("checkout-confirm"), "Checkout").Label("Confirm Checkout Commit").Disabled(a.session.Busy()).Clicked() {
-					a.submitCheckout()
-				}
-			})
-		})
-	})
+	_, cancelled, confirmed := dialogFrame(c, p, "commit-checkout-modal", &st.checkoutOpen, "Checkout Commit", 460, func() {
+		ui.Text(c, "HEAD will be detached at "+st.checkoutTarget.Short()+" "+st.checkoutTarget.Subject).FontSize(12.5).TextColor(p.muted).SingleLine().Ellipsis("…")
+	},
+		dialogAction{key: "checkout-cancel", text: "Cancel", label: "Cancel"},
+		dialogAction{key: "checkout-confirm", text: "Checkout", label: "Confirm Checkout Commit", disabled: a.session.Busy(), autoFocus: true})
+	if cancelled {
+		a.closeCheckoutModal()
+	}
+	if confirmed {
+		a.submitCheckout()
+	}
 	if !st.checkoutOpen {
 		a.closeCheckoutModal()
 	}
