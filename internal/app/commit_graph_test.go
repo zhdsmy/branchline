@@ -125,8 +125,16 @@ func isRevListCountAll(args []string) bool {
 	return len(args) == 3 && args[0] == "rev-list" && args[1] == "--count" && args[2] == "--all"
 }
 
+// isCommitGraphWrite recognizes a commit-graph write invocation. Leading
+// -c key=value pairs, which git options ahead of the subcommand come in,
+// are skipped first: the write of a large history carries one for the
+// changed-path filter version.
 func isCommitGraphWrite(args []string) bool {
-	return len(args) >= 2 && args[0] == "commit-graph" && args[1] == "write"
+	i := 0
+	for i+1 < len(args) && args[i] == "-c" {
+		i += 2
+	}
+	return len(args)-i >= 2 && args[i] == "commit-graph" && args[i+1] == "write"
 }
 
 // isCommitGraphProbe recognizes the shell script that checks for an existing

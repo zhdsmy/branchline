@@ -294,64 +294,68 @@ func (a *app) newTagDialog(c *ui.Context) {
 	if !st.newOpen {
 		return
 	}
-	if ui.Modal(c.Key("new-tag-modal"), &st.newOpen, func() {
-		ui.Column(c.Key("new-tag-body")).Width(440).Padding(18, 18, 14, 18).Gap(10).Children(func() {
-			ui.Text(c, "New Tag").FontSize(17).FontWeight(650).TextColor(p.text)
-			ui.Field(c, "Target commit:", func() {
-				in := ui.TextInput(c, &st.newTarget).FillWidth().Placeholder("HEAD").Label("Target commit")
-				if in.Changed() {
-					// The hint belongs to the pre-filled target only: once the
-					// user edits the target it no longer describes anything.
-					st.newTargetHint = ""
-				}
-			})
-			if st.newTargetHint != "" {
-				ui.Text(c, st.newTargetHint).FontSize(11.5).TextColor(p.faint).SingleLine()
+	_, cancelled, confirmed := dialogFrame(c, p, "new-tag", &st.newOpen, "New Tag", 440, func() {
+		ui.Field(c, "Target commit:", func() {
+			in := ui.TextInput(c, &st.newTarget).FillWidth().Placeholder("HEAD").Label("Target commit")
+			if in.Changed() {
+				// The hint belongs to the pre-filled target only: once the
+				// user edits the target it no longer describes anything.
+				st.newTargetHint = ""
 			}
-			ui.Field(c, "Tag name:", func() {
-				in := ui.TextInput(c, &st.newName).FillWidth().AutoFocus().Placeholder("Enter Tag Name").Label("Tag name")
-				if in.Changed() {
-					st.newNameChanged = true
-				}
-				if in.Submitted() && a.newTagCanSubmit() {
-					a.submitNewTag()
-				}
-			})
-			name := strings.TrimSpace(st.newName)
-			if problem := a.newTagProblem(name); problem != "" && (st.newNameChanged || name != "") {
-				ui.Text(c, problem).FontSize(12).TextColor(p.danger)
-			}
-			ui.Field(c, "Message:", func() {
-				ui.TextArea(c.Key("new-tag-message"), &st.newMessage).
-					Placeholder("Optional message: makes the tag annotated").
-					Label("Tag message").
-					Height(72).
-					FillWidth()
-			})
-			if remotes := a.session.Snapshot().Refs.Remotes; len(remotes) > 0 {
-				pushBox := ui.Checkbox(c.Key("new-tag-push"), &st.newPush, "Push to remote").Label("Push to remote")
-				if pushBox.Changed() && st.newPush && st.newPushRemote == "" {
-					st.newPushRemote = defaultRemoteOf(a.session.Snapshot().Refs)
-				}
-				if st.newPush {
-					ui.Field(c, "Remote:", func() {
-						ui.Select(c, &st.newPushRemote, remotes).FillWidth().Label("New Tag push remote")
-					})
-				}
-			}
-			if problem := a.newTagTargetProblem(); problem != "" {
-				ui.Text(c, problem).FontSize(12).TextColor(p.danger)
-			}
-			ui.Row(c.Key("new-tag-actions")).Gap(8).Justify(ui.End).Children(func() {
-				if ui.Button(c.Key("tag-new-cancel"), "Cancel").Label("Cancel").Clicked() {
-					a.closeNewTagDialog()
-				}
-				if ui.PrimaryButton(c.Key("tag-new-create"), "Create Tag").Label("Create Tag").Disabled(!a.newTagCanSubmit()).Clicked() {
-					a.submitNewTag()
-				}
-			})
 		})
-	}).Dismissed() {
+		if st.newTargetHint != "" {
+			ui.Text(c, st.newTargetHint).FontSize(11.5).TextColor(p.faint).SingleLine()
+		}
+		ui.Field(c, "Tag name:", func() {
+			in := ui.TextInput(c, &st.newName).FillWidth().AutoFocus().Placeholder("Enter Tag Name").Label("Tag name")
+			if in.Changed() {
+				st.newNameChanged = true
+			}
+			// Enter inside the name field is the field's own submit: the
+			// single-line input takes the key before the frame's shortcut can
+			// see it, so this is the one channel confirming from the keyboard
+			// while the name is being typed.
+			if in.Submitted() && a.newTagCanSubmit() {
+				a.submitNewTag()
+			}
+		})
+		name := strings.TrimSpace(st.newName)
+		if problem := a.newTagProblem(name); problem != "" && (st.newNameChanged || name != "") {
+			ui.Text(c, problem).FontSize(12).TextColor(p.danger)
+		}
+		ui.Field(c, "Message:", func() {
+			ui.TextArea(c.Key("new-tag-message"), &st.newMessage).
+				Placeholder("Optional message: makes the tag annotated").
+				Label("Tag message").
+				Height(72).
+				FillWidth()
+		})
+		if remotes := a.session.Snapshot().Refs.Remotes; len(remotes) > 0 {
+			pushBox := ui.Checkbox(c.Key("new-tag-push"), &st.newPush, "Push to remote").Label("Push to remote")
+			if pushBox.Changed() && st.newPush && st.newPushRemote == "" {
+				st.newPushRemote = defaultRemoteOf(a.session.Snapshot().Refs)
+			}
+			if st.newPush {
+				ui.Field(c, "Remote:", func() {
+					ui.Select(c, &st.newPushRemote, remotes).FillWidth().Label("New Tag push remote")
+				})
+			}
+		}
+		if problem := a.newTagTargetProblem(); problem != "" {
+			ui.Text(c, problem).FontSize(12).TextColor(p.danger)
+		}
+	},
+		dialogAction{key: "tag-new-cancel", text: "Cancel", label: "Cancel"},
+		// The name field keeps the focus it autofocuses, so the primary
+		// button asks for none of it.
+		dialogAction{key: "tag-new-create", text: "Create Tag", label: "Create Tag", disabled: !a.newTagCanSubmit()})
+	if cancelled {
+		a.closeNewTagDialog()
+	}
+	if confirmed {
+		a.submitNewTag()
+	}
+	if !st.newOpen {
 		a.closeNewTagDialog()
 	}
 }
@@ -414,57 +418,48 @@ func (a *app) openDeleteTagDialog(name string) {
 }
 
 // deleteTagDialog is the confirmation dialog for deleting a tag. The confirm
-// button does not exist while the verification runs and does not exist when
-// it failed: a tag whose state is unknown is never deleted. What the user
-// confirms — the exact object the tag pointed at — is re-verified in the
-// delete worker against the repository itself: a tag retargeted or recreated
-// since the check is a different tag and is never deleted by it.
+// button stays disabled while the verification runs and when it failed: a
+// tag whose state is unknown is never deleted. What the user confirms — the
+// exact object the tag pointed at — is re-verified in the delete worker
+// against the repository itself: a tag retargeted or recreated since the
+// check is a different tag and is never deleted by it.
 func (a *app) deleteTagDialog(c *ui.Context) {
 	p := a.pal
 	st := a.tagsUI()
 	if !st.delOpen {
 		return
 	}
-	if ui.Modal(c.Key("del-tag-modal"), &st.delOpen, func() {
-		ui.Column(c.Key("del-tag-body")).Width(460).Padding(18, 18, 14, 18).Gap(10).Children(func() {
-			ui.Text(c, "Delete Tag").FontSize(17).FontWeight(650).TextColor(p.text)
-			ui.Field(c, "Tag:", func() {
-				ui.Text(c, st.delTarget).Font("monospace").FontSize(12).TextColor(p.text)
-			})
-			switch {
-			case st.delChecking:
-				ui.Text(c, "Checking tag details…").FontSize(12).TextColor(p.muted)
-			case st.delErr != nil:
-				ui.Text(c, "Cannot verify this tag. The tag will not be deleted.").FontSize(12).TextColor(p.danger)
-				ui.Text(c, st.delErr.Error()).FontSize(12).TextColor(p.danger)
-			default:
-				info := st.delInfo
-				kind := "Lightweight tag"
-				if info.Annotated {
-					kind = "Annotated tag"
-				}
-				ui.Text(c, kind+" on commit "+shortTagHash(info.CommitOID)+".").FontSize(12).TextColor(p.muted)
-				if info.Annotated && strings.TrimSpace(info.Message) != "" {
-					ui.Text(c, firstLineOf(info.Message)).FontSize(12).TextColor(p.muted)
-				}
-			}
-			ui.Row(c.Key("del-tag-actions")).Gap(8).Justify(ui.End).Children(func() {
-				if ui.Button(c.Key("tag-del-cancel"), "Cancel").Label("Cancel").Clicked() {
-					a.closeDeleteTagDialog()
-				}
-				if !st.delChecking && st.delErr == nil {
-					// Rendered only once verification answered: an unverified
-					// tag never has a delete button.
-					if ui.PrimaryButton(c.Key("tag-del-confirm"), "Delete Tag").
-						Label("Confirm Delete Tag").
-						Disabled(a.session.Busy()).
-						Clicked() {
-						a.submitDeleteTag()
-					}
-				}
-			})
+	_, cancelled, confirmed := dialogFrame(c, p, "del-tag", &st.delOpen, "Delete Tag", 460, func() {
+		ui.Field(c, "Tag:", func() {
+			ui.Text(c, st.delTarget).Font("monospace").FontSize(12).TextColor(p.text)
 		})
-	}).Dismissed() {
+		switch {
+		case st.delChecking:
+			ui.Text(c, "Checking tag details…").FontSize(12).TextColor(p.muted)
+		case st.delErr != nil:
+			ui.Text(c, "Cannot verify this tag. The tag will not be deleted.").FontSize(12).TextColor(p.danger)
+			ui.Text(c, st.delErr.Error()).FontSize(12).TextColor(p.danger)
+		default:
+			info := st.delInfo
+			kind := "Lightweight tag"
+			if info.Annotated {
+				kind = "Annotated tag"
+			}
+			ui.Text(c, kind+" on commit "+shortTagHash(info.CommitOID)+".").FontSize(12).TextColor(p.muted)
+			if info.Annotated && strings.TrimSpace(info.Message) != "" {
+				ui.Text(c, firstLineOf(info.Message)).FontSize(12).TextColor(p.muted)
+			}
+		}
+	},
+		dialogAction{key: "tag-del-cancel", text: "Cancel", label: "Cancel"},
+		dialogAction{key: "tag-del-confirm", text: "Delete Tag", label: "Confirm Delete Tag", disabled: st.delChecking || st.delErr != nil || a.session.Busy(), destructive: true})
+	if cancelled {
+		a.closeDeleteTagDialog()
+	}
+	if confirmed {
+		a.submitDeleteTag()
+	}
+	if !st.delOpen {
 		a.closeDeleteTagDialog()
 	}
 }

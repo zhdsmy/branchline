@@ -276,7 +276,10 @@ func interactiveRebasePlanProblem(rows []*interactiveRebaseRow) string {
 // The submit button stays disabled until a plan is read, while a read is in
 // flight, while it failed, while the draft folds into nothing, and while a
 // write is running — none of those states can produce a rebase the user
-// confirmed.
+// confirmed. A plan dropping commits makes the dialog destructive: dropping
+// a commit is the user's own choice in the row's action list, but the Enter
+// key must never finish it, because a user choosing actions row by row
+// presses Enter there all the time.
 func (a *app) interactiveRebaseModal(c *ui.Context) {
 	p := a.pal
 	st := interactiveRebaseUI(a)
@@ -305,82 +308,89 @@ func (a *app) interactiveRebaseModal(c *ui.Context) {
 	drops := derived.drops
 	rebaseDisabled := a.session.Busy() || st.loading || st.readErr != nil || len(st.rows) == 0 || problem != "" || msgLoading || msgFailed || msgValidation != ""
 
-	ui.Modal(c.Key("ir-modal"), &st.open, func() {
-		ui.Column(c.Key("ir-modal-body")).Width(640).Padding(18, 18, 14, 18).Gap(10).Children(func() {
-			ui.Text(c, "Interactive Rebase").FontSize(17).FontWeight(650).TextColor(p.text)
-			ui.Text(c, "Choose the action and position of each commit; the rebase applies them from bottom to top.").FontSize(12).TextColor(p.muted).MaxWidth(604)
-			ui.Field(c, "Rebase:", func() {
-				ui.Text(c, st.branch).Font("monospace").FontSize(12).TextColor(p.text)
-			})
-			ui.Field(c, "Onto:", func() {
-				ui.Text(c, st.ontoLabel).FontSize(12).TextColor(p.text).SingleLine().Ellipsis("…")
-			})
-			switch {
-			case st.loading:
-				// A new plan read starts the rows list from the top again:
-				// the place of the rows it replaces means nothing to it, as
-				// the scroll container's reset offset did before.
-				st.list = ui.ListState{}
-				st.moves = nil
-				ui.Text(c, "Loading plan…").FontSize(12.5).TextColor(p.muted)
-			case st.readErr != nil:
-				st.moves = nil
-				ui.Text(c, st.readErr.Error()).FontSize(12).TextColor(p.danger).MaxWidth(604)
-				if ui.Button(c.Key("ir-retry"), "Retry").Label("Retry").Clicked() {
-					a.startInteractiveRebasePlanRead(st)
-				}
-			default:
-				// The list draws only the rows in view; its order is the reverse
-				// of the execution order, the newest commit on top. A move
-				// button's click cannot swap rows while the rows build — the
-				// rows not built yet would shift underneath the pass, drawing
-				// one commit twice — so the button records the move and the
-				// swaps apply once the whole list is built. The pass rebuilds
-				// for the click it consumed, so the frame shows the outcome the
-				// same as an immediate swap would. With fewer rows than the
-				// list's height the list is exactly as tall as its content;
-				// past MaxHeight it scrolls.
-				st.list.KeepOffset = true
-				st.list.Key = func(row int) any { return st.rows[len(st.rows)-1-row].hash }
-				ui.List(c.Key("ir-rows-scroll"), &st.list, len(st.rows)).
-					MaxHeight(320).Gap(2).FillWidth().
-					Rows(func(r ui.ListRow) {
-						a.interactiveRebaseRowView(r.Context, p, st, st.rows, len(st.rows)-1-r.Index)
-					})
-				if len(st.moves) > 0 {
-					for _, m := range st.moves {
-						// A real swap mutates the plan in place: the backing
-						// array stays, so only the plan version can tell the
-						// derived cache the rows changed.
-						if moveInteractiveRebaseRow(st.rows, m.hash, m.dir) {
-							st.planVersion++
-						}
-					}
-					st.moves = st.moves[:0]
-				}
-			}
-			a.interactiveRebaseMessagePanel(c, p, st)
-			if drops > 0 {
-				ui.Text(c, fmt.Sprintf("%d commit(s) will be dropped.", drops)).FontSize(12).TextColor(p.danger)
-			}
-			if problem != "" {
-				ui.Text(c, problem).FontSize(12).TextColor(p.danger).MaxWidth(604)
-			}
-			if err := a.session.ActionErr(); st.submitClicked && err != nil {
-				ui.Text(c, err.Error()).FontSize(12).TextColor(p.danger).MaxWidth(604)
-			}
-			a.interactiveRebaseOptionsSection(c, p)
-			ui.Row(c.Key("ir-modal-actions")).Gap(8).Justify(ui.End).Children(func() {
-				if ui.Button(c.Key("ir-cancel"), "Cancel").Label("Cancel").Clicked() {
-					a.closeInteractiveRebaseModal()
-				}
-				if ui.PrimaryButton(c.Key("ir-start"), "Rebase").Label("Rebase").Disabled(rebaseDisabled).Clicked() {
-					a.submitInteractiveRebase()
-				}
-			})
+	// A plan that drops commits discards them outright: the confirmation is
+	// the destructive one — red, deaf to Enter, its autofocus ignored — while
+	// a plan keeping every commit only reshapes the branch the rebase replays
+	// anyway, so its Rebase confirms on Enter like every non-destructive
+	// dialog.
+	primary := dialogAction{key: "ir-start", text: "Rebase", label: "Rebase", disabled: rebaseDisabled, autoFocus: true}
+	if drops > 0 {
+		primary = dialogAction{key: "ir-start", text: "Rebase", label: "Rebase", disabled: rebaseDisabled, destructive: true}
+	}
+
+	_, cancelled, confirmed := dialogFrame(c, p, "ir", &st.open, "Interactive Rebase", 640, func() {
+		ui.Text(c, "Choose the action and position of each commit; the rebase applies them from bottom to top.").FontSize(12).TextColor(p.muted).MaxWidth(604)
+		ui.Field(c, "Rebase:", func() {
+			ui.Text(c, st.branch).Font("monospace").FontSize(12).TextColor(p.text)
 		})
-	})
-	if !st.open {
+		ui.Field(c, "Onto:", func() {
+			ui.Text(c, st.ontoLabel).FontSize(12).TextColor(p.text).SingleLine().Ellipsis("…")
+		})
+		switch {
+		case st.loading:
+			// A new plan read starts the rows list from the top again:
+			// the place of the rows it replaces means nothing to it, as
+			// the scroll container's reset offset did before.
+			st.list = ui.ListState{}
+			st.moves = nil
+			ui.Text(c, "Loading plan…").FontSize(12.5).TextColor(p.muted)
+		case st.readErr != nil:
+			st.moves = nil
+			ui.Text(c, st.readErr.Error()).FontSize(12).TextColor(p.danger).MaxWidth(604)
+			if ui.Button(c.Key("ir-retry"), "Retry").Label("Retry").Clicked() {
+				a.startInteractiveRebasePlanRead(st)
+			}
+		default:
+			// The list draws only the rows in view; its order is the reverse
+			// of the execution order, the newest commit on top. A move
+			// button's click cannot swap rows while the rows build — the
+			// rows not built yet would shift underneath the pass, drawing
+			// one commit twice — so the button records the move and the
+			// swaps apply once the whole list is built. The pass rebuilds
+			// for the click it consumed, so the frame shows the outcome the
+			// same as an immediate swap would. With fewer rows than the
+			// list's height the list is exactly as tall as its content;
+			// past MaxHeight it scrolls.
+			st.list.KeepOffset = true
+			st.list.Key = func(row int) any { return st.rows[len(st.rows)-1-row].hash }
+			ui.List(c.Key("ir-rows-scroll"), &st.list, len(st.rows)).
+				MaxHeight(320).Gap(2).FillWidth().
+				Rows(func(r ui.ListRow) {
+					a.interactiveRebaseRowView(r.Context, p, st, st.rows, len(st.rows)-1-r.Index)
+				})
+			if len(st.moves) > 0 {
+				for _, m := range st.moves {
+					// A real swap mutates the plan in place: the backing
+					// array stays, so only the plan version can tell the
+					// derived cache the rows changed.
+					if moveInteractiveRebaseRow(st.rows, m.hash, m.dir) {
+						st.planVersion++
+					}
+				}
+				st.moves = st.moves[:0]
+			}
+		}
+		a.interactiveRebaseMessagePanel(c, p, st)
+		if drops > 0 {
+			ui.Text(c, fmt.Sprintf("%d commit(s) will be dropped.", drops)).FontSize(12).TextColor(p.danger)
+		}
+		if problem != "" {
+			ui.Text(c, problem).FontSize(12).TextColor(p.danger).MaxWidth(604)
+		}
+		if err := a.session.ActionErr(); st.submitClicked && err != nil {
+			ui.Text(c, err.Error()).FontSize(12).TextColor(p.danger).MaxWidth(604)
+		}
+		a.interactiveRebaseOptionsSection(c, p)
+	},
+		dialogAction{key: "ir-cancel", text: "Cancel", label: "Cancel"},
+		primary)
+	if confirmed {
+		a.submitInteractiveRebase()
+	}
+	// Canceling, dismissing and a rebase finishing behind the form all end in
+	// the one close, once: the submission keeps the form open over its write,
+	// so no two of these can need the close in the same pass.
+	if cancelled || !st.open {
 		a.closeInteractiveRebaseModal()
 	}
 }
