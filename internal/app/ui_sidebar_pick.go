@@ -156,31 +156,18 @@ func (a *app) clickSidebarBranch(name string, mods ui.Modifiers, ordered []git.B
 }
 
 // clickSidebarRemoteBranch applies one click on a remote-tracking branch
-// row: the range keys of a Shift-click follow the order the sidebar shows
-// the rows — remote by remote as refs lists them, each remote's branches in
-// the order the settings ask for — so a range may span remotes.
-func (a *app) clickSidebarRemoteBranch(rb git.Branch, mods ui.Modifiers, refs git.Refs) {
+// row: the range keys of a Shift-click follow ordered, the visible
+// remote-tracking branches in the order the sidebar shows them — remote by
+// remote, each remote's branches in the folder-expanded order — so a range
+// may span remotes and never covers a row a collapsed folder hides.
+func (a *app) clickSidebarRemoteBranch(rb git.Branch, mods ui.Modifiers, ordered []git.Branch) {
 	a.clickSidebarRef(remoteBranchPickKey(rb.FullName), mods, func() []sidebarPickKey {
-		return a.remoteBranchDisplayKeys(refs)
-	})
-}
-
-// remoteBranchDisplayKeys is the key list of the remote branch rows in the
-// order the sidebar shows them: the remotes in the order the snapshot lists
-// them, each remote's branches in the sorted order. It runs from click and
-// menu handling only — never from painting — because building the list
-// allocates. The sorted branch copy itself is the frame's cached one.
-func (a *app) remoteBranchDisplayKeys(refs git.Refs) []sidebarPickKey {
-	sorted := a.sortedRemoteBranches(refs.Remote)
-	keys := make([]sidebarPickKey, 0, len(sorted))
-	for _, rem := range refs.Remotes {
-		for _, rb := range sorted {
-			if rb.Remote == rem {
-				keys = append(keys, remoteBranchPickKey(rb.FullName))
-			}
+		keys := make([]sidebarPickKey, 0, len(ordered))
+		for _, b := range ordered {
+			keys = append(keys, remoteBranchPickKey(b.FullName))
 		}
-	}
-	return keys
+		return keys
+	})
 }
 
 // clickSidebarTag applies one click on a tag row: the range keys of a
