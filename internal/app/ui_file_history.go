@@ -277,6 +277,14 @@ func (a *app) changesFileContextMenu(m *ui.Menu, f git.FileChange) {
 		path = f.OrigPath
 	}
 	a.changesExternalDiffMenuItem(m, f)
+	m.Separator()
+	// Stashing a file needs a commit to reset it to, and git cannot write
+	// any stash while the index has unmerged entries or against an ignored
+	// file it never touches.
+	noStash := a.session.Busy() || unborn || f.Status == 'U' || f.Status == '!'
+	if m.Item("Stash Changes…").ID("stash-changes").Disabled(noStash).Chosen() {
+		a.openSaveStashForFile(f)
+	}
 	if m.Item("File History…").ID("file-history").Disabled(noHistory).Chosen() {
 		a.openFileInspector(pageChanges, inspectorModeHistory, path, "HEAD")
 	}
