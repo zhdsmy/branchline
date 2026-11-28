@@ -240,51 +240,8 @@ type RemoveBranchOptions struct {
 	Name string
 	// Force deletes the branch even when it is not merged.
 	Force bool
-	// Upstream, such as origin/feature, is deleted from its remote too.
-	Upstream string
 	// Worktree is a linked checkout of the branch, removed first.
 	Worktree string
-}
-
-// RemoveBranch deletes a local branch and, as asked, the checkout using
-// it and its branch on the remote. The worktree goes first: git keeps a
-// branch that a worktree has checked out.
-func (r *Repo) RemoveBranch(o RemoveBranchOptions) error {
-	name := strings.TrimSpace(o.Name)
-	if name == "" {
-		return fmt.Errorf("deleting a branch needs its name")
-	}
-	if o.Worktree != "" {
-		if err := r.WorktreeRemove(o.Worktree, false); err != nil {
-			return err
-		}
-	}
-	if err := r.DeleteBranch(name, o.Force); err != nil {
-		return err
-	}
-	if o.Upstream != "" {
-		return r.DeleteRemoteBranch(o.Upstream)
-	}
-	return nil
-}
-
-// RenameRemoteBranch gives upstream, such as origin/old, the name newName
-// on its remote: local is pushed under the new name and tracks it, then
-// the old remote branch is deleted.
-func (r *Repo) RenameRemoteBranch(local, upstream, newName string) error {
-	remote, old, ok := strings.Cut(strings.TrimSpace(upstream), "/")
-	local, newName = strings.TrimSpace(local), strings.TrimSpace(newName)
-	if !ok || remote == "" || old == "" || newName == "" || local == "" {
-		return fmt.Errorf("renaming a remote branch needs the local branch, its upstream and a name")
-	}
-	if _, err := r.run(slow, withDashdash([]string{"push", "--set-upstream"}, remote, "refs/heads/"+local+":refs/heads/"+newName)...); err != nil {
-		return err
-	}
-	if old == newName {
-		return nil
-	}
-	_, err := r.run(slow, withDashdash([]string{"push", "--delete"}, remote, "refs/heads/"+old)...)
-	return err
 }
 
 // TagDetail is what Show Tag Details shows.

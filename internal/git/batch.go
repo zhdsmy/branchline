@@ -8,14 +8,11 @@ import (
 )
 
 // RemoveBranches deletes several local branches: the worktrees using
-// them first, then the branches in one git branch -D, then each Upstream
-// from its remote, one push per remote. Every step is tried; the errors
-// are joined.
+// them first, then the branches in one git branch -D. Every step is
+// tried; the errors are joined.
 func (r *Repo) RemoveBranches(list []RemoveBranchOptions) error {
 	var names []string
 	var errs []error
-	upstreams := map[string][]string{}
-	var remotes []string
 	for _, o := range list {
 		name := strings.TrimSpace(o.Name)
 		if name == "" {
@@ -28,47 +25,12 @@ func (r *Repo) RemoveBranches(list []RemoveBranchOptions) error {
 			}
 		}
 		names = append(names, name)
-		if remote, branch, ok := strings.Cut(strings.TrimSpace(o.Upstream), "/"); ok && remote != "" && branch != "" {
-			if _, seen := upstreams[remote]; !seen {
-				remotes = append(remotes, remote)
-			}
-			upstreams[remote] = append(upstreams[remote], branch)
-		}
 	}
 	if len(names) == 0 && len(errs) == 0 {
 		return fmt.Errorf("deleting branches needs their names")
 	}
 	if len(names) > 0 {
 		if err := r.runPathBatches([]string{"branch", "-D", "--"}, names); err != nil {
-			errs = append(errs, err)
-		}
-	}
-	for _, remote := range remotes {
-		if err := r.deleteOnRemote(remote, upstreams[remote]); err != nil {
-			errs = append(errs, err)
-		}
-	}
-	return errors.Join(errs...)
-}
-
-// DeleteRemoteBranches deletes remote branches, such as origin/feature,
-// from their remotes: one push per remote.
-func (r *Repo) DeleteRemoteBranches(remoteBranches []string) error {
-	by := map[string][]string{}
-	var remotes []string
-	for _, rb := range remoteBranches {
-		remote, branch, ok := strings.Cut(strings.TrimSpace(rb), "/")
-		if !ok || remote == "" || branch == "" {
-			return fmt.Errorf("%s is not a remote branch", rb)
-		}
-		if _, seen := by[remote]; !seen {
-			remotes = append(remotes, remote)
-		}
-		by[remote] = append(by[remote], branch)
-	}
-	var errs []error
-	for _, remote := range remotes {
-		if err := r.deleteOnRemote(remote, by[remote]); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -79,9 +41,9 @@ func (r *Repo) DeleteRemoteBranches(remoteBranches []string) error {
 // remote no longer has is not an error: it is already gone. git refuses
 // the whole push for one such ref, so the others then go one by one.
 // withDashdash puts the remote and the refs behind "--" when one starts
-// with "-": a server can hand out such branch names, and without the
-// separator git would read them as its own options rather than as the
-// references to delete.
+// with "-": the tag references never can, but the remote name is read from
+// the repository's configuration, and without the separator such a name
+// would be parsed as the push's own options.
 func (r *Repo) deleteOnRemote(remote string, refs []string) error {
 	if len(refs) == 0 {
 		return nil

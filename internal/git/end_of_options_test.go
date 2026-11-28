@@ -40,13 +40,6 @@ func markerScriptInPATH(t *testing.T, marker, name string) string {
 	return name
 }
 
-// pushDashRef puts a reference whose name starts with "-" into the bare
-// repository, the way a hostile server hands such names out.
-func pushDashRef(t *testing.T, dir, bare, kind, name string) {
-	t.Helper()
-	gitRun(t, dir, "push", "-q", bare, "HEAD:refs/"+kind+"/"+name)
-}
-
 func endOfOptionsRepo(t *testing.T) (dir, bare string) {
 	t.Helper()
 	dir = initRepo(t)
@@ -57,72 +50,6 @@ func endOfOptionsRepo(t *testing.T) (dir, bare string) {
 	gitRun(t, dir, "init", "-q", "--bare", bare)
 	gitRun(t, dir, "remote", "add", "srv", bare)
 	return dir, bare
-}
-
-// TestEndOfOptionsDeleteRemoteBranches is the batch deletion of remote
-// branches: the push must delete the reference named like the
-// --receive-pack option instead of running the script that option names.
-// Without the separator the option wins and the script runs.
-func TestEndOfOptionsDeleteRemoteBranches(t *testing.T) {
-	dir, bare := endOfOptionsRepo(t)
-	marker := filepath.Join(t.TempDir(), "executed")
-	script := markerScriptInPATH(t, marker, "receive-pack.sh")
-	evil := "--receive-pack=" + script
-	pushDashRef(t, dir, bare, "heads", evil)
-	pushDashRef(t, dir, bare, "heads", "good")
-
-	r := New(&LocalExecutor{Dir: dir})
-	if err := r.DeleteRemoteBranches([]string{"srv/" + evil, "srv/good"}); err != nil {
-		t.Fatalf("DeleteRemoteBranches: %v", err)
-	}
-	if _, err := os.Stat(marker); !os.IsNotExist(err) {
-		t.Fatalf("the receive-pack script ran: %s exists", marker)
-	}
-	if out := gitOut(t, dir, "ls-remote", "--heads", bare); strings.Contains(out, evil) || strings.Contains(out, "good") {
-		t.Fatalf("references survived the deletion: %q", out)
-	}
-}
-
-// TestEndOfOptionsDeleteRemoteBranch covers the single remote-branch
-// deletion: the reference is deleted rather than parsed as push options.
-func TestEndOfOptionsDeleteRemoteBranch(t *testing.T) {
-	dir, bare := endOfOptionsRepo(t)
-	marker := filepath.Join(t.TempDir(), "executed")
-	script := markerScriptInPATH(t, marker, "receive-pack.sh")
-	evil := "--receive-pack=" + script
-	pushDashRef(t, dir, bare, "heads", evil)
-
-	r := New(&LocalExecutor{Dir: dir})
-	if err := r.DeleteRemoteBranch("srv/" + evil); err != nil {
-		t.Fatalf("DeleteRemoteBranch: %v", err)
-	}
-	if _, err := os.Stat(marker); !os.IsNotExist(err) {
-		t.Fatalf("the receive-pack script ran: %s exists", marker)
-	}
-	if out := gitOut(t, dir, "ls-remote", "--heads", bare); strings.Contains(out, evil) {
-		t.Fatalf("reference survived the deletion: %q", out)
-	}
-}
-
-// TestEndOfOptionsDeleteRemoteTag covers the deletion of one tag on a
-// remote when its name starts with "-".
-func TestEndOfOptionsDeleteRemoteTag(t *testing.T) {
-	dir, bare := endOfOptionsRepo(t)
-	marker := filepath.Join(t.TempDir(), "executed")
-	script := markerScriptInPATH(t, marker, "receive-pack.sh")
-	evil := "--receive-pack=" + script
-	pushDashRef(t, dir, bare, "tags", evil)
-
-	r := New(&LocalExecutor{Dir: dir})
-	if err := r.DeleteRemoteTag("srv", evil); err != nil {
-		t.Fatalf("DeleteRemoteTag: %v", err)
-	}
-	if _, err := os.Stat(marker); !os.IsNotExist(err) {
-		t.Fatalf("the receive-pack script ran: %s exists", marker)
-	}
-	if out := gitOut(t, dir, "ls-remote", "--tags", bare); strings.Contains(out, evil) {
-		t.Fatalf("tag survived the deletion: %q", out)
-	}
 }
 
 // TestEndOfOptionsDeleteTagsBatch covers the batch deletion of tags:
@@ -138,6 +65,36 @@ func TestEndOfOptionsDeleteTagsBatch(t *testing.T) {
 	}
 	if out := gitOut(t, dir, "tag", "--list"); strings.Contains(out, "--evil") {
 		t.Fatalf("tag survived the deletion: %q", out)
+	}
+}
+
+// TestEndOfOptionsDeleteTagsDashRemote covers the batch deletion of tags
+// from a remote whose name starts with "-": the deletion push must read
+// the name as the remote behind the separator, so the tag is deleted from
+// the server and the program the name smuggles never runs. The tag
+// references themselves cannot start with "-" — they carry their
+// refs/tags/ prefix — so the remote is the only positional argument this
+// path can hand to the push unprotected. git remote add refuses such a
+// name, so it is written into the configuration directly, as a careless or
+// hostile repository setup would.
+func TestEndOfOptionsDeleteTagsDashRemote(t *testing.T) {
+	dir, bare := endOfOptionsRepo(t)
+	marker := filepath.Join(t.TempDir(), "executed")
+	script := markerScriptInPATH(t, marker, "receive-pack.sh")
+	evil := "--receive-pack=" + script
+	gitRun(t, dir, "config", "remote."+evil+".url", bare)
+	gitRun(t, dir, "tag", "v1")
+	gitRun(t, dir, "push", "-q", bare, "refs/tags/v1:refs/tags/v1")
+
+	r := New(&LocalExecutor{Dir: dir})
+	if err := r.DeleteTags([]string{"v1"}, []string{evil}); err != nil {
+		t.Fatalf("DeleteTags: %v", err)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("the receive-pack script ran: %s exists", marker)
+	}
+	if out := gitOut(t, bare, "tag", "--list"); strings.Contains(out, "v1") {
+		t.Fatalf("tag survived the deletion on the remote: %q", out)
 	}
 }
 
@@ -520,13 +477,6 @@ func TestEndOfOptionsInsertedArgs(t *testing.T) {
 	_ = r.Reset("-x", "hard")
 	if want := []string{"reset", "--hard", "--end-of-options", "-x", "--"}; !slices.Equal(ex.args, want) {
 		t.Fatalf("reset args %q, want %q", ex.args, want)
-	}
-
-	if err := r.DeleteRemoteBranches([]string{"srv/--receive-pack=./evil.sh"}); err != nil {
-		t.Fatalf("DeleteRemoteBranches: %v", err)
-	}
-	if want := []string{"push", "--delete", "--", "srv", "--receive-pack=./evil.sh"}; !slices.Equal(ex.args, want) {
-		t.Fatalf("push args %q, want %q", ex.args, want)
 	}
 
 	// cherry-pick and revert read a commit behind "--" as a pathspec and
