@@ -262,14 +262,21 @@ func (a *app) openRemoteEdit(st *remoteEditState, key remoteEditKey, entry *remo
 	}
 	entry.downloading = true
 
+	syncSt := syncStateFor(a)
 	repo, gen := a.syncRepo()
 	if repo == nil {
 		entry.downloading = false
+		if !entry.hasCopy {
+			delete(st.entries, key)
+		}
 		return
 	}
+	syncSt.syncErr = ""
+	syncSt.syncWorkerStarted()
 	cacheDirFn := st.cacheDir
 	path := key.path
 	a.spawn(func() {
+		defer syncSt.syncWorkerDone()
 		cacheDir, err := remoteEditCacheDir(cacheDirFn)
 		var copy git.RemoteCopy
 		if err == nil {
@@ -315,17 +322,21 @@ func (a *app) openRemoteEdit(st *remoteEditState, key remoteEditKey, entry *remo
 // overwrite. Every other failure shows as the dismissible operation error
 // with the copy kept.
 func (a *app) saveRemoteEdit(key remoteEditKey, entry *remoteEditEntry) {
-	if entry == nil || !entry.hasCopy {
+	if entry == nil || !entry.hasCopy || a.session.Busy() {
 		return
 	}
+	syncSt := syncStateFor(a)
 	repo, _ := a.syncRepo()
 	if repo == nil {
 		return
 	}
+	syncSt.syncErr = ""
+	syncSt.syncWorkerStarted()
 	copy := entry.copy
 	path := key.path
 	var meta git.RemoteFileMeta
-	a.session.doThen("Save to Server", func(*git.Repo) error {
+	if !a.session.doThen("Save to Server", func(*git.Repo) error {
+		defer syncSt.syncWorkerDone()
 		var err error
 		meta, err = repo.SaveEdited(context.Background(), copy)
 		return err
@@ -346,7 +357,9 @@ func (a *app) saveRemoteEdit(key remoteEditKey, entry *remoteEditEntry) {
 		}
 		a.session.ClearActionErr()
 		syncStateFor(a).syncErr = git.RedactText(err.Error())
-	})
+	}) {
+		syncSt.syncWorkerDone()
+	}
 }
 
 // discardRemoteEdit starts removing the copy of key. The comparison with

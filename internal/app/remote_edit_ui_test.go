@@ -1017,3 +1017,30 @@ func TestRemoteEditUIUnsavedReposGetSeparateEntries(t *testing.T) {
 		t.Fatalf("entry copies = %q and %q, want the downloads %q and %q", entry1.copy.Local, entry2.copy.Local, opened[0], opened[1])
 	}
 }
+
+// switching Local Changes to tree view keeps the Edited Locally badge on
+// file rows that have an open remote copy.
+func TestRemoteEditUIBadgeShownInTreeView(t *testing.T) {
+	repo, srv := loopbackSSHRepo(t)
+	srv.WriteFile(t, repo.Path, "nested/sub.txt", []byte("nested\n"))
+	h := newTestApp(t)
+	installRemoteEditSeams(t, h)
+	h.openRepo(repo)
+	h.drain()
+	if err := h.app.session.LoadErr(); err != nil {
+		t.Fatalf("SSH initial load failed: %v", err)
+	}
+
+	chooseRemoteEditItem(t, h, "nested/sub.txt", "Open for Editing")
+	h.drain()
+	h.ui.Frame()
+	if _, ok := h.ui.Access("Edited Locally"); !ok {
+		t.Fatalf("no Edited Locally badge in list view; texts=%q", h.ui.Texts())
+	}
+
+	mustClick(t, h, "Show as Tree")
+	h.ui.Frame()
+	if _, ok := h.ui.Access("Edited Locally"); !ok {
+		t.Fatalf("no Edited Locally badge in tree view; texts=%q", h.ui.Texts())
+	}
+}
