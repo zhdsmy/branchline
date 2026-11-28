@@ -64,6 +64,17 @@ type refsState struct {
 	remoteSortCache refSortCache[git.Branch]
 	tagSortCache    refSortCache[git.Tag]
 
+	// sidebarClosed is the set of collapsed reference folder IDs of the
+	// open repository, loaded from its settings once per opening —
+	// sidebarClosedLoaded marks that done — and written back at every
+	// toggle. sidebarClosedRev steps at every mutation, so the cached
+	// sidebar row list rebuilds exactly when the collapse of a folder
+	// changed. Everything resets with the repository generation: the
+	// folders of one repository never carry into another.
+	sidebarClosed       map[string]bool
+	sidebarClosedRev    uint64
+	sidebarClosedLoaded bool
+
 	// sidebarList is the scroll state of the sidebar's virtual row list, and
 	// sidebarRows the cached row table it shows: the rows in display order,
 	// the sorted reference slices they were built from, and the multi-select
@@ -144,16 +155,20 @@ func (a *app) newBranchRow(c *ui.Context) {
 }
 
 // branchRow is one local branch: emphasized when current, double-clicked to
-// check out, with a delete button on non-current branches. Clicking selects
-// the row in the sidebar's multi-selection — Cmd-click toggles it, a Shift-
-// click selects the range from the anchor along ordered, the branches in the
-// sidebar's display order — and with two or more rows selected every
-// selected row carries the selected wash, while the row's right-click menu
-// becomes the batch menu of the selection. A right click on a row outside
-// the selection narrows the selection to it first, so the batch menu only
-// ever shows what the user sees selected. ordered is the cached sorted slice
-// of this frame; reading it here never re-sorts or allocates.
-func (a *app) branchRow(c *ui.Context, br git.Branch, inflight bool, ordered []git.Branch, pickedCount int) {
+// check out, with a delete button on non-current branches. The text is the
+// last slash segment of the name — the folders ahead of it are rows of
+// their own — while the accessible name, the tooltip, and everything the
+// row acts on keep the full name. Clicking selects the row in the sidebar's
+// multi-selection — Cmd-click toggles it, a Shift-click selects the range
+// from the anchor along ordered, the visible branches in the sidebar's
+// display order — and with two or more rows selected every selected row
+// carries the selected wash, while the row's right-click menu becomes the
+// batch menu of the selection. A right click on a row outside the selection
+// narrows the selection to it first, so the batch menu only ever shows what
+// the user sees selected. ordered is the visible display-order slice the
+// cached row table was built with; reading it here never re-sorts or
+// allocates.
+func (a *app) branchRow(c *ui.Context, br git.Branch, inflight bool, ordered []git.Branch, pickedCount int, padLeft float32) {
 	p := a.pal
 	iconColor := p.faint
 	weight := 400
@@ -163,9 +178,9 @@ func (a *app) branchRow(c *ui.Context, br git.Branch, inflight bool, ordered []g
 	}
 	multi := pickedCount >= 2
 	picked := a.refsView.pick[localBranchPickKey(br.Name)]
-	row := ui.Row(c.Key("br-" + br.FullName)).
+	row := ui.Row(c.Key("br-"+br.FullName)).
 		Height(26).
-		PaddingX(10).
+		Padding(0, 10, 0, padLeft).
 		Gap(8).
 		Radius(6).
 		AlignItems(ui.Center).
@@ -173,6 +188,9 @@ func (a *app) branchRow(c *ui.Context, br git.Branch, inflight bool, ordered []g
 		Role(ui.RoleListItem).
 		Label(br.Name).
 		AccessSelected(br.Current || (multi && picked))
+	if tip := sidebarRefTooltip(br.Name); tip != "" {
+		row.Tooltip(tip)
+	}
 	switch {
 	case multi && picked:
 		row.Background(p.selected)
@@ -181,7 +199,7 @@ func (a *app) branchRow(c *ui.Context, br git.Branch, inflight bool, ordered []g
 	}
 	row.Children(func() {
 		symbolIcon(c, "arrow.triangle.branch", fallbackBr, 13, iconColor)
-		ui.Text(c, br.Name).FontSize(12.5).FontWeight(weight).TextColor(p.text).SingleLine().Shrink(1).MinWidth(0)
+		ui.Text(c, sidebarLastSegment(br.Name)).FontSize(12.5).FontWeight(weight).TextColor(p.text).SingleLine().Shrink(1).MinWidth(0)
 		ui.Spacer(c)
 		if !br.Current {
 			delColor := p.faint
@@ -230,28 +248,34 @@ func (a *app) branchRow(c *ui.Context, br git.Branch, inflight bool, ordered []g
 }
 
 // remoteBranchRow is one remote-tracking branch row indented under its
-// remote, in the order the settings ask for. Sorting a copy of the whole
-// list keeps this remote's subsequence sorted, and the snapshot's own slice
-// is never reordered. Clicking selects the row in the sidebar's
+// remote and its folders, in the order the settings ask for. The text is
+// the last slash segment of the branch name — the folders ahead of it are
+// rows of their own — while the accessible name and the tooltip keep the
+// full name with the remote. Clicking selects the row in the sidebar's
 // multi-selection — Cmd-click toggles it, Shift-click selects the range
 // from the anchor along the rows as the sidebar shows them, remote by
 // remote — and with two or more rows selected every selected row carries
 // the selected wash and the row's right-click menu becomes the batch menu
 // of the selection. A right click on a row outside the selection narrows
-// the selection to it first.
-func (a *app) remoteBranchRow(c *ui.Context, rb git.Branch, refs git.Refs, sorted []git.Branch, pickedCount int) {
+// the selection to it first. sorted is the visible display-order slice the
+// cached row table was built with; reading it here never re-sorts or
+// allocates.
+func (a *app) remoteBranchRow(c *ui.Context, rb git.Branch, refs git.Refs, sorted []git.Branch, pickedCount int, padLeft float32) {
 	p := a.pal
 	multi := pickedCount >= 2
 	picked := a.refsView.pick[remoteBranchPickKey(rb.FullName)]
 	row := ui.Row(c.Key("rem-br-"+rb.FullName)).
 		Height(24).
-		Padding(0, 10, 0, 29).
+		Padding(0, 10, 0, padLeft).
 		Gap(8).
 		AlignItems(ui.Center).
 		Focusable().
 		Role(ui.RoleListItem).
 		Label(rb.Name).
 		AccessSelected(multi && picked)
+	if tip := sidebarRefTooltip(rb.Name); tip != "" {
+		row.Tooltip(tip)
+	}
 	switch {
 	case multi && picked:
 		row.Background(p.selected)
@@ -260,10 +284,15 @@ func (a *app) remoteBranchRow(c *ui.Context, rb git.Branch, refs git.Refs, sorte
 	}
 	row.Children(func() {
 		symbolIcon(c, "arrow.triangle.branch", fallbackBr, 12, p.faint)
-		ui.Text(c, rb.Name).FontSize(12).TextColor(p.muted).SingleLine().Shrink(1).MinWidth(0)
+		ui.Text(c, sidebarLastSegment(rb.Name)).FontSize(12).TextColor(p.muted).SingleLine().Shrink(1).MinWidth(0)
 	})
 	if row.Clicked() {
 		a.clickSidebarRemoteBranch(rb, row.ClickModifiers(), refs)
+		// The remote range keys follow the display order of every row,
+		// folders hidden or not, so a range reaching across a collapsed
+		// folder takes its rows along; the selection only ever holds rows
+		// the user can see, so the hidden ones drop back out at once.
+		a.dropHiddenSidebarPicks()
 	}
 	row.ContextMenu(func(m *ui.Menu) {
 		pick := a.refsView.pick
