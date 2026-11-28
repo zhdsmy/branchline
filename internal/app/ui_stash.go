@@ -263,11 +263,44 @@ func (a *app) saveStashRow(c *ui.Context) {
 		ui.Text(c, "Save Stash").FontSize(12.5).FontWeight(400).TextColor(p.muted).SingleLine().Shrink(1).MinWidth(0)
 	})
 	if b.Clicked() {
-		st := a.stashUI()
-		st.saveOpen = true
-		st.saveMessage = ""
-		st.saveUntracked = true
+		a.openSaveStashDialog()
 	}
+}
+
+// openSaveStashDialog opens the Save Stash dialog with the defaults of the
+// sidebar's Save Stash entry: a blank message and untracked files included.
+// The scope and the check marks need no reset of their own — closing the
+// dialog already restores All changes and clears the list state, so a fresh
+// open always starts there.
+func (a *app) openSaveStashDialog() {
+	st := a.stashUI()
+	st.saveOpen = true
+	st.saveMessage = ""
+	st.saveUntracked = true
+}
+
+// quickStashEnabled is the enabled condition of the Quick Stash menu item:
+// an open repository, no write in flight, and a working tree holding
+// something an everything-stash including untracked files would take, as
+// the snapshot knows it. The write worker re-verifies the live repository
+// before pushing.
+func (a *app) quickStashEnabled() bool {
+	return a.session.HasRepo() && !a.session.Busy() &&
+		stashSaveProblem(a.session.Snapshot().Status, true) == ""
+}
+
+// quickStash is the menu's Quick Stash: the Save Stash dialog's whole-tree
+// submit with its defaults — every change, untracked files included, no
+// message — without opening the dialog, so git writes its default message.
+// A click whose enabled condition does not hold does nothing, mirroring the
+// disabled item.
+func (a *app) quickStash() {
+	if !a.quickStashEnabled() {
+		return
+	}
+	a.session.do("Quick Stash", func(r *git.Repo) error {
+		return stashSaveWithGuard(r, "", true)
+	})
 }
 
 // stashRow is one stash entry: icon and message, selectable with a click,
