@@ -408,7 +408,7 @@ func (s *SSHExecutor) Run(ctx context.Context, stdin []byte, args ...string) ([]
 		// canceling sends TERM to the group the number names. The prefix
 		// sits outside remoteCommand, whose exact shape is part of the
 		// tests.
-		remote := pgidPrefix + s.remoteCommand(ctx.Value(preparedEditorsKey{}) == true, args...)
+		remote := remoteShellCommand(pgidPrefix + s.remoteCommand(ctx.Value(preparedEditorsKey{}) == true, args...))
 		cmd := exec.CommandContext(ctx, prog, s.SSHArgs(remote)...)
 		cmd.Env = s.env()
 		pw := newPgidWriter()
@@ -423,14 +423,17 @@ func (s *SSHExecutor) Run(ctx context.Context, stdin []byte, args ...string) ([]
 	})
 }
 
-// RunShell runs a command of the server's shell in no directory, for
-// checking the connection.
+// RunShell runs a POSIX /bin/sh script on the server in no directory, for
+// checking the connection. The server's /bin/sh reads the script whatever
+// the login shell of the account is.
 func (s *SSHExecutor) RunShell(ctx context.Context, command string) ([]byte, error) {
 	return s.RunShellInput(ctx, command, nil)
 }
 
-// RunShellInput runs a command of the server's shell and gives it stdin.
-// The command is responsible for its own working directory.
+// RunShellInput runs a POSIX /bin/sh script on the server and gives it
+// stdin. The server's /bin/sh reads the script whatever the login shell of
+// the account is, and the script is responsible for its own working
+// directory.
 func (s *SSHExecutor) RunShellInput(ctx context.Context, command string, stdin []byte) ([]byte, error) {
 	if err := s.Validate(); err != nil {
 		return nil, err
@@ -439,10 +442,20 @@ func (s *SSHExecutor) RunShellInput(ctx context.Context, command string, stdin [
 	if prog == "" {
 		prog = sshProgram()
 	}
-	cmd := exec.CommandContext(ctx, prog, s.SSHArgs(command)...)
+	cmd := exec.CommandContext(ctx, prog, s.SSHArgs(remoteShellCommand(command))...)
 	cmd.Env = s.env()
 	configureShellCancel(cmd)
 	return s.run(cmd, stdin, []string{"ssh"}, nil)
+}
+
+// remoteShellCommand wraps a POSIX shell script so the server runs it with
+// /bin/sh whatever the login shell of the account is: sshd hands commands
+// to the login shell, which may be csh, tcsh or fish, and the scripts need
+// POSIX semantics. exec replaces the login shell instead of forking, so
+// the sh keeps the shell's process id and its place at the head of the
+// process group sshd made. The script's exit codes pass through unchanged.
+func remoteShellCommand(script string) string {
+	return "exec /bin/sh -c " + loginShellQuote(script)
 }
 
 // credentials are those a command gets: only one that can ask, and only
@@ -475,6 +488,34 @@ func ShellQuote(s string) string {
 		return s
 	}
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// loginShellQuote quotes s for the shell sshd hands a command to, which is
+// the login shell of the account and need not be a POSIX one. Unlike
+// ShellQuote it always quotes, and it keeps every backslash outside the
+// quotes: fish reads \\ and \' even inside single quotes, so a backslash
+// left inside them would reach /bin/sh changed, while outside the quotes
+// \' and \\ are one quote and one backslash in a POSIX shell, in fish and
+// in csh alike.
+func loginShellQuote(s string) string {
+	if s == "" {
+		return "''"
+	}
+	var b strings.Builder
+	b.Grow(len(s) + 2)
+	b.WriteByte('\'')
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '\'':
+			b.WriteString(`'\''`)
+		case '\\':
+			b.WriteString(`'\\'`)
+		default:
+			b.WriteByte(s[i])
+		}
+	}
+	b.WriteByte('\'')
+	return b.String()
 }
 
 func remoteGitArg(args []string, idx int, a string) string {
