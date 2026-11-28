@@ -240,7 +240,7 @@ func TestSSHArgs(t *testing.T) {
 	}
 	ex.Trace = AllTraces()
 	traced := ex.RemoteCommand("status")
-	for _, name := range []string{"GIT_TRACE=1", "GIT_TRACE_CURL=1", "GIT_SSH_COMMAND=ssh -vvv", "GIT_TRACE_PACKFILE=1", "GIT_TRACE_PERFORMANCE=1"} {
+	for _, name := range []string{"GIT_TRACE=1", "GIT_TRACE_CURL=1", "GIT_SSH_COMMAND='ssh -vvv'", "GIT_TRACE_PACKFILE=1", "GIT_TRACE_PERFORMANCE=1"} {
 		if !strings.Contains(traced, name) {
 			t.Errorf("verbose remote lacks %s: %s", name, traced)
 		}
@@ -2386,11 +2386,18 @@ func TestTraceOptionsAreIndependent(t *testing.T) {
 		"GIT_TRACE_PACKFILE=1":     {Pack: true},
 		"GIT_TRACE_PERFORMANCE=1":  {Perf: true},
 	}
+	// The command sent to a server quotes each value for the server's
+	// shell, so the remote form of a variable with a space differs from
+	// the local process environment, which never adds quotes.
+	remoteForm := func(name string) string {
+		n, v, _ := strings.Cut(name, "=")
+		return n + "=" + ShellQuote(v)
+	}
 	for name, trace := range vars {
 		env := strings.Join(commandEnv(PathProcess, trace), "\n")
 		remote := (&SSHExecutor{Host: "h", Dir: "/r", Trace: trace}).RemoteCommand("status")
 		for other := range vars {
-			has, hasRemote := strings.Contains(env, other), strings.Contains(remote, other)
+			has, hasRemote := strings.Contains(env, other), strings.Contains(remote, remoteForm(other))
 			if (other == name) != has || (other == name) != hasRemote {
 				t.Errorf("trace %s: %s local %v remote %v", name, other, has, hasRemote)
 			}
