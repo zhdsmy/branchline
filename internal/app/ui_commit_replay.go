@@ -157,36 +157,33 @@ func (a *app) replayModal(c *ui.Context) {
 		confirm = "Confirm Revert"
 	}
 
-	ui.Modal(c.Key("commit-replay-modal"), &st.replayOpen, func() {
-		ui.Column(c.Key("commit-replay-modal-body")).Width(460).Padding(18, 18, 14, 18).Gap(10).Children(func() {
-			ui.Text(c, title).FontSize(17).FontWeight(650).TextColor(p.text)
-			ui.Field(c, "Commit:", func() {
-				ui.Text(c, st.replayTarget.Short()+" "+st.replayTarget.Subject).FontSize(12).TextColor(p.text).SingleLine().Ellipsis("…")
-			})
-			if len(st.replayTarget.Parents) > 1 {
-				ui.Field(c, "Mainline parent:", func() {
-					ui.RadioGroup(c, func() {
-						for i := range st.replayTarget.Parents {
-							n := i + 1
-							ui.Radio(c, &st.replayMainline, n, fmt.Sprintf("Parent %d", n))
-						}
-					}).Label("Mainline parent")
-				})
-			}
-			ui.Checkbox(c.Key("replay-commit-it"), &st.replayCommitIt, "Commit the changes")
-			if st.replayKind == "cherry-pick" {
-				ui.Checkbox(c.Key("replay-record-origin"), &st.replayRecordOrigin, "Append origin commit SHA (-x)")
-			}
-			ui.Row(c.Key("commit-replay-modal-actions")).Gap(8).Justify(ui.End).Children(func() {
-				if ui.Button(c.Key("replay-cancel"), "Cancel").Label("Cancel").Clicked() {
-					a.closeReplayModal()
-				}
-				if ui.PrimaryButton(c.Key("replay-confirm"), confirm).Label(confirm).Disabled(a.session.Busy()).Clicked() {
-					a.submitReplay()
-				}
-			})
+	_, cancelled, confirmed := dialogFrame(c, p, "commit-replay-modal", &st.replayOpen, title, 460, func() {
+		ui.Field(c, "Commit:", func() {
+			ui.Text(c, st.replayTarget.Short()+" "+st.replayTarget.Subject).FontSize(12).TextColor(p.text).SingleLine().Ellipsis("…")
 		})
-	})
+		if len(st.replayTarget.Parents) > 1 {
+			ui.Field(c, "Mainline parent:", func() {
+				ui.RadioGroup(c, func() {
+					for i := range st.replayTarget.Parents {
+						n := i + 1
+						ui.Radio(c, &st.replayMainline, n, fmt.Sprintf("Parent %d", n))
+					}
+				}).Label("Mainline parent")
+			})
+		}
+		ui.Checkbox(c.Key("replay-commit-it"), &st.replayCommitIt, "Commit the changes")
+		if st.replayKind == "cherry-pick" {
+			ui.Checkbox(c.Key("replay-record-origin"), &st.replayRecordOrigin, "Append origin commit SHA (-x)")
+		}
+	},
+		dialogAction{key: "replay-cancel", text: "Cancel", label: "Cancel"},
+		dialogAction{key: "replay-confirm", text: confirm, label: confirm, disabled: a.session.Busy(), autoFocus: true})
+	if cancelled {
+		a.closeReplayModal()
+	}
+	if confirmed {
+		a.submitReplay()
+	}
 	if !st.replayOpen {
 		a.closeReplayModal()
 	}
@@ -414,20 +411,17 @@ func (a *app) abortOperationModal(c *ui.Context) {
 		title = "Abort rebase?"
 		description = "Undo the rebase and restore the original branch."
 	}
-	ui.Modal(c.Key("abort-operation-modal"), &st.abortOpen, func() {
-		ui.Column(c.Key("abort-operation-modal-body")).Width(430).Padding(18, 18, 14, 18).Gap(10).Children(func() {
-			ui.Text(c, title).FontSize(17).FontWeight(650).TextColor(p.text)
-			ui.Text(c, description).FontSize(13).TextColor(p.muted).MaxWidth(390)
-			ui.Row(c.Key("abort-operation-modal-actions")).Gap(8).Justify(ui.End).Children(func() {
-				if ui.Button(c.Key("abort-cancel"), "Cancel").Label("Cancel").Clicked() {
-					a.closeAbortModal()
-				}
-				if ui.PrimaryButton(c.Key("abort-confirm"), "Confirm Abort").Label("Confirm Abort").Disabled(a.session.Busy()).Clicked() {
-					a.submitAbortOperation()
-				}
-			})
-		})
-	})
+	_, cancelled, confirmed := dialogFrame(c, p, "abort-operation-modal", &st.abortOpen, title, 430, func() {
+		ui.Text(c, description).FontSize(13).TextColor(p.muted).MaxWidth(390)
+	},
+		dialogAction{key: "abort-cancel", text: "Cancel", label: "Cancel"},
+		dialogAction{key: "abort-confirm", text: "Confirm Abort", label: "Confirm Abort", disabled: a.session.Busy(), destructive: true})
+	if cancelled {
+		a.closeAbortModal()
+	}
+	if confirmed {
+		a.submitAbortOperation()
+	}
 	if !st.abortOpen {
 		a.closeAbortModal()
 	}

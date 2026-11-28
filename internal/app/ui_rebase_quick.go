@@ -201,7 +201,12 @@ func (a *app) commitRebaseQuickModals(c *ui.Context) {
 // editor shows a loading line, a failed read shows the error and a Retry —
 // either way the confirmation stays disabled because a rewrite must never
 // start from a message the user did not see — and a blank message disables it
-// too, because Git would refuse it the same way.
+// too, because Git would refuse it the same way. The editor takes the focus
+// the frame it appears: it shows only once the read landed, so the first
+// frames put the focus on cancel, and leaving it there would type into a
+// void and turn Enter into a cancel of the draft. Enter inside the text is
+// its line break, so Cmd+Enter is the keyboard confirmation, exactly the
+// primary button while the button is enabled and nothing while it is not.
 func (a *app) quickRebaseMessageModal(c *ui.Context) {
 	p := a.pal
 	st := quickRebaseUI(a)
@@ -217,47 +222,56 @@ func (a *app) quickRebaseMessageModal(c *ui.Context) {
 	blank := strings.TrimSpace(st.message) == ""
 	confirmDisabled := a.session.Busy() || st.loading || st.readErr != nil || blank
 
-	ui.Modal(c.Key("quick-rebase-message-modal"), &st.open, func() {
-		ui.Column(c.Key("quick-rebase-message-body")).Width(480).Padding(18, 18, 14, 18).Gap(10).Children(func() {
-			ui.Text(c, title).FontSize(17).FontWeight(650).TextColor(p.text)
-			ui.Field(c, "Commit:", func() {
-				ui.Text(c, st.target.Short()+" "+st.target.Subject).FontSize(12).TextColor(p.text).SingleLine().Ellipsis("…")
-			})
-			if st.action == "squash-parent" {
-				ui.Field(c, "Into:", func() {
-					ui.Text(c, st.parentLabel).FontSize(12).TextColor(p.text).SingleLine().Ellipsis("…")
-				})
-			}
-			switch {
-			case st.loading:
-				ui.Text(c, "Loading commit message…").FontSize(12.5).TextColor(p.muted)
-			case st.readErr != nil:
-				ui.Text(c, st.readErr.Error()).FontSize(12).TextColor(p.danger).MaxWidth(444)
-				if ui.Button(c.Key("quick-rebase-retry"), "Retry").Label("Retry").Clicked() {
-					a.startQuickRebaseMessageRead(st)
-				}
-			default:
-				ui.TextArea(c.Key("quick-rebase-message"), &st.message).
-					Label("Commit message").
-					Height(110).
-					FillWidth()
-				if blank {
-					ui.Text(c, "The commit message cannot be empty.").FontSize(11.5).TextColor(p.danger)
-				}
-			}
-			if err := a.session.ActionErr(); st.submitClicked && err != nil {
-				ui.Text(c, err.Error()).FontSize(12).TextColor(p.danger).MaxWidth(444)
-			}
-			ui.Row(c.Key("quick-rebase-message-actions")).Gap(8).Justify(ui.End).Children(func() {
-				if ui.Button(c.Key("quick-rebase-cancel"), "Cancel").Label("Cancel").Clicked() {
-					a.closeQuickRebaseModal()
-				}
-				if ui.PrimaryButton(c.Key("quick-rebase-confirm"), confirm).Label(confirm).Disabled(confirmDisabled).Clicked() {
-					a.submitQuickRebase()
-				}
-			})
+	cmdConfirmed := false
+	_, cancelled, confirmed := dialogFrame(c, p, "quick-rebase-message-modal", &st.open, title, 480, func() {
+		// Cmd+Enter confirms from anywhere in the dialog — the message
+		// editor takes plain Enter as a line break but leaves a modified
+		// one to the shortcuts. As the frame's own Enter shortcut, the
+		// registration is unconditional and the gate decides here.
+		if c.Shortcut(ui.Cmd, ui.KeyEnter) && !confirmDisabled {
+			cmdConfirmed = true
+		}
+		ui.Field(c, "Commit:", func() {
+			ui.Text(c, st.target.Short()+" "+st.target.Subject).FontSize(12).TextColor(p.text).SingleLine().Ellipsis("…")
 		})
-	})
+		if st.action == "squash-parent" {
+			ui.Field(c, "Into:", func() {
+				ui.Text(c, st.parentLabel).FontSize(12).TextColor(p.text).SingleLine().Ellipsis("…")
+			})
+		}
+		switch {
+		case st.loading:
+			ui.Text(c, "Loading commit message…").FontSize(12.5).TextColor(p.muted)
+		case st.readErr != nil:
+			ui.Text(c, st.readErr.Error()).FontSize(12).TextColor(p.danger).MaxWidth(444)
+			if ui.Button(c.Key("quick-rebase-retry"), "Retry").Label("Retry").Clicked() {
+				a.startQuickRebaseMessageRead(st)
+			}
+		default:
+			ui.TextArea(c.Key("quick-rebase-message"), &st.message).
+				Label("Commit message").
+				Height(110).
+				FillWidth().
+				AutoFocus()
+			if blank {
+				ui.Text(c, "The commit message cannot be empty.").FontSize(11.5).TextColor(p.danger)
+			}
+		}
+		if err := a.session.ActionErr(); st.submitClicked && err != nil {
+			ui.Text(c, err.Error()).FontSize(12).TextColor(p.danger).MaxWidth(444)
+		}
+	},
+		dialogAction{key: "quick-rebase-cancel", text: "Cancel", label: "Cancel", disabled: st.submitClicked && a.session.Busy()},
+		dialogAction{key: "quick-rebase-confirm", text: confirm, label: confirm, disabled: confirmDisabled})
+	if cancelled {
+		a.closeQuickRebaseModal()
+	}
+	// The key and the click can never both land in one frame — the write
+	// the first one starts disables the button — and either way the one
+	// confirmation path runs once.
+	if confirmed || cmdConfirmed {
+		a.submitQuickRebase()
+	}
 	if !st.open {
 		a.closeQuickRebaseModal()
 	}
@@ -290,23 +304,28 @@ func (a *app) quickRebaseConfirmModal(c *ui.Context) {
 		confirm = "Drop"
 	}
 
-	ui.Modal(c.Key("quick-rebase-confirm-modal"), &st.open, func() {
-		ui.Column(c.Key("quick-rebase-confirm-body")).Width(430).Padding(18, 18, 14, 18).Gap(10).Children(func() {
-			ui.Text(c, title).FontSize(17).FontWeight(650).TextColor(p.text)
-			ui.Text(c, description).FontSize(13).TextColor(p.muted).MaxWidth(394)
-			if err := a.session.ActionErr(); st.submitClicked && err != nil {
-				ui.Text(c, err.Error()).FontSize(12).TextColor(p.danger).MaxWidth(394)
-			}
-			ui.Row(c.Key("quick-rebase-confirm-actions")).Gap(8).Justify(ui.End).Children(func() {
-				if ui.Button(c.Key("quick-rebase-confirm-cancel"), "Cancel").Label("Cancel").Clicked() {
-					a.closeQuickRebaseModal()
-				}
-				if ui.PrimaryButton(c.Key("quick-rebase-confirm-confirm"), confirm).Label(confirm).Disabled(a.session.Busy()).Clicked() {
-					a.submitQuickRebase()
-				}
-			})
-		})
-	})
+	// Drop discards the commit outright: its confirmation is the destructive
+	// one of the three — no autofocus, red, deaf to Enter — while Edit and
+	// Fixup only reshape the branch the rebase replays anyway.
+	primary := dialogAction{key: "quick-rebase-confirm-confirm", text: confirm, label: confirm, disabled: a.session.Busy(), autoFocus: true}
+	if st.action == "drop" {
+		primary = dialogAction{key: "quick-rebase-confirm-confirm", text: confirm, label: confirm, disabled: a.session.Busy(), destructive: true}
+	}
+
+	_, cancelled, confirmed := dialogFrame(c, p, "quick-rebase-confirm-modal", &st.open, title, 430, func() {
+		ui.Text(c, description).FontSize(13).TextColor(p.muted).MaxWidth(394)
+		if err := a.session.ActionErr(); st.submitClicked && err != nil {
+			ui.Text(c, err.Error()).FontSize(12).TextColor(p.danger).MaxWidth(394)
+		}
+	},
+		dialogAction{key: "quick-rebase-confirm-cancel", text: "Cancel", label: "Cancel", disabled: st.submitClicked && a.session.Busy()},
+		primary)
+	if cancelled {
+		a.closeQuickRebaseModal()
+	}
+	if confirmed {
+		a.submitQuickRebase()
+	}
 	if !st.open {
 		a.closeQuickRebaseModal()
 	}

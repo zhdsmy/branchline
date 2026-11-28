@@ -226,50 +226,47 @@ func (a *app) rebaseDialog(c *ui.Context) {
 		st.updateRefs = false
 	}
 
-	ui.Modal(c.Key("rebase-modal"), &st.open, func() {
-		ui.Column(c.Key("rebase-modal-body")).Width(460).Padding(18, 18, 14, 18).Gap(10).Children(func() {
-			ui.Text(c, "Rebase").FontSize(17).FontWeight(650).TextColor(p.text)
-			ui.Text(c, "Replay commits from the current branch onto another base.").FontSize(12).TextColor(p.muted).MaxWidth(424)
-			ui.Field(c, "Rebase:", func() {
-				ui.Text(c, st.branch).Font("monospace").FontSize(12).TextColor(p.text)
-			})
-			ui.Field(c, "On:", func() {
-				ui.Text(c, st.ontoLabel).FontSize(12).TextColor(p.text).SingleLine().Ellipsis("…")
-			})
-			if len(st.dependents) > 0 {
-				ui.Checkbox(c.Key("rebase-update-refs"), &st.updateRefs, "Update dependent branches").Label("Update dependent branches").Disabled(!canUpdateRefs)
-				if !canUpdateRefs && !st.inspecting {
-					reason := "Git version could not be verified; requires Git 2.38 or newer."
-					if st.capsErr == nil && st.caps.RawVersion != "" {
-						reason = "Requires Git 2.38 or newer (found " + st.caps.RawVersion + ")."
-					}
-					ui.Text(c, reason).FontSize(12).TextColor(p.muted).MaxWidth(424)
-				}
-				if st.updateRefs {
-					ui.Text(c, "These branches move with the rebase:").FontSize(11).TextColor(p.muted)
-					for _, name := range st.dependents {
-						ui.Text(c.Key("rebase-dep-"+name), name).Font("monospace").FontSize(12).TextColor(p.text)
-					}
-				}
-			}
-			ui.Checkbox(c.Key("rebase-autostash"), &st.stash, "Stash and reapply local changes").Label("Stash and reapply local changes")
-			ui.Text(c, "Uncommitted changes are put aside before the rebase and reapplied after it.").FontSize(12).TextColor(p.muted).MaxWidth(424)
-			switch st.predictState {
-			case "conflicts":
-				ui.Text(c, "Rebase will cause conflicts").FontSize(12).TextColor(p.danger)
-			case "clean":
-				ui.Text(c, "Rebase can be done without conflicts").FontSize(12).TextColor(p.muted)
-			}
-			ui.Row(c.Key("rebase-modal-actions")).Gap(8).Justify(ui.End).Children(func() {
-				if ui.Button(c.Key("rebase-cancel"), "Cancel").Label("Cancel").Clicked() {
-					a.closeRebaseModal()
-				}
-				if ui.PrimaryButton(c.Key("rebase-confirm"), "Confirm Rebase").Label("Confirm Rebase").Disabled(a.session.Busy()).Clicked() {
-					a.submitRebase()
-				}
-			})
+	_, cancelled, confirmed := dialogFrame(c, p, "rebase-modal", &st.open, "Rebase", 460, func() {
+		ui.Text(c, "Replay commits from the current branch onto another base.").FontSize(12).TextColor(p.muted).MaxWidth(424)
+		ui.Field(c, "Rebase:", func() {
+			ui.Text(c, st.branch).Font("monospace").FontSize(12).TextColor(p.text)
 		})
-	})
+		ui.Field(c, "On:", func() {
+			ui.Text(c, st.ontoLabel).FontSize(12).TextColor(p.text).SingleLine().Ellipsis("…")
+		})
+		if len(st.dependents) > 0 {
+			ui.Checkbox(c.Key("rebase-update-refs"), &st.updateRefs, "Update dependent branches").Label("Update dependent branches").Disabled(!canUpdateRefs)
+			if !canUpdateRefs && !st.inspecting {
+				reason := "Git version could not be verified; requires Git 2.38 or newer."
+				if st.capsErr == nil && st.caps.RawVersion != "" {
+					reason = "Requires Git 2.38 or newer (found " + st.caps.RawVersion + ")."
+				}
+				ui.Text(c, reason).FontSize(12).TextColor(p.muted).MaxWidth(424)
+			}
+			if st.updateRefs {
+				ui.Text(c, "These branches move with the rebase:").FontSize(11).TextColor(p.muted)
+				for _, name := range st.dependents {
+					ui.Text(c.Key("rebase-dep-"+name), name).Font("monospace").FontSize(12).TextColor(p.text)
+				}
+			}
+		}
+		ui.Checkbox(c.Key("rebase-autostash"), &st.stash, "Stash and reapply local changes").Label("Stash and reapply local changes")
+		ui.Text(c, "Uncommitted changes are put aside before the rebase and reapplied after it.").FontSize(12).TextColor(p.muted).MaxWidth(424)
+		switch st.predictState {
+		case "conflicts":
+			ui.Text(c, "Rebase will cause conflicts").FontSize(12).TextColor(p.danger)
+		case "clean":
+			ui.Text(c, "Rebase can be done without conflicts").FontSize(12).TextColor(p.muted)
+		}
+	},
+		dialogAction{key: "rebase-cancel", text: "Cancel", label: "Cancel"},
+		dialogAction{key: "rebase-confirm", text: "Confirm Rebase", label: "Confirm Rebase", disabled: a.session.Busy(), autoFocus: true})
+	if cancelled {
+		a.closeRebaseModal()
+	}
+	if confirmed {
+		a.submitRebase()
+	}
 	if !st.open {
 		a.closeRebaseModal()
 	}
