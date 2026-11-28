@@ -68,17 +68,17 @@ func rightClickRepoRow(t *testing.T, h *testHarness, name string) {
 	}
 }
 
-// The repository row's context menu is Open, Show in Finder, Rename…, Copy
-// Location, a separator and Remove from List, for local and SSH repositories
-// alike — except Show in Finder, which only a local folder can serve and so
-// disables on the SSH row.
+// The repository row's context menu is Open, Show in Finder, Open in
+// Terminal, Rename…, Copy Location, a separator and Remove from List, for
+// local and SSH repositories alike — except Show in Finder, which only a
+// local folder can serve and so disables on the SSH row.
 func TestRepoMenuItemsAndEnabledState(t *testing.T) {
 	local := newGitRepo(t, "menulocal")
 	local.CommitFile("a.txt", "a\n", "commit")
 
 	h := newTestApp(t, local.StoreRepo(), menuSSHRepo())
 
-	want := []string{"Open", "Show in Finder", "Rename…", "Copy Location", "-", "Remove from List"}
+	want := []string{"Open", "Show in Finder", "Open in Terminal", "Rename…", "Copy Location", "-", "Remove from List"}
 
 	openSwitcherPopup(t, h)
 	rightClickRepoRow(t, h, "menulocal")
