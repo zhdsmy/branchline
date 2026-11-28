@@ -158,7 +158,7 @@ func (r *Repo) FileLog(path string, limit int) ([]Commit, error) {
 	if limit <= 0 {
 		limit = 100
 	}
-	out, err := r.run(quick, "log", "--topo-order", "--decorate=short", "--format="+logFormat, "-n", strconv.Itoa(limit), "HEAD", "--", path)
+	out, err := r.run(slow, "log", "--topo-order", "--decorate=short", "--format="+logFormat, "-n", strconv.Itoa(limit), "HEAD", "--", path)
 	if err != nil {
 		return nil, err
 	}
@@ -170,6 +170,6 @@ func (r *Repo) Blame(path, rev string) (string, error) {
 	if rev == "" {
 		rev = "HEAD"
 	}
-	out, err := r.run(quick, "blame", "-w", "--date=short", rev, "--", path)
+	out, err := r.run(slow, "blame", "-w", "--date=short", rev, "--", path)
 	return string(out), err
 }
