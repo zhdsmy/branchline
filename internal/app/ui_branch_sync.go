@@ -123,12 +123,17 @@ func (a *app) canCheckoutLocalBranch() bool {
 }
 
 // checkoutLocalBranch checks out a local branch through the shared guard used
-// by both the context menu item and double-clicking its sidebar row.
+// by both the context menu item and double-clicking its sidebar row, opening
+// the checkout-blocked dialog when local changes or untracked files would be
+// overwritten.
 func (a *app) checkoutLocalBranch(name string) {
 	if !a.canCheckoutLocalBranch() {
 		return
 	}
-	a.session.do("Checkout "+name, func(r *git.Repo) error {
+	a.checkoutOfferingStash("Checkout "+name, name, func(r *git.Repo, force bool) error {
+		if force {
+			return r.CheckoutForce(name)
+		}
 		return r.Checkout(name)
 	})
 }

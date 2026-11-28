@@ -267,8 +267,8 @@ func (a *app) submitRemoteBranchCheckout() {
 	expectHead := st.coExpectHead
 	expectBranch := st.coExpectBranch
 	a.closeRemoteBranchCheckout()
-	a.session.do("Checkout "+local, func(repo *git.Repo) error {
-		return remoteCheckoutWithGuard(repo, remoteBranch, local, expectOID, expectHead, expectBranch)
+	a.checkoutOfferingStash("Checkout "+local, local, func(repo *git.Repo, force bool) error {
+		return remoteCheckoutWithGuard(repo, remoteBranch, local, expectOID, expectHead, expectBranch, force)
 	})
 }
 
@@ -280,9 +280,11 @@ func (a *app) submitRemoteBranchCheckout() {
 // branch itself — refuses the write. Only then does the checkout run: a
 // plain switch when the local branch already tracks the remote branch, or a
 // new tracking branch otherwise. Any check failing returns the error without
-// touching HEAD, the index, the working tree or any ref. Local changes git
-// would have to overwrite make git itself refuse; nothing is forced here.
-func remoteCheckoutWithGuard(repo *git.Repo, remoteBranch, local, expectOID, expectHead, expectBranch string) error {
+// touching HEAD, the index, the working tree or any ref. The checks run on
+// every attempt, including the retry a blocked checkout offers: force is the
+// retry's choice alone and decides whether git may discard the local changes
+// in the way — without it git itself refuses, nothing forced here.
+func remoteCheckoutWithGuard(repo *git.Repo, remoteBranch, local, expectOID, expectHead, expectBranch string, force bool) error {
 	if remoteBranch == "" || strings.HasPrefix(remoteBranch, "-") || strings.ContainsAny(remoteBranch, "\x00\r\n") {
 		return fmt.Errorf("cannot checkout: invalid remote branch")
 	}
@@ -324,9 +326,12 @@ func remoteCheckoutWithGuard(repo *git.Repo, remoteBranch, local, expectOID, exp
 		if br.Upstream != remoteBranch {
 			return fmt.Errorf("cannot checkout: a branch named %s already exists and does not track %s", local, remoteBranch)
 		}
+		if force {
+			return repo.CheckoutForce(local)
+		}
 		return repo.Checkout(local)
 	}
-	return repo.CheckoutRemoteAs(remoteBranch, local, false)
+	return repo.CheckoutRemoteAs(remoteBranch, local, force)
 }
 
 // openRemoteBranchDelete opens the Delete Remote Branch confirmation for the

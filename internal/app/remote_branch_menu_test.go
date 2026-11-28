@@ -279,9 +279,10 @@ func TestRemoteBranchCheckoutInputValidation(t *testing.T) {
 	}
 }
 
-// A checkout whose local changes git would have to overwrite is refused by
-// git itself: the error is shown verbatim, no branch is created, HEAD stays
-// on main, and the uncommitted bytes of the working tree are untouched.
+// A checkout whose local changes git would have to overwrite opens the
+// dialog offering to stash or discard them instead of an error banner.
+// Canceling it creates no branch, keeps HEAD on main, and leaves the
+// uncommitted bytes of the working tree untouched.
 func TestRemoteBranchCheckoutConflictRefused(t *testing.T) {
 	repo := remoteMenuFixture(t, "rb-checkout-conflict")
 	// conflict.txt exists on feature but not on main: the checkout would
@@ -304,19 +305,18 @@ func TestRemoteBranchCheckoutConflictRefused(t *testing.T) {
 	}
 	h.drain()
 
-	if err := h.app.session.ActionErr(); err == nil {
-		t.Fatal("the conflicting checkout produced no ActionErr")
-	} else if !strings.Contains(err.Error(), "feature.txt") && !strings.Contains(strings.ToLower(err.Error()), "local changes") {
-		t.Fatalf("ActionErr = %q, want git checkout conflict wording", err)
-	}
-	if _, ok := h.ui.AccessByRole(ui.RoleStatus, "Repository Error"); !ok {
-		t.Fatalf("no Repository Error status after the refused checkout; texts=%q", h.ui.Texts())
-	}
+	// The dialog opens with the untracked file in the way, instead of an
+	// error banner.
+	assertCheckoutBlockedPanel(t, h, "feature", nil, []string{"feature.txt"})
+
+	cancelCheckoutBlocked(t, h)
+	h.drain()
+
 	if got := currentBranch(t, repo); got != "main" {
-		t.Fatalf("current branch after the refused checkout = %q, want main unchanged", got)
+		t.Fatalf("current branch after the canceled checkout = %q, want main unchanged", got)
 	}
 	if branchExists(t, repo, "feature") {
-		t.Fatal("a feature branch was created even though the checkout was refused")
+		t.Fatal("a feature branch was created even though the checkout was canceled")
 	}
 	assertFileBytes(t, repo, "feature.txt", "local uncommitted edits\n")
 }
