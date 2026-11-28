@@ -156,13 +156,18 @@ func (r *Repo) SubmoduleDiff(from, to, path string, staged bool) (SubmoduleChang
 	switch {
 	case staged:
 		args = append(args, "--cached")
-	case from != "" && to != "":
-		args = append(args, from, to)
-	case to != "":
-		args = append(args, emptyTree, to)
-	case from != "":
-		args = append(args, from)
 	}
+	var revs []string
+	switch {
+	case staged:
+	case from != "" && to != "":
+		revs = append(revs, from, to)
+	case to != "":
+		revs = append(revs, emptyTree, to)
+	case from != "":
+		revs = append(revs, from)
+	}
+	args = withEndOfOptions(args, revs...)
 	out, err := r.run(quick, append(args, "--", path)...)
 	if err != nil {
 		return SubmoduleChange{Path: path}, err

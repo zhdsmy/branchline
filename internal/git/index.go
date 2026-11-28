@@ -217,7 +217,7 @@ func (r *Repo) RestoreFile(rev, path string) error {
 	if strings.TrimSpace(rev) == "" || strings.TrimSpace(path) == "" {
 		return fmt.Errorf("missing revision or path")
 	}
-	_, err := r.run(quick, "checkout", rev, "--", path)
+	_, err := r.run(quick, append(withEndOfOptions([]string{"checkout"}, rev), "--", path)...)
 	return err
 }
 
@@ -251,29 +251,29 @@ func (r *Repo) SaveSnapshot(branch, message string) error {
 	}
 	created := false
 	if _, err := r.run(quick, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch); err != nil {
-		if _, err := r.run(quick, "branch", branch, cur); err != nil {
+		if _, err := r.run(quick, withDashdash([]string{"branch"}, branch, cur)...); err != nil {
 			_, _ = r.run(quick, "stash", "pop")
 			return err
 		}
 		created = true
 	}
-	if _, err := r.run(quick, "checkout", branch, "--"); err != nil {
+	if _, err := r.run(quick, append(withEndOfOptions([]string{"checkout"}, branch), "--")...); err != nil {
 		if created {
-			_, _ = r.run(quick, "branch", "-D", branch)
+			_, _ = r.run(quick, withDashdash([]string{"branch", "-D"}, branch)...)
 		}
 		_, _ = r.run(quick, "stash", "pop")
 		return err
 	}
 	if _, err := r.run(quick, "stash", "pop"); err != nil {
-		_, _ = r.run(quick, "checkout", cur, "--")
+		_, _ = r.run(quick, append(withEndOfOptions([]string{"checkout"}, cur), "--")...)
 		return err
 	}
 	if _, err := r.run(quick, "commit", "-m", message); err != nil {
 		_, _ = r.run(quick, "reset", "-q")
-		_, _ = r.run(quick, "checkout", cur, "--")
+		_, _ = r.run(quick, append(withEndOfOptions([]string{"checkout"}, cur), "--")...)
 		return err
 	}
-	_, err = r.run(quick, "checkout", cur, "--")
+	_, err = r.run(quick, append(withEndOfOptions([]string{"checkout"}, cur), "--")...)
 	return err
 }
 
@@ -285,7 +285,7 @@ func (r *Repo) RestoreWorktree(rev, path string) error {
 	}
 	staged, err := r.run(quick, "rev-parse", "-q", "--verify", ":"+path)
 	haveStaged := err == nil && isHex(strings.TrimSpace(string(staged)))
-	out, err := r.run(quick, "show", rev+":"+path)
+	out, err := r.run(quick, withEndOfOptions([]string{"show"}, rev+":"+path)...)
 	if err != nil {
 		return err
 	}

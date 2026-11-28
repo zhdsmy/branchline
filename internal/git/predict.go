@@ -19,7 +19,7 @@ func (r *Repo) predict(base, ours, theirs string) (bool, error) {
 	if base != "" {
 		args = append(args, "--merge-base="+base)
 	}
-	_, err := r.run(quick, append(args, ours, theirs)...)
+	_, err := r.run(quick, withDashdash(args, ours, theirs)...)
 	if err == nil {
 		return false, nil
 	}
@@ -80,7 +80,7 @@ func (r *Repo) parentOf(hash string, n int) (string, error) {
 	if n < 1 {
 		n = 1
 	}
-	out, err := r.run(quick, "rev-list", "--parents", "-n", "1", hash)
+	out, err := r.run(quick, withEndOfOptions([]string{"rev-list", "--parents", "-n", "1"}, hash)...)
 	if err != nil {
 		return "", err
 	}

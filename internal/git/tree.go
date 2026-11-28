@@ -14,7 +14,7 @@ type TreeEntry struct {
 
 // Tree reads NUL-delimited paths, including names containing tabs or newlines.
 func (r *Repo) Tree(hash string) ([]TreeEntry, error) {
-	out, err := r.run(quick, "ls-tree", "-r", "-l", "-z", hash, "--")
+	out, err := r.run(quick, append(withEndOfOptions([]string{"ls-tree", "-r", "-l", "-z"}, hash), "--")...)
 	if err != nil {
 		return nil, err
 	}

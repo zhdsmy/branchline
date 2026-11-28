@@ -8,7 +8,8 @@ import (
 
 // Detail returns a commit with its message.
 func (r *Repo) Detail(hash string) (CommitDetail, error) {
-	out, err := r.run(quick, "show", "-s", "--decorate=short", "--format="+detailFormat, hash, "--")
+	args := withEndOfOptions([]string{"show", "-s", "--decorate=short", "--format=" + detailFormat}, hash)
+	out, err := r.run(quick, append(args, "--")...)
 	if err != nil {
 		return CommitDetail{}, err
 	}
@@ -33,7 +34,7 @@ func (r *Repo) WorktreeDiff(rev string) (string, error) {
 	if strings.TrimSpace(rev) == "" {
 		return "", fmt.Errorf("missing commit")
 	}
-	out, err := r.run(quick, "diff", rev, "--")
+	out, err := r.run(quick, append(withEndOfOptions([]string{"diff", "--no-ext-diff"}, rev), "--")...)
 	if err != nil {
 		return string(out), err
 	}
@@ -75,7 +76,8 @@ func (r *Repo) WorktreeFileDiffOpts(rev string, f FileChange, o DiffOptions) (st
 		return string(out), err
 	}
 	args := append([]string{"--literal-pathspecs"}, diffArgs(o)...)
-	args = append(args, rev, "--", f.Path)
+	args = withEndOfOptions(args, rev)
+	args = append(args, "--", f.Path)
 	if f.OrigPath != "" && f.OrigPath != f.Path {
 		args = append(args, f.OrigPath)
 	}
@@ -104,7 +106,7 @@ func (r *Repo) RangeDiffOpts(from, to string, o DiffOptions) (string, error) {
 	if base == "" {
 		base = emptyTree
 	}
-	out, err := r.run(quick, append(diffArgs(o), base, to, "--")...)
+	out, err := r.run(quick, append(withEndOfOptions(diffArgs(o), base, to), "--")...)
 	return string(out), err
 }
 
@@ -153,9 +155,9 @@ func (r *Repo) RangeFiles(from, to string) ([]FileChange, error) {
 	var out []byte
 	var err error
 	if from == "" {
-		out, err = r.run(quick, "diff", "-M", "--name-status", "-z", emptyTree, to, "--")
+		out, err = r.run(quick, append(withEndOfOptions([]string{"diff", "-M", "--name-status", "-z"}, emptyTree, to), "--")...)
 	} else {
-		out, err = r.run(quick, "diff", "-M", "--name-status", "-z", from, to, "--")
+		out, err = r.run(quick, append(withEndOfOptions([]string{"diff", "-M", "--name-status", "-z"}, from, to), "--")...)
 	}
 	if err != nil {
 		return nil, err
@@ -195,7 +197,8 @@ func (r *Repo) RangeFileDiffOpts(from, to string, f FileChange, o DiffOptions) (
 		base = emptyTree
 	}
 	args := append([]string{"--literal-pathspecs"}, diffArgs(o)...)
-	args = append(args, base, to, "--")
+	args = withEndOfOptions(args, base, to)
+	args = append(args, "--")
 	out, err := r.run(quick, append(args, paths...)...)
 	return string(out), err
 }
@@ -230,19 +233,22 @@ func (r *Repo) ShowFileWith(tool, command, base, changed string, paths ...string
 	switch changed {
 	case "index":
 		args = append(args, "--cached")
-		if base != "" {
-			args = append(args, base)
-		}
 	case "":
-		if base != "" {
-			args = append(args, base)
-		}
 	default:
 		if base == "" {
 			base = emptyTree
 		}
-		args = append(args, base, changed)
 	}
+	var revs []string
+	switch changed {
+	case "index", "":
+		if base != "" {
+			revs = append(revs, base)
+		}
+	default:
+		revs = append(revs, base, changed)
+	}
+	args = withEndOfOptions(args, revs...)
 	args = append(append(args, "--"), paths...)
 	_, err := r.run(slow, args...)
 	return err
@@ -352,7 +358,7 @@ func (r *Repo) FormatPatch(hash string) (string, error) {
 	if strings.TrimSpace(hash) == "" {
 		return "", fmt.Errorf("missing commit")
 	}
-	out, err := r.run(quick, "show", "--format=email", "--first-parent", hash)
+	out, err := r.run(quick, withEndOfOptions([]string{"show", "--format=email", "--first-parent"}, hash)...)
 	return string(out), err
 }
 
@@ -371,6 +377,6 @@ func (r *Repo) FormatRange(base, tip string) (string, error) {
 	if strings.TrimSpace(base) == "" || strings.TrimSpace(tip) == "" {
 		return "", fmt.Errorf("missing commit")
 	}
-	out, err := r.run(quick, "format-patch", "--stdout", base+".."+tip)
+	out, err := r.run(quick, withEndOfOptions([]string{"format-patch", "--stdout"}, base+".."+tip)...)
 	return string(out), err
 }
