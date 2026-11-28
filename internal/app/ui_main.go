@@ -17,6 +17,10 @@ const (
 )
 
 func (a *app) view(c *ui.Context) {
+	// The count of the frame's dialogs starts here, so every dialog the
+	// frame draws — wherever in the window it mounts — lands in it.
+	framedDialogs = 0
+
 	dark := c.Theme().Dark
 	if !a.darkKnown {
 		a.darkKnown = true
@@ -29,7 +33,6 @@ func (a *app) view(c *ui.Context) {
 	p := a.pal
 
 	a.bindShortcuts(c)
-	a.syncMenuBarEnabled()
 
 	if c.Vibrancy() {
 		c.Root().Background(ui.Transparent)
@@ -51,6 +54,14 @@ func (a *app) view(c *ui.Context) {
 		c.Toast(a.toast)
 		a.toast = ""
 	}
+
+	// The menu bar's enabled state syncs once the whole frame is built —
+	// the toast included — because only then is the frame's dialog count
+	// final: syncing before the build would read last frame's count, and
+	// the frame opening a dialog would leave the menu enabled one frame
+	// too long.
+	a.dialogOpen = framedDialogs > 0
+	a.syncMenuBarEnabled()
 }
 
 func (a *app) bindShortcuts(c *ui.Context) {
