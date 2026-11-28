@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -136,6 +138,47 @@ func (r *Repo) runContext(parent context.Context, timeout time.Duration, stdin [
 		}
 		return out, err
 	})
+}
+
+// countingWriter counts what it passes through, atomically: a canceled
+// command's copy of the output can outlive the wait for it and write after
+// the caller has read the count.
+type countingWriter struct {
+	w io.Writer
+	n atomic.Int64
+}
+
+func (c *countingWriter) Write(p []byte) (int, error) {
+	n, err := c.w.Write(p)
+	c.n.Add(int64(n))
+	return n, err
+}
+
+// runStreaming runs like runContext, with the command's standard output
+// written to w as it is produced instead of being collected. An executor
+// that does not know the streaming context value returns the output whole;
+// then it is written to w in a single write after the command, which the
+// zero count of streamed bytes tells apart from a streamed command.
+func (r *Repo) runStreaming(parent context.Context, timeout time.Duration, stdin []byte, w io.Writer, args ...string) error {
+	ctx, cancel := context.WithTimeout(parent, timeout)
+	defer cancel()
+	cw := &countingWriter{w: w}
+	_, err := recordInvocation(ctx, r.cmdLog, args, func(runCtx context.Context) ([]byte, error) {
+		out, err := r.Exec.Run(streamWriter(runCtx, cw), stdin, args...)
+		if len(out) > 0 && cw.n.Load() == 0 {
+			_, _ = w.Write(out)
+		}
+		if ctx.Err() == context.DeadlineExceeded {
+			return out, fmt.Errorf("git %s: timed out after %s", args[0], timeout)
+		}
+		if ctx.Err() == context.Canceled {
+			// The cancellation's kill ends the process with a signal, which
+			// reads as an exit error; the caller asks for the cancellation.
+			return out, context.Canceled
+		}
+		return out, err
+	})
+	return err
 }
 
 // TopLevel returns the root of the working tree, and checks that the
