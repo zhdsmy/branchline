@@ -1852,3 +1852,93 @@ func TestRepoAddSSHDismissDiscardsInFlightLoopbackSSH(t *testing.T) {
 	}
 	closeDialog(t, h)
 }
+
+// An Address ending in a space fails Test Connection before the form even
+// constructs the repository's executor: the error names the Address field
+// and nothing connects, is saved or opens.
+func TestRepoAddSSHRejectsEdgeSpacesTestConnection(t *testing.T) {
+	h := newTestApp(t)
+	constructed := false
+	h.app.openRepoFn = func(meta store.Repo) *git.Repo {
+		constructed = true
+		return git.New(failingExecutor{})
+	}
+
+	openSSHForm(t, h)
+	typeSSHForm(t, h, "user@server:/srv/app ", "", "")
+	h.ui.Frame()
+	if err := h.ui.Click("Test Connection"); err != nil {
+		t.Fatalf("click Test Connection: %v", err)
+	}
+	h.ui.Frame()
+	h.drain()
+
+	st := sshFormState(h)
+	if !st.sshOpen {
+		t.Fatal("dialog closed on an address ending in a space")
+	}
+	if st.sshBusy {
+		t.Fatal("dialog stayed busy after the validation error")
+	}
+	if !st.sshFailed {
+		t.Fatal("the refused address did not report a failure")
+	}
+	if got, want := st.sshResult, "Address cannot begin or end with a space."; got != want {
+		t.Fatalf("result = %q, want %q", got, want)
+	}
+	if constructed {
+		t.Fatal("the form built a repository executor for the refused address")
+	}
+	if len(h.store.Repos()) != 0 {
+		t.Fatalf("store gained an entry: %+v", h.store.Repos())
+	}
+	if h.app.session.HasRepo() {
+		t.Fatal("a repository opened when the check was refused")
+	}
+	closeDialog(t, h)
+}
+
+// An Address ending in a space fails Add the same way as Test Connection:
+// the repository is never constructed, saved or opened and the dialog
+// stays open with the error.
+func TestRepoAddSSHRejectsEdgeSpacesAdd(t *testing.T) {
+	h := newTestApp(t)
+	constructed := false
+	h.app.openRepoFn = func(meta store.Repo) *git.Repo {
+		constructed = true
+		return git.New(failingExecutor{})
+	}
+
+	openSSHForm(t, h)
+	typeSSHForm(t, h, "user@server:/srv/app ", "", "")
+	h.ui.Frame()
+	if err := h.ui.Click("Add"); err != nil {
+		t.Fatalf("click Add: %v", err)
+	}
+	h.ui.Frame()
+	h.drain()
+
+	st := sshFormState(h)
+	if !st.sshOpen {
+		t.Fatal("dialog closed on an address ending in a space")
+	}
+	if st.sshBusy {
+		t.Fatal("dialog stayed busy after the validation error")
+	}
+	if !st.sshFailed {
+		t.Fatal("the refused address did not report a failure")
+	}
+	if got, want := st.sshResult, "Address cannot begin or end with a space."; got != want {
+		t.Fatalf("result = %q, want %q", got, want)
+	}
+	if constructed {
+		t.Fatal("the form built a repository executor for the refused address")
+	}
+	if len(h.store.Repos()) != 0 {
+		t.Fatalf("store gained an entry: %+v", h.store.Repos())
+	}
+	if h.app.session.HasRepo() {
+		t.Fatal("a repository opened when the add was refused")
+	}
+	closeDialog(t, h)
+}

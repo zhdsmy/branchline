@@ -566,6 +566,14 @@ func (a *app) checkSSHForm(st *reposUIState, add bool) {
 	if st.sshBusy {
 		return
 	}
+	// An address whose edge is whitespace is refused before it is read:
+	// trimming it away would open a different path than the one typed, so
+	// the form reports the error without connecting.
+	if msg := edgeSpaceError(st.sshAddress, "Address"); msg != "" {
+		st.sshRequest, st.sshHostKey = nil, sshHostKeyNone
+		st.sshResult, st.sshFailed = msg, true
+		return
+	}
 	r, err := store.ParseAddress(st.sshAddress)
 	if err != nil {
 		st.sshRequest, st.sshHostKey = nil, sshHostKeyNone
