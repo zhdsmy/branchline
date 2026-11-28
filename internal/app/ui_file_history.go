@@ -38,6 +38,15 @@ const fileBlameBatchWindow = 100 * time.Millisecond
 // of the file.
 var errBlameIncomplete = errors.New("blame did not cover every line")
 
+// fileBlameNow and fileBlameWrapHunk are test seams, as the package's other
+// package-level hooks are: the clock the batching of blame hunks reads, and
+// a decorator around the hunk delivery of the streaming read. A read
+// captures both on the UI thread when it starts; its background worker never
+// reads the variables. Tests replace them and restore the originals with
+// their cleanup.
+var fileBlameNow = time.Now
+var fileBlameWrapHunk func(func(git.BlameHunk)) func(git.BlameHunk)
+
 // fileInspectorState is the UI state of one app instance's file inspector:
 // the unified File History and Blame viewer opened from a file's context
 // menu. All fields are owned by the UI thread; background reads publish
@@ -76,13 +85,6 @@ type fileInspectorState struct {
 	blameErr     error
 	blameSel     int
 	blameList    ui.ListState
-
-	// blameNow and blameWrapHunk are test hooks, nil in production: the
-	// clock the batching of blame hunks reads, and a decorator around the
-	// hunk delivery of the streaming read. They are captured on the UI
-	// thread when the read starts; background workers never read the state.
-	blameNow      func() time.Time
-	blameWrapHunk func(func(git.BlameHunk)) func(git.BlameHunk)
 }
 
 func (a *app) fileInspectorUI() *fileInspectorState {
@@ -109,8 +111,7 @@ func (a *app) fileInspectorActive(page pageKind) bool {
 
 // closeFileInspector cancels every in-flight inspector read and resets the
 // inspector, keeping the user's split position and diff layout choice for
-// the next time it opens. The blame read's test hooks survive as well, so a
-// test wiring them once keeps them across the closes its steps cause.
+// the next time it opens.
 func (a *app) closeFileInspector() {
 	st := a.fileInspectorUI()
 	a.session.cancelRead(fileHistoryLogScope)
@@ -119,14 +120,11 @@ func (a *app) closeFileInspector() {
 	layout := st.diff.Layout()
 	split := st.splitSize
 	repoGen := st.repoGen
-	blameNow, blameWrapHunk := st.blameNow, st.blameWrapHunk
 	*st = fileInspectorState{
-		repoGen:       repoGen,
-		histSel:       -1,
-		blameSel:      -1,
-		splitSize:     split,
-		blameNow:      blameNow,
-		blameWrapHunk: blameWrapHunk,
+		repoGen:   repoGen,
+		histSel:   -1,
+		blameSel:  -1,
+		splitSize: split,
 	}
 	st.diff.SetLayout(layout)
 }
@@ -257,10 +255,7 @@ func (a *app) startFileBlameLoad() {
 		return
 	}
 	path, rev := st.path, st.blameRev
-	now, wrapHunk := st.blameNow, st.blameWrapHunk
-	if now == nil {
-		now = time.Now
-	}
+	now, wrapHunk := fileBlameNow, fileBlameWrapHunk
 	st.blameLoading = true
 	started := sessionReadStream(a.session, fileBlameScope,
 		func(repo *git.Repo, emit func(fileBlameBatch)) (struct{}, error) {

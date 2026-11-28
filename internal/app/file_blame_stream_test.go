@@ -123,13 +123,21 @@ func queuePendingLen(q *uiQueue) int {
 	return len(q.pending)
 }
 
-// installBlameStreamHooks wires the fake clock and the hunk decorator into
-// the app's inspector state, where closeFileInspector keeps them across the
-// closes of a test.
-func installBlameStreamHooks(h *testHarness, clock *blameFakeClock, wrap func(func(git.BlameHunk)) func(git.BlameHunk)) {
-	st := h.app.fileInspectorUI()
-	st.blameNow = clock.now
-	st.blameWrapHunk = wrap
+// installBlameStreamHooks replaces the package-level clock and hunk
+// decorator the streaming blame read captures when it starts, restoring the
+// originals with the test's cleanup. A nil clock installs the fake clock of
+// the test; every controlled-stream test passes its own.
+func installBlameStreamHooks(t *testing.T, clock *blameFakeClock, wrap func(func(git.BlameHunk)) func(git.BlameHunk)) {
+	t.Helper()
+	prevNow, prevWrap := fileBlameNow, fileBlameWrapHunk
+	t.Cleanup(func() {
+		fileBlameNow = prevNow
+		fileBlameWrapHunk = prevWrap
+	})
+	if clock != nil {
+		fileBlameNow = clock.now
+	}
+	fileBlameWrapHunk = wrap
 }
 
 // incrementalHunksOf collects the hunks git blame --incremental emits for
@@ -480,7 +488,7 @@ func TestFileBlameStreamBatchesFillProgressively(t *testing.T) {
 		}
 	}
 
-	installBlameStreamHooks(h, clock, wrap)
+	installBlameStreamHooks(t, clock, wrap)
 	h.openRepo(repo.StoreRepo())
 	h.drain()
 	chooseFileMenuItem(t, h, "Unstaged code.txt", "Blame…")
@@ -603,9 +611,13 @@ func TestFileBlameStreamBatchesFillProgressively(t *testing.T) {
 		repo.Git("blame", "--porcelain", "-w", "HEAD", "--", "code.txt"))
 }
 
-// Hunks arriving inside one batch window reach the UI in a single batch:
-// after the first hunk's immediate batch, the rest of the stream bursts
-// through and exactly one more coverage batch ever lands.
+// Hunks arriving inside one batch window reach the UI together, and the
+// first hunk past the window flushes what collected ahead of itself: the
+// burst of this stream lands in exactly three batches — the first hunk
+// alone, the pair collecting inside the window, and the pair the window's
+// end and the stream's end leave. The fake clock decides where the window
+// closes: frozen, nothing flushes however long the test stalls, and the one
+// scripted advance draws the batch boundary exactly here.
 func TestFileBlameStreamThrottleCoalescesBurst(t *testing.T) {
 	repo := blameStreamFixture(t, "fbs-throttle")
 	hunks := incrementalHunksOf(t, repo.Path(), "code.txt", "HEAD")
@@ -614,7 +626,7 @@ func TestFileBlameStreamThrottleCoalescesBurst(t *testing.T) {
 	h := newTestApp(t)
 	clock := &blameFakeClock{}
 	ts := newBlameTurnstile(t)
-	installBlameStreamHooks(h, clock, ts.wrap)
+	installBlameStreamHooks(t, clock, ts.wrap)
 	h.openRepo(repo.StoreRepo())
 	h.drain()
 	chooseFileMenuItem(t, h, "Unstaged code.txt", "Blame…")
@@ -628,18 +640,42 @@ func TestFileBlameStreamThrottleCoalescesBurst(t *testing.T) {
 		t.Fatalf("covered after the first hunk = %d, want 1", st.blameCovered)
 	}
 
-	// The remaining four hunks burst through inside the frozen window.
-	// Exactly one batch carries them: the next coverage jump is the whole
-	// rest of the file, with nothing posted in between.
-	ts.permit(4)
+	// h1 and h2 burst through inside the frozen window: their processing
+	// completes without a single batch posted.
+	ts.permit(2)
+	ts.awaitAcks(t, 3)
+	if n := queuePendingLen(h.queue); n != 0 {
+		t.Fatalf("%d UI callbacks posted inside the batch window, want none", n)
+	}
+	if st.blameCovered != 1 {
+		t.Fatalf("covered inside the window = %d, want the first hunk's 1", st.blameCovered)
+	}
+
+	// The window elapses; h3's arrival flushes the collected pair ahead of
+	// itself and joins the next window.
+	clock.advance(150 * time.Millisecond)
+	ts.permit(1)
+	ts.awaitAcks(t, 4)
+	h.queue.RunNext(t) // batch{h1, h2}
+	h.ui.Frame()
+	if st.blameCovered != 5 {
+		t.Fatalf("covered after the window batch = %d, want h0, h1 and h2's 5 lines", st.blameCovered)
+	}
+	if !h.ui.HasText("Loading blame… 5 of 10 lines") {
+		t.Fatalf("missing progress 5 of 10; texts=%q", h.ui.Texts())
+	}
+
+	// h4 collects with h3; the end of the stream flushes them together, and
+	// only the completion is left to post.
+	ts.permit(1)
 	ts.awaitAcks(t, 5)
-	h.queue.RunNext(t) // the one batch of the burst
+	h.queue.RunNext(t) // batch{h3, h4}
 	h.ui.Frame()
 	if st.blameCovered != 10 {
-		t.Fatalf("covered after the burst's batch = %d, want all 10 lines in one batch", st.blameCovered)
+		t.Fatalf("covered after the final batch = %d, want all 10 lines", st.blameCovered)
 	}
 	if n := queuePendingLen(h.queue); n != 1 {
-		t.Fatalf("%d UI callbacks pending after the burst's batch, want just the done callback", n)
+		t.Fatalf("%d UI callbacks pending after the final batch, want just the done callback", n)
 	}
 	h.queue.RunNext(t) // done
 	h.ui.Frame()
@@ -803,7 +839,7 @@ func TestFileBlameStreamCancelDiscardsLateBatches(t *testing.T) {
 		}
 		return ts2.wrap(deliver)
 	}
-	installBlameStreamHooks(h, clock, wrap)
+	installBlameStreamHooks(t, clock, wrap)
 	h.openRepo(repo.StoreRepo())
 	h.drain()
 	chooseFileMenuItem(t, h, "Unstaged code.txt", "Blame…")
@@ -887,7 +923,7 @@ func TestFileBlameStreamModeSwitchKeepsReading(t *testing.T) {
 	ts := newBlameTurnstile(t)
 	ex := &blameCountingExecutor{delegate: &git.LocalExecutor{Dir: repo.Path()}}
 	h.app.openRepoFn = func(store.Repo) *git.Repo { return git.New(ex) }
-	installBlameStreamHooks(h, clock, ts.wrap)
+	installBlameStreamHooks(t, clock, ts.wrap)
 	h.openRepo(repo.StoreRepo())
 	h.drain()
 	chooseFileMenuItem(t, h, "Unstaged code.txt", "Blame…")
