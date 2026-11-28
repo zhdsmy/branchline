@@ -58,13 +58,29 @@ func (r *Repo) BlameIncremental(path, rev string, fn func(BlameHunk)) error {
 		case <-watchDone:
 		}
 	}()
-	p := &blameIncrementalParser{fn: fn, commits: map[string]*blameCommitMeta{}}
+	emit := func(h BlameHunk) {
+		if base.Err() != nil {
+			return
+		}
+		if fn != nil {
+			fn(h)
+		}
+	}
+	p := &blameIncrementalParser{fn: emit, commits: map[string]*blameCommitMeta{}}
 	buf := make([]byte, 32*1024)
 	clean := false
 	for {
+		if base.Err() != nil {
+			_ = pr.CloseWithError(base.Err())
+			break
+		}
 		n, err := pr.Read(buf)
 		if n > 0 {
 			p.write(buf[:n])
+			if base.Err() != nil {
+				_ = pr.CloseWithError(base.Err())
+				break
+			}
 		}
 		if err != nil {
 			// The leftover bytes of a complete stream end with a newline.
@@ -72,10 +88,14 @@ func (r *Repo) BlameIncremental(path, rev string, fn func(BlameHunk)) error {
 			break
 		}
 	}
-	if clean {
+	if clean && base.Err() == nil {
 		p.flush()
 	}
-	return <-runErr
+	err := <-runErr
+	if err == nil && base.Err() != nil {
+		return base.Err()
+	}
+	return err
 }
 
 // blameCommitMeta is what one commit's first blame entry carries: entries
@@ -150,7 +170,7 @@ func (p *blameIncrementalParser) lineEnd(l string) {
 		return
 	}
 	f := strings.Fields(l)
-	if len(f) < 4 || len(f[0]) < 40 {
+	if len(f) < 4 {
 		return
 	}
 	hash := f[0]
@@ -161,7 +181,7 @@ func (p *blameIncrementalParser) lineEnd(l string) {
 		hash = hash[1:]
 		boundary = true
 	}
-	if !isHex(hash) {
+	if len(hash) < 40 || !isHex(hash) {
 		return
 	}
 	finalLine, err1 := strconv.Atoi(f[2])

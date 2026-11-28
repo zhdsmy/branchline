@@ -550,10 +550,12 @@ func TestBlameIncrementalCancelLocal(t *testing.T) {
 	}
 }
 
-// writeBlameRewriteSSH writes an ssh that passes everything to the real ssh
-// wrapper, except that the first " git " of the remote command becomes an
-// invocation of the fake git through sh: the server resolves git from its
-// own PATH, which a test cannot add to, so the command is rewritten instead.
+// writeBlameRewriteSSH writes a POSIX sh wrapper around the real ssh that
+// rewrites only the final argument (the remote command) when it carries
+// " git --literal-pathspecs ", turning that git invocation into the fake git
+// through sh. Narrowing the match to the final argument and the baseConfig
+// marker keeps earlier ssh flags and repository paths containing " git "
+// untouched, and avoids depending on python3.
 func writeBlameRewriteSSH(t *testing.T, realSSH, fakeGit string) string {
 	t.Helper()
 	if strings.ContainsAny(fakeGit, " \t'\"\\") {
@@ -561,20 +563,28 @@ func writeBlameRewriteSSH(t *testing.T, realSSH, fakeGit string) string {
 	}
 	dir := t.TempDir()
 	wrapper := filepath.Join(dir, "ssh")
-	script := "#!/usr/bin/env python3\n" +
-		"import os, sys\n" +
-		"args = sys.argv[1:]\n" +
-		"rewritten = [a.replace(' git ', ' sh " + fakeGit + " ', 1) if ' git ' in a else a for a in args]\n" +
-		"os.execv(" + pyQuote(realSSH) + ", [" + pyQuote(realSSH) + "] + rewritten)\n"
+	script := "#!/bin/sh\n" +
+		"n=$#\n" +
+		"i=1\n" +
+		"for arg in \"$@\"; do\n" +
+		"  if [ \"$i\" -eq \"$n\" ]; then\n" +
+		"    case \"$arg\" in\n" +
+		"      *\" git --literal-pathspecs \"*)\n" +
+		"        before=${arg%%\" git --literal-pathspecs \"*}\n" +
+		"        after=${arg#*\" git --literal-pathspecs \"}\n" +
+		"        arg=\"${before} sh " + fakeGit + " --literal-pathspecs ${after}\"\n" +
+		"        ;;\n" +
+		"    esac\n" +
+		"  fi\n" +
+		"  set -- \"$@\" \"$arg\"\n" +
+		"  i=$((i + 1))\n" +
+		"done\n" +
+		"shift \"$n\"\n" +
+		"exec " + ShellQuote(realSSH) + " \"$@\"\n"
 	if err := os.WriteFile(wrapper, []byte(script), 0o755); err != nil {
 		t.Fatalf("write rewriting ssh: %v", err)
 	}
 	return wrapper
-}
-
-// pyQuote quotes a string for embedding in a Python source file.
-func pyQuote(s string) string {
-	return "'" + strings.ReplaceAll(strings.ReplaceAll(s, "\\", "\\\\"), "'", "\\'") + "'"
 }
 
 // TestBlameIncrementalCancelSSH checks the same cancellation over SSH: the
@@ -679,5 +689,38 @@ func TestBlameIncrementalSSHConsistency(t *testing.T) {
 			t.Errorf("line %d: spread %+v, BlameLines hash %s author %q subject %q date %d",
 				i+1, g, w.Hash, w.Author, w.Subject, w.Date.Unix())
 		}
+	}
+}
+
+// TestBlameIncrementalCancelInCallback checks that canceling the Repo's
+// context inside the hunk callback stops further callbacks even for hunks
+// already buffered in the same read chunk, and returns context.Canceled.
+func TestBlameIncrementalCancelInCallback(t *testing.T) {
+	payload := strings.Join([]string{
+		"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 1 1 1",
+		"author Ada",
+		"author-time 1700000001",
+		"summary first",
+		"filename probe.txt",
+		"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb 2 2 1",
+		"author Bob",
+		"author-time 1700000002",
+		"summary second",
+		"filename probe.txt",
+		"",
+	}, "\n")
+	parent, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	r := New(staticExecutor{out: []byte(payload)}).WithContext(parent)
+	called := 0
+	err := r.BlameIncremental("probe.txt", "", func(h BlameHunk) {
+		called++
+		cancel()
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	if called != 1 {
+		t.Fatalf("callback ran %d times, want 1", called)
 	}
 }
