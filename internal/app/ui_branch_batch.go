@@ -382,18 +382,40 @@ func batchDeleteWithGuard(repo *git.Repo, targets []batchDelTarget) error {
 			return fmt.Errorf("cannot delete branches: the remote branch %s changed after the dialog opened; review the repository and try again", t.upstream)
 		}
 	}
-	errs := []error{repo.RemoveBranches(list)}
+	var errs []error
+	if err := repo.RemoveBranches(list); err != nil {
+		errs = append(errs, err)
+	}
 	// Two local branches can share one upstream: the server deletion goes
 	// out once, or the second push would fail the lease the first consumed.
 	deleted := map[string]bool{}
+	var failedRemotes []string
+	var remoteErrs []error
+	anyStale := false
 	for _, t := range targets {
 		if t.upstream == "" || deleted[t.upstream] {
 			continue
 		}
 		deleted[t.upstream] = true
 		if err := deleteRemoteBranchWithGuard(repo, t.upRemote, t.upBranch, t.upHash); err != nil {
-			errs = append(errs, err)
+			failedRemotes = append(failedRemotes, t.upstream)
+			if strings.Contains(strings.ToLower(err.Error()), "stale info") {
+				anyStale = true
+			}
+			remoteErrs = append(remoteErrs, fmt.Errorf("%s: %w", t.upstream, err))
 		}
+	}
+	if len(failedRemotes) > 0 {
+		noun := "remote branch"
+		if len(failedRemotes) > 1 {
+			noun = "remote branches"
+		}
+		hint := ""
+		if anyStale {
+			hint = " (the server ref changed or was already deleted; Fetch first and try again)"
+		}
+		errs = append(errs, fmt.Errorf("failed to delete %s %s%s: %w",
+			noun, strings.Join(failedRemotes, ", "), hint, errors.Join(remoteErrs...)))
 	}
 	return errors.Join(errs...)
 }
