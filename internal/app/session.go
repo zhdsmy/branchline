@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"path/filepath"
 	"strings"
@@ -44,6 +45,13 @@ type repoSession struct {
 	// readSeq tracks per-scope generation numbers for auxiliary reads
 	// (such as commit details or file diffs) created via sessionRead.
 	readSeq map[string]uint64
+	// readCancels holds the cancel function of each scope's in-flight
+	// sessionRead, keyed by scope with one entry per read: canceling a read
+	// stops the Git its worker runs instead of letting it finish unseen.
+	// An entry is compared by identity before deletion or cancellation, so
+	// a read finishing late never removes or cancels the read that replaced
+	// it — even after Open or Close reset the scope's sequence numbers.
+	readCancels map[string]*readCancel
 
 	logLimit    int
 	showIgnored bool
@@ -113,10 +121,11 @@ func newRepoSession(post, spawn func(func()), openRepo func(store.Repo) *git.Rep
 		openRepo = defaultOpenGitRepo
 	}
 	return &repoSession{
-		post:     post,
-		spawn:    spawn,
-		openRepo: openRepo,
-		readSeq:  map[string]uint64{},
+		post:        post,
+		spawn:       spawn,
+		openRepo:    openRepo,
+		readSeq:     map[string]uint64{},
+		readCancels: map[string]*readCancel{},
 	}
 }
 
@@ -161,6 +170,7 @@ func (s *repoSession) Open(meta store.Repo) {
 	s.repoGen++
 	s.loadGen++
 	clear(s.readSeq)
+	s.cancelAllReads()
 
 	s.meta = meta
 	s.hasRepo = true
@@ -192,6 +202,7 @@ func (s *repoSession) Close() {
 	s.repoGen++
 	s.loadGen++
 	clear(s.readSeq)
+	s.cancelAllReads()
 
 	s.meta = store.Repo{}
 	s.hasRepo = false
@@ -344,21 +355,48 @@ func (s *repoSession) doThen(label string, fn func(*git.Repo) error, after func(
 	return true
 }
 
+// readCancel is one in-flight sessionRead's cancel function, boxed so a
+// completion can tell its own entry in readCancels from a successor's by
+// identity: sequence numbers cannot do it, because Open and Close restart
+// every scope's numbering.
+type readCancel struct {
+	cancel context.CancelFunc
+}
+
 // sessionRead runs a scoped asynchronous read (for example commit detail or
 // file diff) off the UI thread and invokes done on the UI thread only if both
 // the repository generation and the scope's request sequence still match.
+//
+// The read's work runs on a copy of the repository whose context is canceled
+// when the read is superseded by another read of the same scope, canceled
+// through cancelRead, or dropped by Open or Close, so a long-running Git
+// command stops instead of finishing unseen. Only reads of the same scope
+// supersede one another; other scopes keep running.
 func sessionRead[T any](s *repoSession, scope string, work func(*git.Repo) (T, error), done func(T, error)) bool {
 	if s == nil || !s.hasRepo || s.repo == nil || work == nil || done == nil {
 		return false
 	}
-	repo := s.repo
+	ctx, cancel := context.WithCancel(context.Background())
+	repo := s.repo.WithContext(ctx)
 	repoGen := s.repoGen
 	seq := s.readSeq[scope] + 1
 	s.readSeq[scope] = seq
+	entry := &readCancel{cancel: cancel}
+	if prev := s.readCancels[scope]; prev != nil {
+		prev.cancel()
+	}
+	s.readCancels[scope] = entry
 
 	s.spawn(func() {
 		res, err := work(repo)
+		cancel()
 		s.post(func() {
+			// The read is over whatever becomes of its result: its context
+			// is released and its entry leaves the table, unless a successor
+			// of the same scope already replaced it — that entry is theirs.
+			if s.readCancels[scope] == entry {
+				delete(s.readCancels, scope)
+			}
 			if s.repoGen != repoGen || s.readSeq[scope] != seq {
 				return
 			}
@@ -369,12 +407,27 @@ func sessionRead[T any](s *repoSession, scope string, work func(*git.Repo) (T, e
 }
 
 // cancelRead invalidates any in-flight sessionRead for scope so late results
-// are discarded when a caller clears its selection.
+// are discarded when a caller clears its selection, and cancels the read's
+// context so its Git stops.
 func (s *repoSession) cancelRead(scope string) {
 	if s == nil {
 		return
 	}
 	s.readSeq[scope]++
+	if entry := s.readCancels[scope]; entry != nil {
+		entry.cancel()
+		delete(s.readCancels, scope)
+	}
+}
+
+// cancelAllReads cancels every in-flight sessionRead and empties the table.
+// Open and Close call it: reads of a repository that is no longer active
+// would be discarded on completion, so their Git stops now instead.
+func (s *repoSession) cancelAllReads() {
+	for scope, entry := range s.readCancels {
+		entry.cancel()
+		delete(s.readCancels, scope)
+	}
 }
 
 func (s *repoSession) loadOptions() repository.Options {
