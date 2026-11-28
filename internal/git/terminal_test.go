@@ -52,8 +52,8 @@ func TestTerminalCommandArgsExact(t *testing.T) {
 		}
 	}
 	remote := argv[len(argv)-1]
-	if !strings.HasPrefix(remote, "/bin/sh -c ") {
-		t.Fatalf("server command %q does not start with /bin/sh -c : a fish or tcsh login shell would run it with its own syntax", remote)
+	if !strings.HasPrefix(remote, "exec /bin/sh -c ") {
+		t.Fatalf("server command %q does not start with exec /bin/sh -c : a fish or tcsh login shell would run it with its own syntax", remote)
 	}
 	if !strings.Contains(remote, `exec "${SHELL:-/bin/sh}" -l`) {
 		t.Fatalf("server command %q does not end in the login shell's exec", remote)
@@ -172,8 +172,8 @@ func TestTerminalCommandShellExecution(t *testing.T) {
 			ex := &SSHExecutor{Host: "box.example.test", Dir: dir}
 			argv := ex.TerminalCommand()
 			remote := argv[len(argv)-1]
-			if !strings.HasPrefix(remote, "/bin/sh -c ") {
-				t.Fatalf("server command %q does not start with /bin/sh -c", remote)
+			if !strings.HasPrefix(remote, "exec /bin/sh -c ") {
+				t.Fatalf("server command %q does not start with exec /bin/sh -c", remote)
 			}
 			got := runShell(t, "/bin/sh", remote, dir)
 			if got != want {
