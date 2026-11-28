@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -292,18 +291,28 @@ func (r Repo) Location() string {
 }
 
 // Address returns the SSH address of the repository, as ParseAddress
-// reads it.
+// reads it. The path is written as it is: the ssh:// form's path is not a
+// URL path, so it carries no escapes.
 func (r Repo) Address() string {
 	host := r.Host
+	// scp style cannot carry a host with a colon, so an IPv6 host uses the
+	// ssh:// form even without a port; there its colons need brackets.
+	sshForm := r.Port > 0 || strings.Contains(r.Host, ":")
+	if sshForm && strings.Contains(host, ":") && !strings.HasPrefix(host, "[") {
+		host = "[" + host + "]"
+	}
 	if r.User != "" {
 		host = r.User + "@" + host
 	}
-	if r.Port > 0 {
+	if sshForm {
 		p := r.Path
 		if strings.HasPrefix(p, "~") {
 			p = "/" + p
 		}
-		return "ssh://" + host + ":" + strconv.Itoa(r.Port) + p
+		if r.Port > 0 {
+			return "ssh://" + host + ":" + strconv.Itoa(r.Port) + p
+		}
+		return "ssh://" + host + p
 	}
 	return host + ":" + r.Path
 }
@@ -320,25 +329,57 @@ func (r Repo) Same(o Repo) bool {
 // remotes: user@host:path (scp style, path relative to the home unless it
 // starts with /), or ssh://user@host:port/path. A path of ~ or ~/… is
 // under the home either way.
+//
+// The path of an ssh:// address is not a URL path: the user writes it as
+// it is on the server, so after the authority it is read as typed — a % is
+// a percent, not an escape, and # or ? never end the path.
 func ParseAddress(s string) (Repo, error) {
 	s = strings.TrimSpace(s)
 	r := Repo{Kind: SSH}
 	if strings.HasPrefix(s, "ssh://") {
-		u, err := url.Parse(s)
-		if err != nil {
-			return r, fmt.Errorf("cannot read %q: %v", s, err)
+		rest := s[len("ssh://"):]
+		var authority string
+		if slash := strings.IndexByte(rest, '/'); slash < 0 {
+			authority = rest
+			r.Path = ""
+		} else {
+			authority, r.Path = rest[:slash], rest[slash:]
 		}
-		r.Host = u.Hostname()
-		if u.User != nil {
-			r.User = u.User.Username()
+		var hostport string
+		if at := strings.LastIndexByte(authority, '@'); at >= 0 {
+			r.User, hostport = authority[:at], authority[at+1:]
+		} else {
+			hostport = authority
 		}
-		if p := u.Port(); p != "" {
-			r.Port, err = strconv.Atoi(p)
-			if err != nil {
-				return r, fmt.Errorf("bad port %q", p)
+		if strings.HasPrefix(hostport, "[") {
+			end := strings.IndexByte(hostport, ']')
+			if end < 0 {
+				return r, fmt.Errorf("cannot read %q: no ] in the host", s)
 			}
+			r.Host = hostport[1:end]
+			if rest := hostport[end+1:]; rest != "" {
+				if !strings.HasPrefix(rest, ":") {
+					return r, fmt.Errorf("cannot read %q: garbage after ]", s)
+				}
+				if p := rest[1:]; p != "" {
+					port, err := parseSSHPort(p)
+					if err != nil {
+						return r, err
+					}
+					r.Port = port
+				}
+			}
+		} else if host, port, ok := strings.Cut(hostport, ":"); ok {
+			r.Host = host
+			if port != "" {
+				var err error
+				if r.Port, err = parseSSHPort(port); err != nil {
+					return r, err
+				}
+			}
+		} else {
+			r.Host = hostport
 		}
-		r.Path = u.Path
 		if strings.HasPrefix(r.Path, "/~") {
 			r.Path = r.Path[1:]
 		}
@@ -367,6 +408,23 @@ func ParseAddress(s string) (Repo, error) {
 		return r, err
 	}
 	return r, nil
+}
+
+// parseSSHPort reads a decimal port in 1..65535; signs and non-digits are rejected.
+func parseSSHPort(p string) (int, error) {
+	if p == "" {
+		return 0, fmt.Errorf("bad port %q", p)
+	}
+	for i := 0; i < len(p); i++ {
+		if p[i] < '0' || p[i] > '9' {
+			return 0, fmt.Errorf("bad port %q", p)
+		}
+	}
+	port, err := strconv.Atoi(p)
+	if err != nil || port < 1 || port > 65535 {
+		return 0, fmt.Errorf("bad port %q", p)
+	}
+	return port, nil
 }
 
 // DefaultName names a repository after its directory.
