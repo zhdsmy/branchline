@@ -45,6 +45,12 @@ type repoSession struct {
 	// (such as commit details or file diffs) created via sessionRead.
 	readSeq map[string]uint64
 
+	// commitGraphTried marks the repository paths a commit-graph write has
+	// been tried for in this run of the app. It survives Open and Close on
+	// purpose: one try per path per run, however often the repository is
+	// reopened or reloaded.
+	commitGraphTried map[string]bool
+
 	logLimit    int
 	showIgnored bool
 	// ignoreSpace is the diff panel's global ignore-whitespace choice. The UI
@@ -113,10 +119,11 @@ func newRepoSession(post, spawn func(func()), openRepo func(store.Repo) *git.Rep
 		openRepo = defaultOpenGitRepo
 	}
 	return &repoSession{
-		post:     post,
-		spawn:    spawn,
-		openRepo: openRepo,
-		readSeq:  map[string]uint64{},
+		post:             post,
+		spawn:            spawn,
+		openRepo:         openRepo,
+		readSeq:          map[string]uint64{},
+		commitGraphTried: map[string]bool{},
 	}
 }
 
@@ -264,6 +271,7 @@ func (s *repoSession) Reload() {
 			s.snapshot = snap
 			s.loaded = true
 			s.loadErr = nil
+			s.considerCommitGraph(snap.More)
 			if !opts.SkipCapabilities {
 				// The first successful load of this repository carries the
 				// one probe result; every later refresh skips it. A probing
