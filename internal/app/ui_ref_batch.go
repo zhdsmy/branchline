@@ -412,25 +412,17 @@ func (a *app) remoteBatchDeleteDialog(c *ui.Context) {
 	if !st.rbdOpen {
 		return
 	}
-	if ui.Modal(c.Key("rbd-modal"), &st.rbdOpen, func() {
-		ui.Column(c.Key("rbd-body")).Width(460).Padding(18, 18, 14, 18).Gap(10).Children(func() {
-			ui.Text(c, "Delete Remote Branches").FontSize(17).FontWeight(650).TextColor(p.text)
-			refBatchDialogRows(c, "rbd", st.rbdRows)
-			ui.Text(c, "The branches are deleted on the server for everyone.").FontSize(12).TextColor(p.muted)
-			ui.Row(c.Key("rbd-actions")).Gap(8).Justify(ui.End).Children(func() {
-				if ui.Button(c.Key("rbd-cancel"), "Cancel").Label("Cancel").Clicked() {
-					a.closeRemoteBatchDeleteDialog()
-				}
-				if ui.PrimaryButton(c.Key("rbd-confirm"), "Delete").
-					Label("Confirm Delete Remote Branches").
-					Disabled(!a.refBatchSubmitReady(st.rbdRows)).
-					Clicked() {
-					a.submitRemoteBatchDelete()
-				}
-			})
-		})
-	}).Dismissed() {
+	dismissed, cancelled, confirmed := dialogFrame(c, p, "rbd", &st.rbdOpen, "Delete Remote Branches", 460, func() {
+		refBatchDialogRows(c, "rbd", st.rbdRows)
+		ui.Text(c, "The branches are deleted on the server for everyone.").FontSize(12).TextColor(p.muted)
+	},
+		dialogAction{key: "rbd-cancel", text: "Cancel", label: "Cancel"},
+		dialogAction{key: "rbd-confirm", text: "Delete", label: "Confirm Delete Remote Branches", disabled: !a.refBatchSubmitReady(st.rbdRows), destructive: true})
+	if cancelled || dismissed {
 		a.closeRemoteBatchDeleteDialog()
+	}
+	if confirmed {
+		a.submitRemoteBatchDelete()
 	}
 }
 
@@ -444,28 +436,20 @@ func (a *app) tagBatchPushDialog(c *ui.Context) {
 	if !st.ptOpen {
 		return
 	}
-	if ui.Modal(c.Key("pt-modal"), &st.ptOpen, func() {
-		ui.Column(c.Key("pt-body")).Width(460).Padding(18, 18, 14, 18).Gap(10).Children(func() {
-			ui.Text(c, "Push Tags").FontSize(17).FontWeight(650).TextColor(p.text)
-			ui.Field(c, "Remote:", func() {
-				ui.Text(c, st.ptRemote).Font("monospace").FontSize(12).TextColor(p.text)
-			})
-			refBatchDialogRows(c, "pt", st.ptRows)
-			ui.Text(c, "Tags that already exist on the remote with a different commit are rejected.").FontSize(12).TextColor(p.muted)
-			ui.Row(c.Key("pt-actions")).Gap(8).Justify(ui.End).Children(func() {
-				if ui.Button(c.Key("pt-cancel"), "Cancel").Label("Cancel").Clicked() {
-					a.closeTagBatchPushDialog()
-				}
-				if ui.PrimaryButton(c.Key("pt-confirm"), "Push").
-					Label("Confirm Push Tags").
-					Disabled(!a.refBatchSubmitReady(st.ptRows)).
-					Clicked() {
-					a.submitTagBatchPush()
-				}
-			})
+	dismissed, cancelled, confirmed := dialogFrame(c, p, "pt", &st.ptOpen, "Push Tags", 460, func() {
+		ui.Field(c, "Remote:", func() {
+			ui.Text(c, st.ptRemote).Font("monospace").FontSize(12).TextColor(p.text)
 		})
-	}).Dismissed() {
+		refBatchDialogRows(c, "pt", st.ptRows)
+		ui.Text(c, "Tags that already exist on the remote with a different commit are rejected.").FontSize(12).TextColor(p.muted)
+	},
+		dialogAction{key: "pt-cancel", text: "Cancel", label: "Cancel"},
+		dialogAction{key: "pt-confirm", text: "Push", label: "Confirm Push Tags", disabled: !a.refBatchSubmitReady(st.ptRows), autoFocus: true})
+	if cancelled || dismissed {
 		a.closeTagBatchPushDialog()
+	}
+	if confirmed {
+		a.submitTagBatchPush()
 	}
 }
 
@@ -480,29 +464,21 @@ func (a *app) tagBatchDeleteDialog(c *ui.Context) {
 		return
 	}
 	remotes := a.session.Snapshot().Refs.Remotes
-	if ui.Modal(c.Key("td-modal"), &st.tdOpen, func() {
-		ui.Column(c.Key("td-body")).Width(460).Padding(18, 18, 14, 18).Gap(10).Children(func() {
-			ui.Text(c, "Delete Tags").FontSize(17).FontWeight(650).TextColor(p.text)
-			refBatchDialogRows(c, "td", st.tdRows)
-			if len(remotes) > 0 {
-				ui.Checkbox(c.Key("td-remote"), &st.tdRemote, "Also delete from remotes")
-			}
-			if st.tdRemote {
-				ui.Text(c, "The tags are deleted on "+strings.Join(remotes, ", ")+" for everyone. Remotes without them are skipped.").FontSize(12).TextColor(p.muted)
-			}
-			ui.Row(c.Key("td-actions")).Gap(8).Justify(ui.End).Children(func() {
-				if ui.Button(c.Key("td-cancel"), "Cancel").Label("Cancel").Clicked() {
-					a.closeTagBatchDeleteDialog()
-				}
-				if ui.PrimaryButton(c.Key("td-confirm"), "Delete").
-					Label("Confirm Delete Tags").
-					Disabled(!a.refBatchSubmitReady(st.tdRows)).
-					Clicked() {
-					a.submitTagBatchDelete()
-				}
-			})
-		})
-	}).Dismissed() {
+	dismissed, cancelled, confirmed := dialogFrame(c, p, "td", &st.tdOpen, "Delete Tags", 460, func() {
+		refBatchDialogRows(c, "td", st.tdRows)
+		if len(remotes) > 0 {
+			ui.Checkbox(c.Key("td-remote"), &st.tdRemote, "Also delete from remotes")
+		}
+		if st.tdRemote {
+			ui.Text(c, "The tags are deleted on "+strings.Join(remotes, ", ")+" for everyone. Remotes without them are skipped.").FontSize(12).TextColor(p.muted)
+		}
+	},
+		dialogAction{key: "td-cancel", text: "Cancel", label: "Cancel"},
+		dialogAction{key: "td-confirm", text: "Delete", label: "Confirm Delete Tags", disabled: !a.refBatchSubmitReady(st.tdRows), destructive: true})
+	if cancelled || dismissed {
 		a.closeTagBatchDeleteDialog()
+	}
+	if confirmed {
+		a.submitTagBatchDelete()
 	}
 }
