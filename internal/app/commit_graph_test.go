@@ -62,10 +62,14 @@ func commitGraphFastImport(t *testing.T, dir string, n int) {
 }
 
 // commitGraphFixture builds a repository with an initial commit and n
-// imported commits on top, worktree and index reset to the tip.
+// imported commits on top, worktree and index reset to the tip. The
+// commit-graph switches are set explicitly so the outcome does not depend
+// on the machine's global Git configuration.
 func commitGraphFixture(t *testing.T, name string, n int) *gitRepoFixture {
 	t.Helper()
 	fixture := newGitRepo(t, name)
+	fixture.Git("config", "core.commitGraph", "true")
+	fixture.Git("config", "gc.writeCommitGraph", "true")
 	fixture.CommitFile("seed.txt", "seed\n", "initial commit")
 	commitGraphFastImport(t, fixture.Path(), n)
 	fixture.Git("reset", "-q", "--hard", "main")
@@ -250,6 +254,10 @@ func TestSessionCommitGraphSkipsSSH(t *testing.T) {
 	// into the remote repository. SSH repositories read a thousand commits
 	// per page, so 1101 pass both one page and the threshold.
 	commitGraphFastImport(t, repo.Path, 1100)
+	// Explicitly on, whatever the machine's global configuration says: the
+	// SSH check must be what stops the write, not an ambient off switch.
+	srv.RunGit(t, repo.Path, "config", "core.commitGraph", "true")
+	srv.RunGit(t, repo.Path, "config", "gc.writeCommitGraph", "true")
 	if count := srv.RunGit(t, repo.Path, "rev-list", "--count", "--all"); count != "1101" {
 		t.Fatalf("remote fixture commit count = %q, want 1101", count)
 	}

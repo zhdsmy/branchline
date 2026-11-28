@@ -34,6 +34,11 @@ func commitGraphRepo(t *testing.T, n int) string {
 	commitGraphGit(t, dir, "init", "-q", "-b", "main")
 	commitGraphGit(t, dir, "config", "user.name", "Ada")
 	commitGraphGit(t, dir, "config", "user.email", "ada@example.com")
+	// The write must work out of the box whatever the machine's global
+	// configuration says about commit-graphs; only the tests of the off
+	// switches set them false.
+	commitGraphGit(t, dir, "config", "core.commitGraph", "true")
+	commitGraphGit(t, dir, "config", "gc.writeCommitGraph", "true")
 
 	var b strings.Builder
 	for i := 1; i <= n; i++ {
