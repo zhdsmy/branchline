@@ -22,6 +22,26 @@ import (
 //     gc.writeCommitGraph.
 //   - fewer than minCommits commits are reachable.
 //
+// The write asks for changed-path Bloom filters in version 2, so walks
+// with a path — file history, and blame where it can use them — skip the
+// commits that never touched the path instead of parsing and diffing them
+// all. The filters make writing once cost a few seconds of CPU on a large
+// history instead of a fraction of one, but every later read of the graph
+// keeps them: the user's own git carries them through rewrites, garbage
+// collection and split-chain appends. Version 2 is fixed because the hash
+// of version 1 depends on the signedness of the platform's char, so a
+// graph written by an x86_64 git — including one under Rosetta — and one
+// written on Apple silicon disagree for paths with bytes of 0x80 and up,
+// and the mismatched one drops commits from path walks.
+//
+// The user's own settings come first: when commitGraph.changedPaths,
+// commitGraph.changedPathsVersion or commitGraph.readChangedPaths is set,
+// in any scope or on the command line, the write carries neither flag and
+// git decides by that configuration. Older versions of git get what they
+// understand: one that does not know commitGraph.changedPathsVersion
+// writes the version-1 filters it knows, and one too old for
+// --changed-paths fails the write as an unknown option.
+//
 // A git command failing returns the error; the caller decides what it
 // means. Nothing else is written and no configuration is changed.
 func (r *Repo) WriteCommitGraphIfLarge(minCommits int) (bool, error) {
@@ -55,7 +75,34 @@ func (r *Repo) WriteCommitGraphIfLarge(minCommits int) (bool, error) {
 	if count < minCommits {
 		return false, nil
 	}
-	if _, err := r.run(slow, "commit-graph", "write", "--reachable"); err != nil {
+	args := []string{"commit-graph", "write", "--reachable"}
+	configured, err := r.changedPathsConfigured()
+	if err != nil {
+		return false, err
+	}
+	if !configured {
+		args = append([]string{"-c", "commitGraph.changedPathsVersion=2"}, append(args, "--changed-paths")...)
+	}
+	if _, err := r.run(slow, args...); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// changedPathsConfigured reports whether any of the three changed-path
+// settings — commitGraph.changedPaths, commitGraph.changedPathsVersion or
+// commitGraph.readChangedPaths — has a value in any scope git reads. git
+// lowercases the section and key of every configuration entry it prints,
+// so one lowercase pattern matches them however they were written, and
+// values passed as -c on this command line count as much as files do.
+// git config --get-regexp exits 1 for no match, which reads as unset; any
+// other failure is an error.
+func (r *Repo) changedPathsConfigured() (bool, error) {
+	out, err := r.run(quick, "config", "--get-regexp", `^commitgraph\.(changedpaths|changedpathsversion|readchangedpaths)$`)
+	if err != nil {
+		if ExitCode(err) == 1 && strings.TrimSpace(string(out)) == "" {
+			return false, nil
+		}
 		return false, err
 	}
 	return true, nil
