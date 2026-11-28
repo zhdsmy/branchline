@@ -354,7 +354,7 @@ func (a *app) changesListRow(c *ui.Context, cache *changesListCache, row changes
 	case changesRowUnstaged:
 		a.changesFileRow(c, row.file, false, row.depth, row.display)
 	case changesRowUnstagedFolder:
-		a.changesFolderRow(c, row)
+		a.changesFolderRow(c, cache, row)
 	case changesRowUnstagedEmpty:
 		a.changesFileEmptyHint(c, false, filtered && len(cache.ordinary) > 0)
 	case changesRowStagedHeader:
@@ -362,7 +362,7 @@ func (a *app) changesListRow(c *ui.Context, cache *changesListCache, row changes
 	case changesRowStaged:
 		a.changesFileRow(c, row.file, true, row.depth, row.display)
 	case changesRowStagedFolder:
-		a.changesFolderRow(c, row)
+		a.changesFolderRow(c, cache, row)
 	case changesRowStagedEmpty:
 		a.changesFileEmptyHint(c, true, filtered && len(cache.staged) > 0)
 	}

@@ -16,15 +16,12 @@ import (
 const pgidMarker = "\x1ebranchline-pgid "
 
 // pgidPrefix makes the server name its process group before anything else.
-// sshd hands the command to the login's shell, which need not be a POSIX
-// one: csh and tcsh would read `>&2` as redirecting both streams into a
-// file named 2, and fish rejects `$$` outright. Only /bin/sh sees the
-// printf, and the one argument it gets is a single quoted string with
-// nothing to expand in it, which every login shell parses alike. The sh is
-// a child of the login shell, the leader sshd made of the session's
-// process group, so the parent it names is the group of everything the
-// command starts.
-const pgidPrefix = "/bin/sh -c 'printf \"" + pgidMarker + "%s\\n\" \"$PPID\" >&2'; "
+// It is POSIX for the /bin/sh remoteShellCommand execs over the login
+// shell: exec replaces the shell instead of forking, so the sh runs with
+// the login shell's own process id, and $$ names it. sshd made that shell
+// the leader of the session's process group, so the number is the group of
+// everything the command starts.
+const pgidPrefix = "printf \"" + pgidMarker + "%s\\n\" \"$$\" >&2; "
 
 // remoteGroupKillScript is the script that ends the process group the
 // command on the server named, in the form POSIX writes: the dash that is
@@ -34,9 +31,10 @@ func remoteGroupKillScript(pg int) string {
 	return "kill -s TERM -- -" + strconv.Itoa(pg)
 }
 
-// remoteGroupKill is the kill for the server. It runs through /bin/sh like
-// every other script of the server: the kill of a login shell that is not
-// POSIX needs not understand process groups or the -- before one.
+// remoteGroupKill is the kill command as it reaches the server. RunShell
+// wraps the script for /bin/sh, so the command on the wire is the wrapping
+// of the bare script: the kill of a login shell that is not POSIX needs
+// not understand process groups or the -- before one.
 func remoteGroupKill(pg int) string {
 	return remoteShellCommand(remoteGroupKillScript(pg))
 }
@@ -196,7 +194,7 @@ func (s *SSHExecutor) stopRemoteGroup(pg int) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), remoteKillTimeout)
 		defer cancel()
-		_, _ = s.RunShell(ctx, remoteGroupKill(pg))
+		_, _ = s.RunShell(ctx, remoteGroupKillScript(pg))
 	}()
 }
 

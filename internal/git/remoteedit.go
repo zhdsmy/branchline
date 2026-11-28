@@ -349,14 +349,6 @@ func remoteEditError(err error) error {
 	return err
 }
 
-// remoteShellCommand wraps a POSIX shell script so the server runs it with
-// /bin/sh whatever the login shell of the account is: sshd hands commands to
-// the login shell, which may be zsh or fish, and the scripts need POSIX
-// semantics. The script's exit codes pass through unchanged.
-func remoteShellCommand(script string) string {
-	return "/bin/sh -c " + ShellQuote(script)
-}
-
 // DownloadForEdit copies one file of an SSH repository's working tree onto
 // this machine for editing. The copy lands in a fresh private directory
 // under cacheDir, and the returned RemoteCopy remembers what the server file
@@ -377,7 +369,7 @@ func (r *Repo) DownloadForEdit(ctx context.Context, path, cacheDir string) (Remo
 	if err != nil {
 		return RemoteCopy{}, err
 	}
-	out, runErr := ssh.RunShellInput(ctx, remoteShellCommand(remoteEditDownloadScript(ssh.DirPath(), path)), nil)
+	out, runErr := ssh.RunShellInput(ctx, remoteEditDownloadScript(ssh.DirPath(), path), nil)
 	if runErr != nil {
 		return RemoteCopy{}, remoteEditError(runErr)
 	}
@@ -451,7 +443,7 @@ func (r *Repo) SaveEdited(ctx context.Context, c RemoteCopy) (RemoteFileMeta, er
 	sum := sha256.Sum256(content)
 	sha := hex.EncodeToString(sum[:])
 	script := remoteEditSaveScript(ssh.DirPath(), c.Path, c.Meta, int64(len(content)), sha, c.Meta.Mode)
-	out, runErr := ssh.RunShellInput(ctx, remoteShellCommand(script), content)
+	out, runErr := ssh.RunShellInput(ctx, script, content)
 	if runErr != nil {
 		return RemoteFileMeta{}, remoteEditError(runErr)
 	}

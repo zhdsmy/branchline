@@ -85,6 +85,32 @@ func (r *Repo) WorktreeFileDiffOpts(rev string, f FileChange, o DiffOptions) (st
 	return string(out), err
 }
 
+// WorktreeFiles lists the files the working tree changes relative to rev,
+// without their patches: every tracked file of git diff <rev> plus every
+// untracked file as status '?'. Ignored files never appear, as they do not
+// in the status either.
+func (r *Repo) WorktreeFiles(rev string) ([]FileChange, error) {
+	if strings.TrimSpace(rev) == "" {
+		return nil, fmt.Errorf("missing commit")
+	}
+	out, err := r.run(quick, "diff", "-M", "--name-status", "-z", rev, "--")
+	if err != nil {
+		return nil, err
+	}
+	files := ParseNameStatus(out)
+	out, err = r.run(quick, "ls-files", "--others", "--exclude-standard", "-z")
+	if err != nil {
+		return nil, err
+	}
+	for _, path := range strings.Split(string(out), "\x00") {
+		if path == "" {
+			continue
+		}
+		files = append(files, FileChange{Status: '?', Path: path})
+	}
+	return files, nil
+}
+
 func (r *Repo) RangeDiff(from, to string) (string, error) {
 	return r.RangeDiffOpts(from, to, DiffOptions{})
 }

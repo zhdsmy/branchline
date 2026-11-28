@@ -21,13 +21,15 @@ import (
 // switcher entry, defined here to keep ui_kit.go limited to shared components.
 var fallbackCloneIcon = mustSVG(`<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9.8v1.7A1.5 1.5 0 0 0 4.5 13h7a1.5 1.5 0 0 0 1.5-1.5V9.8"/><path d="M8 3v6.2M5.4 6.6L8 9.2l2.6-2.6"/></svg>`)
 
-// pickCloneFolderFn shows the folder picker of the Clone Repository dialog's
-// Choose button. It is a package-level variable so tests can substitute a
-// picker that never shows the system dialog.
-var pickCloneFolderFn = func(parent *mygo.Window) (string, error) {
+// pickParentFolderFn shows the system folder picker for dialogs with a
+// Parent Folder Choose button (Clone Repository, New Repository). It is a
+// package-level variable so tests can substitute a picker that never shows
+// the system dialog; callers read it on the UI thread before spawning so
+// background workers never race with test swaps.
+var pickParentFolderFn = func(parent *mygo.Window, title string) (string, error) {
 	paths, err := mygo.Dialog.Open(mygo.OpenDialogOptions{
 		Parent:    parent,
-		Title:     "Clone Repository",
+		Title:     title,
 		Directory: true,
 	})
 	if err != nil {
@@ -262,24 +264,35 @@ func (a *app) cloneDisabled(st *cloneUIState) bool {
 	return strings.TrimSpace(st.parent) == ""
 }
 
+// pickParentFolder runs the system folder picker with title in the
+// background and invokes apply on the UI thread with the chosen directory.
+// Canceling the picker does nothing; callers check their dialog's generation
+// inside apply so a late choice cannot land in a closed or reopened dialog.
+func (a *app) pickParentFolder(title string, apply func(dir string)) {
+	win := a.win
+	pick := pickParentFolderFn
+	a.spawn(func() {
+		dir, err := pick(win, title)
+		if err != nil || dir == "" {
+			return
+		}
+		a.post(func() {
+			apply(dir)
+		})
+	})
+}
+
 // pickCloneFolder runs the system folder picker in the background and puts
 // the chosen folder into the parent field, as Add Local Repository does.
 // Canceling the picker leaves the field unchanged, and a picker finishing
 // after the dialog closed or reopened is dropped.
 func (a *app) pickCloneFolder(st *cloneUIState) {
-	win := a.win
 	gen := st.gen
-	a.spawn(func() {
-		dir, err := pickCloneFolderFn(win)
-		if err != nil || dir == "" {
+	a.pickParentFolder("Clone Repository", func(dir string) {
+		if !st.open || st.gen != gen {
 			return
 		}
-		a.post(func() {
-			if !st.open || st.gen != gen {
-				return
-			}
-			st.parent = dir
-		})
+		st.parent = dir
 	})
 }
 
