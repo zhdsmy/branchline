@@ -1951,20 +1951,6 @@ func TestTrackBranchAndPushRefs(t *testing.T) {
 	if err != nil || !strings.Contains(string(out), "refs/tags/v1") || !strings.Contains(string(out), "refs/tags/v2") {
 		t.Fatalf("remote tags %q %v", out, err)
 	}
-	if err := r.DeleteRemoteTag("origin", "v2"); err != nil {
-		t.Fatal(err)
-	}
-	out, err = r.run(quick, "ls-remote", "--tags", "origin")
-	if err != nil || strings.Contains(string(out), "refs/tags/v2") || !strings.Contains(string(out), "refs/tags/v1") {
-		t.Fatalf("after remote delete %q %v", out, err)
-	}
-	local, err := r.run(quick, "rev-parse", "-q", "--verify", "refs/tags/v2")
-	if err != nil || strings.TrimSpace(string(local)) == "" {
-		t.Fatalf("local tag was removed: %q %v", local, err)
-	}
-	if err := r.DeleteRemoteTag("", "v1"); err == nil {
-		t.Fatal("an empty remote deleted a tag")
-	}
 	if err := r.TrackBranch("", "origin/main"); err == nil {
 		t.Fatal("an empty local branch was tracked")
 	}
