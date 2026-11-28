@@ -26,6 +26,20 @@ func markerScript(t *testing.T, path, scriptPath string) {
 	}
 }
 
+// markerScriptInPATH writes an executable script named name inside a fresh
+// temporary directory, prepends that directory to PATH for the duration of
+// the test, and returns name. Keeping the temporary directory's path out
+// of the reference name ensures git check-ref-format accepts the reference
+// even when TMPDIR contains path components git forbids in refs (such as a
+// dot-prefixed directory).
+func markerScriptInPATH(t *testing.T, marker, name string) string {
+	t.Helper()
+	binDir := t.TempDir()
+	markerScript(t, marker, filepath.Join(binDir, name))
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return name
+}
+
 // pushDashRef puts a reference whose name starts with "-" into the bare
 // repository, the way a hostile server hands such names out.
 func pushDashRef(t *testing.T, dir, bare, kind, name string) {
@@ -52,8 +66,7 @@ func endOfOptionsRepo(t *testing.T) (dir, bare string) {
 func TestEndOfOptionsDeleteRemoteBranches(t *testing.T) {
 	dir, bare := endOfOptionsRepo(t)
 	marker := filepath.Join(t.TempDir(), "executed")
-	script := filepath.Join(t.TempDir(), "receive-pack.sh")
-	markerScript(t, marker, script)
+	script := markerScriptInPATH(t, marker, "receive-pack.sh")
 	evil := "--receive-pack=" + script
 	pushDashRef(t, dir, bare, "heads", evil)
 	pushDashRef(t, dir, bare, "heads", "good")
@@ -75,8 +88,7 @@ func TestEndOfOptionsDeleteRemoteBranches(t *testing.T) {
 func TestEndOfOptionsDeleteRemoteBranch(t *testing.T) {
 	dir, bare := endOfOptionsRepo(t)
 	marker := filepath.Join(t.TempDir(), "executed")
-	script := filepath.Join(t.TempDir(), "receive-pack.sh")
-	markerScript(t, marker, script)
+	script := markerScriptInPATH(t, marker, "receive-pack.sh")
 	evil := "--receive-pack=" + script
 	pushDashRef(t, dir, bare, "heads", evil)
 
@@ -97,8 +109,7 @@ func TestEndOfOptionsDeleteRemoteBranch(t *testing.T) {
 func TestEndOfOptionsDeleteRemoteTag(t *testing.T) {
 	dir, bare := endOfOptionsRepo(t)
 	marker := filepath.Join(t.TempDir(), "executed")
-	script := filepath.Join(t.TempDir(), "receive-pack.sh")
-	markerScript(t, marker, script)
+	script := markerScriptInPATH(t, marker, "receive-pack.sh")
 	evil := "--receive-pack=" + script
 	pushDashRef(t, dir, bare, "tags", evil)
 
