@@ -11,6 +11,7 @@ import (
 
 	"github.com/zhdsmy/branchline/internal/exttool"
 	"github.com/zhdsmy/branchline/internal/git"
+	"github.com/zhdsmy/branchline/internal/store"
 )
 
 // maxMergeToolBytes caps how large a conflicted file can be for the external
@@ -68,12 +69,15 @@ func mergeToolKey(repoKey, path string) string {
 }
 
 // mergeToolRepoKey identifies the session's open repository for the merge
-// tool state, by its store ID or, for a repository without one, its kind and
-// path.
+// tool state, by its store ID or, for a repository without one, its SSH
+// address or local kind and path.
 func mergeToolRepoKey(a *app) string {
 	meta := a.session.Meta()
 	if meta.ID != "" {
 		return meta.ID
+	}
+	if meta.Kind == store.SSH {
+		return string(meta.Kind) + "|" + meta.Address()
 	}
 	return string(meta.Kind) + "|" + meta.Path
 }
@@ -91,7 +95,7 @@ func (a *app) conflictMergeToolMenuItems(m *ui.Menu, f git.FileChange, stage git
 		if m.Item("Save Merge Result").ID("merge-tool-save").Disabled(a.session.Busy()).Chosen() {
 			a.saveMergeToolResult(key)
 		}
-		if m.Item("Discard Merge Result").ID("merge-tool-discard").Chosen() {
+		if m.Item("Discard Merge Result").ID("merge-tool-discard").Disabled(a.session.Busy()).Chosen() {
 			a.discardMergeToolResult(key)
 		}
 	} else {
@@ -296,7 +300,7 @@ func (a *app) finishMergeTool(result mergeToolResult, toolName, original string)
 // it.
 func (a *app) writeMergeToolResult(result mergeToolResult) bool {
 	path := result.path
-	repoGen := result.repoGen
+	writeGen := a.session.Generation()
 	content := result.content
 	identity := result.identity
 	repoKey := result.repoKey
@@ -311,7 +315,7 @@ func (a *app) writeMergeToolResult(result mergeToolResult) bool {
 		// A successful write consumes the result, wherever it came from: the
 		// conflict is resolved with exactly this content.
 		delete(mergeToolUI(a).results, mergeToolKey(repoKey, path))
-		if st := conflictEditor(a); st.repoGen == repoGen && st.path == path {
+		if st := conflictEditor(a); st.repoGen == writeGen && st.path == path {
 			a.resetConflictEditor()
 		}
 	})
