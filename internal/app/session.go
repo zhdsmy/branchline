@@ -570,13 +570,12 @@ func (s *repoSession) loadOptions() repository.Options {
 		DateOrder:   s.dateOrder,
 		FirstParent: s.historyFirstParent,
 	}
-	if s.historyCurrentBranch || s.historyFirstParent {
-		// Both filters scope the walk to HEAD: the current-branch filter by
-		// what HEAD reaches, and the first-parent filter because its single
-		// line is the trunk's own — a branch tip started beside it would add
-		// that branch's chain back to the list, merged-in commits included.
+	if s.historyCurrentBranch {
 		// The current branch is what HEAD reaches, detached or not; an
-		// unborn HEAD answers no commits rather than failing the load.
+		// unborn HEAD answers no commits rather than failing the load. The
+		// first-parent filter does not scope the revisions: it is git log
+		// --first-parent of whatever the branch scope walks, so with every
+		// branch in view each branch's tip starts its own first-parent chain.
 		log.Revs = []string{"HEAD"}
 	}
 	return repository.Options{

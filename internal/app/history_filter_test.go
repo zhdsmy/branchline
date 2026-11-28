@@ -116,10 +116,11 @@ func TestHistoryFilterCurrentBranch(t *testing.T) {
 	}
 }
 
-// TestHistoryFilterFirstParent checks the first-parent filter: the merged-in
-// side branch commits leave the walk while the merge commit stays, the merge
-// row continues with exactly one downward line, and the merge commit's
-// parents still drive the Revert dialog's mainline choice.
+// TestHistoryFilterFirstParent checks the first-parent filter in the
+// Current Branch + First Parent combination: the merged-in side branch
+// commits leave the walk while the merge commit stays, the merge row
+// continues with exactly one downward line, and the merge commit's parents
+// still drive the Revert dialog's mainline choice.
 func TestHistoryFilterFirstParent(t *testing.T) {
 	repo := newGitRepo(t, "hf-firstparent")
 	repo.CommitFile("base.txt", "base\n", "base commit")
@@ -137,6 +138,7 @@ func TestHistoryFilterFirstParent(t *testing.T) {
 		t.Fatalf("setup: feature commit missing before the filter; texts=%q", h.ui.Texts())
 	}
 
+	driveHistoryBranchSelect(t, h, 1)
 	if err := h.ui.Click("First Parent Only"); err != nil {
 		t.Fatalf("click First Parent Only: %v\ntexts=%q", err, h.ui.Texts())
 	}
@@ -197,23 +199,138 @@ func TestHistoryFilterFirstParent(t *testing.T) {
 	}
 	h.ui.Frame()
 
-	// Unchecking restores the full walk.
+	// Unchecking the filter while the branch scope stays Current Branch
+	// brings the feature commit back: HEAD reaches it through the merge's
+	// second parent, and only the first-parent filter kept it out — the two
+	// controls act independently of one another.
 	if err := h.ui.Click("First Parent Only"); err != nil {
 		t.Fatalf("uncheck First Parent Only: %v", err)
 	}
 	h.drain()
-	if !h.ui.HasText("feature only work") {
-		t.Fatalf("feature commit missing after unchecking; texts=%q", h.ui.Texts())
-	}
 	if cb, ok := h.ui.AccessByRole(ui.RoleCheckBox, "First Parent Only"); !ok || cb.Checked {
 		t.Fatalf("First Parent checkbox access = %+v (found=%v), want unchecked", cb, ok)
+	}
+	if !h.app.session.HistoryCurrentBranch() {
+		t.Fatal("unchecking First Parent moved the branch scope: the controls are not independent")
+	}
+	if !h.ui.HasText("feature only work") {
+		t.Fatalf("feature commit missing after unchecking First Parent: HEAD reaches it through the merge; texts=%q", h.ui.Texts())
+	}
+}
+
+// assertNoDanglingGraphLanes verifies every lane the graph rows open is
+// closed again by the commit it waits for: a lane a bottom segment opens
+// toward a commit the walk never lists would hang without an end — exactly
+// what the first-parent layout exists to prevent. The simulation reads only
+// the segments: a row's SegmentTop lines close every lane merging into the
+// row's commit, and each SegmentBottom opens the lane its line continues
+// toward. Closing lanes are deleted before the row's bottoms open so a lane
+// reused for another commit in the same row tracks the new one.
+func assertNoDanglingGraphLanes(t *testing.T, graph []git.GraphRow) {
+	t.Helper()
+	open := map[int]bool{}
+	for _, row := range graph {
+		delete(open, row.Lane)
+		for _, s := range row.Segments {
+			if s.Kind == git.SegmentTop {
+				delete(open, s.From)
+			}
+		}
+		for _, s := range row.Segments {
+			if s.Kind == git.SegmentBottom {
+				open[s.To] = true
+			}
+		}
+	}
+	if len(open) != 0 {
+		lanes := []int{}
+		for lane := range open {
+			lanes = append(lanes, lane)
+		}
+		t.Fatalf("graph lanes %v never close: lines hang toward commits the walk does not list", lanes)
+	}
+}
+
+// TestHistoryFilterFirstParentAllBranches checks the All Branches +
+// First Parent combination with the merged-in branch still alive: the
+// branch's tip starts its own first-parent chain, so its commits stay in the
+// list, while every merge commit still continues with exactly one downward
+// line and no graph line hangs toward a commit the walk does not list.
+func TestHistoryFilterFirstParentAllBranches(t *testing.T) {
+	repo := newGitRepo(t, "hf-firstparent-all")
+	repo.CommitFile("base.txt", "base\n", "base commit")
+	repo.CreateBranch("feature")
+	repo.Checkout("feature")
+	featureHash := repo.CommitFile("feat.txt", "feat\n", "feature only work")
+	repo.Checkout("main")
+	repo.CommitFile("main.txt", "main\n", "main work")
+	repo.Git("merge", "--no-ff", "-m", "merge feature into main", "feature")
+	mergeHash := strings.TrimSpace(repo.Git("rev-parse", "HEAD"))
+
+	h := newTestApp(t)
+	openHistoryPage(t, h, repo.StoreRepo())
+
+	if err := h.ui.Click("First Parent Only"); err != nil {
+		t.Fatalf("click First Parent Only: %v\ntexts=%q", err, h.ui.Texts())
+	}
+	h.drain()
+
+	// All Branches stays the branch scope: the living feature branch's tip
+	// walks its own first-parent chain, so its commit stays visible.
+	if h.app.session.HistoryCurrentBranch() {
+		t.Fatal("branch scope moved to Current Branch: the controls are not independent")
+	}
+	if !h.ui.HasText("feature only work") {
+		t.Fatalf("feature commit missing in All Branches + First Parent; texts=%q", h.ui.Texts())
+	}
+	if !h.ui.HasText("merge feature into main") {
+		t.Fatalf("merge commit missing in All Branches + First Parent; texts=%q", h.ui.Texts())
+	}
+
+	snap := h.app.session.Snapshot()
+	foundFeature, foundMerge := false, false
+	for i, cm := range snap.Commits {
+		if cm.Hash == featureHash {
+			foundFeature = true
+		}
+		if cm.Hash != mergeHash {
+			continue
+		}
+		foundMerge = true
+		bottoms := 0
+		for _, s := range snap.Graph[i].Segments {
+			if s.Kind == git.SegmentBottom {
+				bottoms++
+			}
+		}
+		if bottoms != 1 {
+			t.Fatalf("merge row %d bottom segments = %d, want the single first-parent line", i, bottoms)
+		}
+	}
+	if !foundFeature || !foundMerge {
+		t.Fatalf("snapshot missing feature=%v merge=%v", foundFeature, foundMerge)
+	}
+	if len(snap.Graph) != len(snap.Commits) {
+		t.Fatalf("graph rows = %d, commits = %d, want equal", len(snap.Graph), len(snap.Commits))
+	}
+	assertNoDanglingGraphLanes(t, snap.Graph)
+
+	// The control is still git's own --first-parent: both chains of the
+	// fixture are linear, so the list holds every commit the unfiltered walk
+	// has — the filter narrows the graph, not this fixture's walk.
+	if len(snap.Commits) != 4 {
+		t.Fatalf("commits = %d (%q), want all 4 of the two linear chains", len(snap.Commits), historySubjects(h))
 	}
 }
 
 // TestHistoryFilterFirstParentLoadMore checks pagination of the first-parent
-// walk: the page Load More appends holds only commits of the first-parent
-// chain, and the merged graph of both pages keeps every row on the single
-// lane — no line hangs toward a commit the walk never lists.
+// walk in the All Branches + First Parent combination. The fixture's feature
+// branch is deleted after merging, as a merged branch usually is: its commit
+// is then reachable only through the merge's second parent, so the
+// first-parent walk leaves it out and the walk is the trunk's single chain.
+// The page Load More appends holds only commits of that chain, and the
+// merged graph of both pages keeps every row on the single lane — no line
+// hangs toward a commit the walk never lists.
 func TestHistoryFilterFirstParentLoadMore(t *testing.T) {
 	repo := newGitRepo(t, "hf-paging")
 	makeCommits(t, repo, "m.txt", "main", 5)
@@ -221,6 +338,7 @@ func TestHistoryFilterFirstParentLoadMore(t *testing.T) {
 	repo.CommitFile("feat.txt", "feat\n", "feature only work")
 	repo.Checkout("main")
 	repo.Git("merge", "--no-ff", "-m", "merge feature into main", "feature")
+	repo.Git("branch", "-q", "-d", "feature")
 	repo.CommitFile("after1.txt", "after1\n", "after merge one")
 	repo.CommitFile("after2.txt", "after2\n", "after merge two")
 

@@ -234,7 +234,6 @@ func (a *app) historyPage(c *ui.Context) {
 // action selects derive theirs; a change reloads the history, and the answer
 // shows the choice the session then holds.
 func (a *app) historyFilterControls(c *ui.Context, p palette) {
-	ui.Spacer(c)
 	choice := "All Branches"
 	if a.session.HistoryCurrentBranch() {
 		choice = "Current Branch"
@@ -334,6 +333,7 @@ func (a *app) historyCommitList(c *ui.Context, p palette) {
 		ui.Row(c.Key("history-list-header")).Height(30).FillWidth().PaddingX(14).Gap(10).AlignItems(ui.Center).Children(func() {
 			ui.Text(c, "History").FontSize(15).FontWeight(700).TextColor(p.text).SingleLine()
 			ui.Text(c, fmt.Sprintf("%d commits", len(snap.Commits))).FontSize(11.5).TextColor(p.faint).SingleLine()
+			ui.Spacer(c)
 			a.historyFilterControls(c, p)
 			a.historySearchHeaderButton(c, p)
 		})
