@@ -62,8 +62,12 @@ func (r *Repo) TagObjectIDs(names []string) (map[string]TagObjectID, error) {
 		if name = strings.TrimSpace(name); name == "" {
 			continue
 		}
-		args = append(args, "refs/tags/"+name)
-		want["refs/tags/"+name] = true
+		full := "refs/tags/" + name
+		if want[full] {
+			continue
+		}
+		args = append(args, full)
+		want[full] = true
 	}
 	out := map[string]TagObjectID{}
 	if len(want) == 0 {
@@ -149,14 +153,21 @@ func (r *Repo) RemoteTagOIDs(remote string, names []string) (map[string]string, 
 		if name = strings.TrimSpace(name); name == "" {
 			continue
 		}
-		positional = append(positional, "refs/tags/"+name)
-		want["refs/tags/"+name] = true
+		full := "refs/tags/" + name
+		if want[full] {
+			continue
+		}
+		positional = append(positional, full)
+		want[full] = true
+	}
+	oids := map[string]string{}
+	if len(want) == 0 {
+		return oids, nil
 	}
 	out, err := r.run(slow, positional...)
 	if err != nil {
 		return nil, err
 	}
-	oids := map[string]string{}
 	for _, line := range strings.Split(string(out), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {

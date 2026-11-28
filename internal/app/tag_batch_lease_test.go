@@ -194,7 +194,7 @@ func TestTagBatchLeaseDeleteNonCommitTags(t *testing.T) {
 	tree := strings.TrimSpace(repo.Git("rev-parse", "HEAD^{tree}"))
 	repo.Git("tag", "treetag", tree)
 	repo.Git("tag", "-a", "-m", "inner", "inner", "HEAD")
-	repo.Git("tag", "outer", "inner")
+	repo.Git("tag", "-a", "-m", "outer", "outer", "inner")
 	repo.Git("tag", "-a", "-m", "annotated", "anntag", "HEAD")
 
 	h := newTestApp(t)
@@ -237,7 +237,7 @@ func TestTagBatchLeasePushNonCommitTags(t *testing.T) {
 	tree := strings.TrimSpace(repo.Git("rev-parse", "HEAD^{tree}"))
 	repo.Git("tag", "treetag", tree)
 	repo.Git("tag", "-a", "-m", "inner", "inner", "HEAD")
-	repo.Git("tag", "outer", "inner")
+	repo.Git("tag", "-a", "-m", "outer", "outer", "inner")
 	repo.Git("tag", "-a", "-m", "annotated", "anntag", "HEAD")
 
 	h := newTestApp(t)
@@ -453,8 +453,13 @@ func TestTagBatchLeaseLoopbackSSHDelete(t *testing.T) {
 func TestConfiguredLinuxTagBatchLeaseTagOfTag(t *testing.T) {
 	repo, srv := configuredLinuxRepo(t)
 	srv.RunGit(t, repo.Path, "tag", "-a", "-m", "inner release", "inner", "HEAD")
-	srv.RunGit(t, repo.Path, "tag", "outer", "inner")
+	srv.RunGit(t, repo.Path, "tag", "-a", "-m", "outer release", "outer", "inner")
 	srv.RunGit(t, repo.Path, "tag", "rel-keep")
+	innerOID := strings.TrimSpace(srv.RunGit(t, repo.Path, "rev-parse", "refs/tags/inner"))
+	outerOID := strings.TrimSpace(srv.RunGit(t, repo.Path, "rev-parse", "refs/tags/outer"))
+	if outerOID == innerOID {
+		t.Fatalf("fixture broken: outer (%s) is a lightweight alias of inner instead of a nested tag object", outerOID)
+	}
 	bareDir := srv.InitBareRepo(t, "origin")
 	srv.RunGit(t, repo.Path, "remote", "add", "origin", bareDir)
 	srv.RunGit(t, repo.Path, "push", "-q", "origin", "main")
@@ -475,12 +480,16 @@ func TestConfiguredLinuxTagBatchLeaseTagOfTag(t *testing.T) {
 	}
 
 	// The batch push of the nested tag must pass the re-verification: outer
-	// reaches the server's remote, the never-selected tags do not.
-	selectTagsForBatch(t, h, "outer")
-	chooseBatchItem(t, h, "outer", "Push 1 Tags to 'origin'…")
+	// reaches the server's remote, the unchecked and never-selected tags do not.
+	selectTagsForBatch(t, h, "outer", "rel-keep")
+	chooseBatchItem(t, h, "outer", "Push 2 Tags to 'origin'…")
 	if !hasExactText(h.ui, "Push Tags") {
 		t.Fatalf("Push Tags dialog did not open on Linux SSH; texts=%q", h.ui.Texts())
 	}
+	if err := h.ui.Click("rel-keep"); err != nil {
+		t.Fatalf("uncheck rel-keep row: %v\ntexts=%q", err, h.ui.Texts())
+	}
+	h.ui.Frame()
 	if err := h.ui.Click("Confirm Push Tags"); err != nil {
 		t.Fatalf("click Confirm Push Tags: %v", err)
 	}

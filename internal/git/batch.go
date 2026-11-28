@@ -39,13 +39,11 @@ func (r *Repo) RemoveBranches(list []RemoveBranchOptions) error {
 
 // deleteOnRemote deletes refs from one remote in a single push, every
 // reference pinned by a force-with-lease on the object id the caller
-// verified the remote reference to hold: a reference someone moved or
-// recreated since the check fails its lease and keeps its new value, and
-// the porcelain answer names every reference the push rejected. Nothing
-// else stops the batch: the references whose leases hold delete in the
-// same push, and the error lists the ones that did not. A push rejected
-// only for references the remote lost in the meantime retries them one by
-// one, where a missing reference is not an error — it is already gone.
+// verified the remote reference to hold: a reference someone moved,
+// recreated, or deleted since the check fails its lease and keeps its new
+// state, and the porcelain answer names every reference the push rejected
+// along with why. Nothing else stops the batch: the references whose leases
+// hold delete in the same push, and the error lists every one that did not.
 func (r *Repo) deleteOnRemote(remote string, refs []string, leases map[string]string) error {
 	if len(refs) == 0 {
 		return nil
@@ -60,50 +58,76 @@ func (r *Repo) deleteOnRemote(remote string, refs []string, leases map[string]st
 	if err == nil {
 		return nil
 	}
-	if rejected := rejectedTagDeletes(string(out), refs); len(rejected) > 0 {
+	stale, other := rejectedTagDeletes(string(out), refs)
+	switch {
+	case len(stale) > 0 && len(other) == 0:
 		return fmt.Errorf("failed to delete %s on %s (the server tags changed or were already deleted; Fetch first and try again)",
-			joinTagNames(rejected), remote)
-	}
-	if !onlyMissingRefs(err) {
+			joinTagNames(stale), remote)
+	case len(stale) == 0 && len(other) > 0:
+		return fmt.Errorf("failed to delete %s on %s: %w", formatRejectedTagDeletes(other), remote, err)
+	case len(stale) > 0 && len(other) > 0:
+		return fmt.Errorf("failed to delete %s on %s (the server tags changed or were already deleted; Fetch first and try again); also failed to delete %s on %s: %w",
+			joinTagNames(stale), remote, formatRejectedTagDeletes(other), remote, err)
+	default:
 		return err
 	}
-	if len(refs) == 1 {
-		return nil
-	}
-	var errs []error
-	for _, ref := range refs {
-		one := []string{"push", "--porcelain", "--force-with-lease=" + ref + ":" + leases[ref], "--delete", "--", remote, ref}
-		if _, err := r.run(slow, one...); err != nil && !onlyMissingRefs(err) {
-			errs = append(errs, err)
-		}
-	}
-	return errors.Join(errs...)
+}
+
+type rejectedTagDelete struct {
+	ref    string
+	reason string
 }
 
 // rejectedTagDeletes reads the porcelain answer of a failed batch delete
-// push for the references git rejected, returning the matching refs in the
-// order refs lists them. A rejection line of a delete names the reference
-// as (delete):<ref>: anything else — a transport failure, a missing ref —
-// has no such line and the caller falls back to the push's own error.
-func rejectedTagDeletes(out string, refs []string) []string {
-	rejected := map[string]bool{}
+// push for every reference git rejected, separating lease rejections
+// ("stale info") from server-side or hook rejections, each in the order
+// refs lists them. Porcelain reports a rejected delete as
+// "!\t<src>:<dst>\t<reason>" where <src> is "(delete)" for client-side
+// rejections and empty for remote rejections; transport failures print no
+// such lines so the caller falls back to the push's own error.
+func rejectedTagDeletes(out string, refs []string) (stale []string, other []rejectedTagDelete) {
+	byRef := map[string]string{}
 	for _, line := range strings.Split(out, "\n") {
-		if !strings.HasPrefix(line, "!\t(delete):") {
+		line = strings.TrimRight(line, "\r")
+		if !strings.HasPrefix(line, "!\t") {
 			continue
 		}
-		rest := strings.TrimPrefix(line, "!\t(delete):")
-		ref, _, _ := strings.Cut(rest, "\t")
-		if strings.HasPrefix(ref, "refs/tags/") {
-			rejected[ref] = true
+		rest := strings.TrimPrefix(line, "!\t")
+		spec, reason, _ := strings.Cut(rest, "\t")
+		_, ref, ok := strings.Cut(spec, ":")
+		if !ok || !strings.HasPrefix(ref, "refs/tags/") {
+			continue
 		}
+		byRef[ref] = strings.TrimSpace(reason)
 	}
-	var list []string
 	for _, ref := range refs {
-		if rejected[ref] {
-			list = append(list, ref)
+		reason, ok := byRef[ref]
+		if !ok {
+			continue
+		}
+		if strings.Contains(strings.ToLower(reason), "stale info") {
+			stale = append(stale, ref)
+		} else {
+			other = append(other, rejectedTagDelete{ref: ref, reason: reason})
 		}
 	}
-	return list
+	return stale, other
+}
+
+// formatRejectedTagDeletes formats non-lease porcelain rejections as
+// "<name> (<reason>)", preserving the rejection detail that --porcelain
+// moves from stderr onto stdout.
+func formatRejectedTagDeletes(list []rejectedTagDelete) string {
+	parts := make([]string, 0, len(list))
+	for _, item := range list {
+		name := strings.TrimPrefix(item.ref, "refs/tags/")
+		if item.reason != "" {
+			parts = append(parts, fmt.Sprintf("%s (%s)", name, item.reason))
+		} else {
+			parts = append(parts, name)
+		}
+	}
+	return strings.Join(parts, ", ")
 }
 
 // joinTagNames formats tag references for an error message: the bare tag
@@ -114,22 +138,6 @@ func joinTagNames(refs []string) string {
 		names = append(names, strings.TrimPrefix(ref, "refs/tags/"))
 	}
 	return strings.Join(names, ", ")
-}
-
-// onlyMissingRefs reports whether every ref a push rejected was missing
-// on the remote.
-func onlyMissingRefs(err error) bool {
-	msg := err.Error()
-	if !strings.Contains(msg, "remote ref does not exist") {
-		return false
-	}
-	for _, line := range strings.Split(msg, "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "error:") && !strings.Contains(line, "remote ref does not exist") && !strings.Contains(line, "failed to push some refs") {
-			return false
-		}
-	}
-	return true
 }
 
 // DeleteTags deletes several tags here and, for each of remotes, from

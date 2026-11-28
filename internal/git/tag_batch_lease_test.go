@@ -2,6 +2,8 @@ package git
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -370,4 +372,115 @@ func remoteBehindSeparator(args []string, remote string) bool {
 		}
 	}
 	return false
+}
+
+// TagObjectIDs and RemoteTagOIDs only accept exact refname matches: because
+// git for-each-ref matches slash-delimited prefixes, asking for v1 when only
+// v1/x exists must report v1 absent instead of substituting v1/x.
+func TestTagBatchLeaseExactRefMatchIgnoresPrefixChild(t *testing.T) {
+	dir, bare, r, _, _ := tagLeaseFixture(t)
+	gitRun(t, dir, "tag", "v1/x", "HEAD~1")
+	gitRun(t, dir, "tag", "v2", "HEAD~1")
+	gitRun(t, dir, "push", "-q", "origin", "refs/tags/v1/x", "refs/tags/v2")
+
+	// Prove git for-each-ref itself prints refs/tags/v1/x for pattern refs/tags/v1.
+	if raw := gitOut(t, dir, "for-each-ref", "--format=%(refname)", "refs/tags/v1"); raw != "refs/tags/v1/x" {
+		t.Fatalf("fixture broken: for-each-ref refs/tags/v1 = %q, want refs/tags/v1/x", raw)
+	}
+
+	gotLocal, err := r.TagObjectIDs([]string{"v1", "v2"})
+	if err != nil {
+		t.Fatalf("TagObjectIDs: %v", err)
+	}
+	if _, ok := gotLocal["v1"]; ok {
+		t.Fatalf("TagObjectIDs mistook v1/x for v1: %+v", gotLocal)
+	}
+	if _, ok := gotLocal["v1/x"]; ok {
+		t.Fatalf("TagObjectIDs returned unrequested child v1/x: %+v", gotLocal)
+	}
+	if _, ok := gotLocal["v2"]; !ok {
+		t.Fatalf("TagObjectIDs missed exact match v2: %+v", gotLocal)
+	}
+
+	gotRemote, err := r.RemoteTagOIDs("origin", []string{"v1", "v2"})
+	if err != nil {
+		t.Fatalf("RemoteTagOIDs: %v", err)
+	}
+	if _, ok := gotRemote["v1"]; ok {
+		t.Fatalf("RemoteTagOIDs mistook v1/x for v1: %+v", gotRemote)
+	}
+	if _, ok := gotRemote["v1/x"]; ok {
+		t.Fatalf("RemoteTagOIDs returned unrequested child v1/x: %+v", gotRemote)
+	}
+	if gotRemote["v2"] != gitOut(t, bare, "rev-parse", "refs/tags/v2") {
+		t.Fatalf("RemoteTagOIDs v2 = %q, want remote OID", gotRemote["v2"])
+	}
+}
+
+// A server-side hook declining a tag delete keeps the tag name and porcelain
+// rejection reason in the error even when the hook writes nothing to stderr,
+// and a mixed batch where one tag fails its lease while another is declined
+// by a hook reports both failures without hiding either tag.
+func TestTagBatchLeasePorcelainHookAndMixedRejections(t *testing.T) {
+	t.Run("silent pre-receive hook keeps tag name and reason", func(t *testing.T) {
+		dir, bare, r, _, _ := tagLeaseFixture(t)
+		pushTagLeaseFixture(t, dir, "v1", false)
+
+		hook := filepath.Join(bare, "hooks", "pre-receive")
+		if err := os.WriteFile(hook, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		err := r.DeleteTags([]string{"v1"}, []string{"origin"})
+		if err == nil {
+			t.Fatal("delete declined by pre-receive hook produced no error")
+		}
+		for _, want := range []string{"v1", "origin", "pre-receive hook declined"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Fatalf("error %q does not contain %q", err, want)
+			}
+		}
+		if strings.Contains(err.Error(), "Fetch first") {
+			t.Fatalf("hook rejection %q was mislabeled as a stale lease", err)
+		}
+		if !hasRef(bare, "refs/tags/v1") {
+			t.Fatal("v1 was deleted on the server despite pre-receive hook declining")
+		}
+	})
+
+	t.Run("mixed stale lease and hook rejection names both tags", func(t *testing.T) {
+		dir, bare, _, _, c2 := tagLeaseFixture(t)
+		pushTagLeaseFixture(t, dir, "v1", false)
+		pushTagLeaseFixture(t, dir, "v2", false)
+		pushTagLeaseFixture(t, dir, "v3", false)
+
+		hook := filepath.Join(bare, "hooks", "update")
+		script := "#!/bin/sh\nif [ \"$1\" = \"refs/tags/v2\" ]; then\n  echo \"protected tag v2\" >&2\n  exit 1\nfi\nexit 0\n"
+		if err := os.WriteFile(hook, []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		ex := &tamperExecutor{
+			inner: &LocalExecutor{Dir: dir},
+			tamper: func() {
+				gitRun(t, bare, "tag", "-f", "v1", c2)
+			},
+		}
+		err := New(ex).DeleteTags([]string{"v1", "v2", "v3"}, []string{"origin"})
+		if err == nil {
+			t.Fatal("mixed stale lease and hook rejection produced no error")
+		}
+		for _, want := range []string{"v1", "Fetch", "v2", "hook declined", "protected tag v2", "origin"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Fatalf("error %q does not contain %q", err, want)
+			}
+		}
+		if strings.Contains(err.Error(), "v3") {
+			t.Fatalf("error %q names v3, which was deleted cleanly", err)
+		}
+		if !hasRef(bare, "refs/tags/v1") || !hasRef(bare, "refs/tags/v2") {
+			t.Fatal("rejected tags v1 or v2 were unexpectedly removed from server")
+		}
+		if hasRef(bare, "refs/tags/v3") {
+			t.Fatal("v3 survived on the server even though its lease held and the hook allowed it")
+		}
+	})
 }
