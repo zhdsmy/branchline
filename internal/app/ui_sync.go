@@ -316,7 +316,7 @@ func (a *app) syncToolbar(c *ui.Context) {
 	a.pushDialog(c)
 	a.fetchDialog(c)
 	a.pullDialog(c)
-	st.pass.view(c)
+	st.pass.view(c, p)
 }
 
 // syncRepo returns a repository copy whose executor asks through the in-memory
