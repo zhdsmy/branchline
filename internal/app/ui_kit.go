@@ -221,7 +221,12 @@ func toolbarActionBtnTip(c *ui.Context, sfName string, fallback *ui.SVG, label, 
 	return b
 }
 
-func sidebarSectionHeader(c *ui.Context, title string, count int, collapsed *bool, p palette) ui.Element {
+// sidebarSectionHeader is the header of one collapsible sidebar section.
+// Clicking flips the collapsed flag it was given and then runs toggled —
+// nil for a header without a post-flip action — with the new state, so the
+// sections the repository settings remember can save the choice; the rest
+// of the header's behavior is exactly what it always was.
+func sidebarSectionHeader(c *ui.Context, title string, count int, collapsed *bool, p palette, toggled func(collapsed bool)) ui.Element {
 	b := ui.ButtonBase(c.Key("sec-" + title)).
 		Height(26).
 		PaddingX(8).
@@ -249,6 +254,9 @@ func sidebarSectionHeader(c *ui.Context, title string, count int, collapsed *boo
 	})
 	if b.Clicked() {
 		*collapsed = !*collapsed
+		if toggled != nil {
+			toggled(*collapsed)
+		}
 	}
 	return b
 }

@@ -442,6 +442,11 @@ func TestRefBatchPushTagSharingBranchName(t *testing.T) {
 
 	// Select the tags before the same-named branch exists: the rows stay
 	// clickable by their plain names, and the push captured is the tags'.
+	// The release folder row pushes the tag rows below the first viewport,
+	// so scrolling brings them in first, exactly as a user scrolls before
+	// clicking; the scroll reaches past them because selecting the first
+	// tag unfolds its action bar and pushes the rows below it down.
+	scrollSidebarRowIntoView(t, h, "sec-Stashes")
 	selectTagsForBatch(t, h, "rel-1", "release/1.0")
 
 	// The branch appears only now, after the selection.

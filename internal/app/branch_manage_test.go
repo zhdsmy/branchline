@@ -129,8 +129,11 @@ func TestBranchRenameThroughContextMenu(t *testing.T) {
 	} else if row.Selected {
 		t.Fatal("renamed non-current branch shows as current")
 	}
-	if _, ok := h.ui.Find("topic"); ok {
-		t.Fatal("old name topic stayed visible in the sidebar")
+	// The remote-tracking origin/topic row shows topic as its last name
+	// segment, so the old name's absence is checked by the list item's
+	// accessible name rather than raw text.
+	if _, ok := h.ui.AccessByRole(ui.RoleListItem, "topic"); ok {
+		t.Fatal("old name topic stayed visible as a branch row in the sidebar")
 	}
 	if hasExactText(h.ui, "Rename Branch") {
 		t.Fatal("rename dialog stayed open after the rename")

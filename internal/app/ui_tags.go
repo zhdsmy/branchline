@@ -95,21 +95,24 @@ func (a *app) tagsSidebarHeaderActions(c *ui.Context) {
 
 // tagRow is one tag in the sidebar: the row joins the multi-selection the
 // references share — clicking selects it alone, Cmd-click toggles it, and a
-// Shift-click selects the range from the anchor along sorted, the tags in
-// the order the sidebar shows them. A lone selected tag looks exactly as a
-// selected tag always did: the selected wash, the unfolded action bar, and
-// a plain click on its own row takes the selection off again. With two or
-// more tags selected every selected row carries the wash and reads selected
-// to assistive technology, no action bar unfolds, and the row's right-click
-// menu becomes the batch menu of the selection. A right click on a row
-// outside the selection narrows the selection to it first.
-func (a *app) tagRow(c *ui.Context, tag git.Tag, sorted []git.Tag, pickedCount int) {
+// Shift-click selects the range from the anchor along sorted, the visible
+// tags in the order the sidebar shows them. The text is the last slash
+// segment of the name — the folders ahead of it are rows of their own —
+// while the accessible name and the tooltip keep the full name. A lone
+// selected tag looks exactly as a selected tag always did: the selected
+// wash, the unfolded action bar, and a plain click on its own row takes the
+// selection off again. With two or more tags selected every selected row
+// carries the wash and reads selected to assistive technology, no action
+// bar unfolds, and the row's right-click menu becomes the batch menu of the
+// selection. A right click on a row outside the selection narrows the
+// selection to it first.
+func (a *app) tagRow(c *ui.Context, tag git.Tag, sorted []git.Tag, pickedCount int, padLeft float32) {
 	p := a.pal
 	key := tagPickKey(tag.Name)
 	picked := a.refsView.pick[key]
-	row := ui.Row(c.Key("tag-" + tag.Name)).
+	row := ui.Row(c.Key("tag-"+tag.Name)).
 		Height(26).
-		PaddingX(10).
+		Padding(0, 10, 0, padLeft).
 		Gap(8).
 		Radius(6).
 		AlignItems(ui.Center).
@@ -117,6 +120,9 @@ func (a *app) tagRow(c *ui.Context, tag git.Tag, sorted []git.Tag, pickedCount i
 		Role(ui.RoleListItem).
 		Label(tag.Name).
 		AccessSelected(picked)
+	if tip := sidebarRefTooltip(tag.Name); tip != "" {
+		row.Tooltip(tip)
+	}
 	switch {
 	case picked:
 		row.Background(p.selected)
@@ -125,7 +131,7 @@ func (a *app) tagRow(c *ui.Context, tag git.Tag, sorted []git.Tag, pickedCount i
 	}
 	row.Children(func() {
 		symbolIcon(c, "tag", fallbackTag, 13, p.faint)
-		ui.Text(c, tag.Name).FontSize(12.5).FontWeight(400).TextColor(p.text).SingleLine().Shrink(1).MinWidth(0)
+		ui.Text(c, sidebarLastSegment(tag.Name)).FontSize(12.5).FontWeight(400).TextColor(p.text).SingleLine().Shrink(1).MinWidth(0)
 	})
 	row.ContextMenu(func(m *ui.Menu) {
 		pick := a.refsView.pick
