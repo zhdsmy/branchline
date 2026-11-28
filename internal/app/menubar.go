@@ -1,0 +1,246 @@
+package app
+
+import (
+	"github.com/egoist/mygo"
+)
+
+// Menu item IDs of the application menu bar. The dynamic enabled state is
+// keyed by these IDs, and tests find items through them with Menu.ItemByID.
+const (
+	menuIDSettings           = "menu.settings"
+	menuIDNewRepository      = "menu.file.new-repository"
+	menuIDClone              = "menu.file.clone"
+	menuIDAddLocalRepository = "menu.file.add-local-repository"
+	menuIDAddSSHRepository   = "menu.file.add-ssh-repository"
+	menuIDLocalChanges       = "menu.view.local-changes"
+	menuIDHistory            = "menu.view.history"
+	menuIDRefresh            = "menu.view.refresh"
+	menuIDFetch              = "menu.repository.fetch"
+	menuIDQuickFetch         = "menu.repository.quick-fetch"
+	menuIDPull               = "menu.repository.pull"
+	menuIDQuickPull          = "menu.repository.quick-pull"
+	menuIDPush               = "menu.repository.push"
+	menuIDQuickPush          = "menu.repository.quick-push"
+	menuIDNewBranch          = "menu.repository.new-branch"
+	menuIDNewTag             = "menu.repository.new-tag"
+	menuIDShowInFinder       = "menu.repository.show-in-finder"
+	menuIDOpenInTerminal     = "menu.repository.open-in-terminal"
+)
+
+// appMenuBar builds the whole application menu bar: the application menu with
+// Settings…, File, Edit, View, Repository and Window. The application menus
+// Run installs close over the mainApp variable, so getApp resolves the app at
+// click time and a click arriving before Run's WhenReady assigned it is a
+// no-op; tests pass their own app's getter instead.
+//
+// A Click runs on the main thread, where the application state lives, so it
+// mutates that state directly rather than posting. Menu clicks are native
+// menu events, not input of the window's content, so nothing builds a frame
+// for them: the redraw after the action is what makes an opened dialog or a
+// switched page show.
+//
+// The enabled state of the repository-dependent items is not decided here:
+// the items start enabled, and the per-frame syncMenuBarEnabled applies the
+// real state once the menu is attached.
+func appMenuBar(getApp func() *app) *mygo.Menu {
+	click := func(fn func(a *app)) func(*mygo.MenuItem, *mygo.Window) {
+		return func(*mygo.MenuItem, *mygo.Window) {
+			a := getApp()
+			if a == nil {
+				return
+			}
+			fn(a)
+			a.redraw()
+		}
+	}
+	appName := mygo.App.Name()
+	return mygo.NewMenu([]*mygo.MenuItem{
+		{Label: appName, Submenu: []*mygo.MenuItem{
+			{Role: mygo.RoleAbout},
+			mygo.Separator(),
+			{ID: menuIDSettings, Label: "Settings…", Accelerator: "CmdOrCtrl+,", Click: click(func(a *app) {
+				a.openSettings()
+			})},
+			mygo.Separator(),
+			{Role: mygo.RoleServices},
+			mygo.Separator(),
+			{Role: mygo.RoleHide},
+			{Role: mygo.RoleHideOthers},
+			{Role: mygo.RoleUnhide},
+			mygo.Separator(),
+			{Role: mygo.RoleQuit},
+		}},
+		{Label: "File", Submenu: []*mygo.MenuItem{
+			{ID: menuIDNewRepository, Label: "New Repository…", Click: click(func(a *app) {
+				a.showNewRepoDialog()
+			})},
+			{ID: menuIDClone, Label: "Clone…", Accelerator: "Shift+CmdOrCtrl+N", Click: click(func(a *app) {
+				a.showCloneDialog()
+			})},
+			{ID: menuIDAddLocalRepository, Label: "Add Local Repository…", Accelerator: "CmdOrCtrl+O", Click: click(func(a *app) {
+				a.addLocalRepo(a.reposUI())
+			})},
+			{ID: menuIDAddSSHRepository, Label: "Add SSH Repository…", Click: click(func(a *app) {
+				a.reposUI().showSSHForm()
+			})},
+			mygo.Separator(),
+			{Role: mygo.RoleClose},
+		}},
+		{Role: mygo.RoleEditMenu},
+		{Label: "View", Submenu: []*mygo.MenuItem{
+			{ID: menuIDLocalChanges, Label: "Local Changes", Accelerator: "CmdOrCtrl+1", Click: click(func(a *app) {
+				a.menuShowPage(pageChanges)
+			})},
+			{ID: menuIDHistory, Label: "History", Accelerator: "CmdOrCtrl+2", Click: click(func(a *app) {
+				a.menuShowPage(pageHistory)
+			})},
+			mygo.Separator(),
+			{ID: menuIDRefresh, Label: "Refresh", Accelerator: "CmdOrCtrl+R", Click: click(func(a *app) {
+				a.session.Reload()
+			})},
+			mygo.Separator(),
+			{Role: mygo.RoleToggleFullScreen},
+		}},
+		{Label: "Repository", Submenu: []*mygo.MenuItem{
+			{ID: menuIDFetch, Label: "Fetch…", Accelerator: "Shift+CmdOrCtrl+F", Click: click(func(a *app) {
+				if a.syncActionsEnabled() {
+					a.openFetchDialog()
+				}
+			})},
+			{ID: menuIDQuickFetch, Label: "Quick Fetch", Accelerator: "Alt+Shift+CmdOrCtrl+F", Click: click(func(a *app) {
+				if a.syncActionsEnabled() {
+					a.syncFetch()
+				}
+			})},
+			{ID: menuIDPull, Label: "Pull…", Accelerator: "Shift+CmdOrCtrl+L", Click: click(func(a *app) {
+				if a.syncActionsEnabled() {
+					a.openPullDialog()
+				}
+			})},
+			{ID: menuIDQuickPull, Label: "Quick Pull", Accelerator: "Alt+Shift+CmdOrCtrl+L", Click: click(func(a *app) {
+				if a.syncActionsEnabled() {
+					a.syncPull()
+				}
+			})},
+			{ID: menuIDPush, Label: "Push…", Accelerator: "Shift+CmdOrCtrl+P", Click: click(func(a *app) {
+				if a.syncActionsEnabled() {
+					a.openPushDialog()
+				}
+			})},
+			{ID: menuIDQuickPush, Label: "Quick Push", Accelerator: "Alt+Shift+CmdOrCtrl+P", Click: click(func(a *app) {
+				if a.syncActionsEnabled() {
+					a.syncPush()
+				}
+			})},
+			mygo.Separator(),
+			{ID: menuIDNewBranch, Label: "New Branch…", Accelerator: "Shift+CmdOrCtrl+B", Click: click(func(a *app) {
+				a.menuOpenBranchCreate()
+			})},
+			{ID: menuIDNewTag, Label: "New Tag…", Accelerator: "Shift+CmdOrCtrl+G", Click: click(func(a *app) {
+				if a.menuCreateEnabled() {
+					a.openNewTagDialog("")
+				}
+			})},
+			mygo.Separator(),
+			{ID: menuIDShowInFinder, Label: "Show in Finder", Accelerator: "Ctrl+CmdOrCtrl+O", Click: click(func(a *app) {
+				a.showActiveInFinder()
+			})},
+			{ID: menuIDOpenInTerminal, Label: "Open in Terminal", Accelerator: "Ctrl+CmdOrCtrl+T", Click: click(func(a *app) {
+				a.openActiveInTerminal()
+			})},
+		}},
+		{Role: mygo.RoleWindowMenu},
+	})
+}
+
+// menuShowPage switches the main page from the View menu. The items are
+// disabled without an open repository, and the click mirrors that condition,
+// so a click arriving before the per-frame update cannot navigate an empty
+// window either.
+func (a *app) menuShowPage(page pageKind) {
+	if !a.session.HasRepo() {
+		return
+	}
+	a.open(route{page: page})
+}
+
+// menuCreateEnabled is the enabled condition of the New Branch… and New Tag…
+// menu items, the menu spelling of the branch row context menu's condition:
+// no write in flight and a commit to start from. The menu always starts at
+// the current branch or HEAD, so the row's per-row hash is the snapshot HEAD.
+func (a *app) menuCreateEnabled() bool {
+	return !a.session.Busy() && a.session.Snapshot().Status.Head != ""
+}
+
+// menuOpenBranchCreate opens the New Branch dialog from the Repository menu:
+// starting at the current branch's commit, or at the commit HEAD points at
+// when HEAD is detached. The source reference the dialog re-reads in its
+// write guard is the branch's full reference for a branch, "HEAD" for a
+// detached head; both resolve through the same rev-parse the guard runs. A
+// click without a determinable start commit — no repository, an unborn
+// branch, a write in flight — does nothing, mirroring the disabled item.
+func (a *app) menuOpenBranchCreate() {
+	if !a.menuCreateEnabled() {
+		return
+	}
+	snap := a.session.Snapshot()
+	hash := snap.Status.Head
+	sourceRef, label := "HEAD", "HEAD"
+	if cur := currentBranchOf(snap.Refs); cur != nil && cur.Hash != "" {
+		sourceRef, label, hash = cur.FullName, cur.Name, cur.Hash
+	}
+	a.openBranchCreateDialog(sourceRef, label, hash)
+}
+
+// menuBarEnabledStates computes the enabled state of every menu item whose
+// state follows the repository: the six sync items share the toolbar's
+// condition, New Branch… and New Tag… share the create condition of the
+// reference context menus, and the page, Finder and Terminal items need only
+// an open repository.
+func (a *app) menuBarEnabledStates() map[string]bool {
+	syncOK := a.syncActionsEnabled()
+	createOK := a.menuCreateEnabled()
+	hasRepo := a.session.HasRepo()
+	return map[string]bool{
+		menuIDFetch:          syncOK,
+		menuIDQuickFetch:     syncOK,
+		menuIDPull:           syncOK,
+		menuIDQuickPull:      syncOK,
+		menuIDPush:           syncOK,
+		menuIDQuickPush:      syncOK,
+		menuIDNewBranch:      createOK,
+		menuIDNewTag:         createOK,
+		menuIDLocalChanges:   hasRepo,
+		menuIDHistory:        hasRepo,
+		menuIDShowInFinder:   hasRepo,
+		menuIDOpenInTerminal: hasRepo,
+	}
+}
+
+// syncMenuBarEnabled applies the enabled state of the repository-dependent
+// menu items once per frame. MenuItem.SetEnabled posts a native menu update
+// for every call, so only a change is applied: the last state applied to an
+// item is remembered in a.menubarEnabled, and an item absent from it — the
+// first frame after the menu was attached — is applied once, since the
+// template starts every item enabled.
+func (a *app) syncMenuBarEnabled() {
+	if a.menubar == nil {
+		return
+	}
+	if a.menubarEnabled == nil {
+		a.menubarEnabled = map[string]bool{}
+	}
+	apply := a.menuSetEnabledFn
+	if apply == nil {
+		apply = func(it *mygo.MenuItem, enabled bool) { it.SetEnabled(enabled) }
+	}
+	for id, want := range a.menuBarEnabledStates() {
+		if got, ok := a.menubarEnabled[id]; ok && got == want {
+			continue
+		}
+		a.menubarEnabled[id] = want
+		if it := a.menubar.ItemByID(id); it != nil {
+			apply(it, want)
+		}
+	}
+}

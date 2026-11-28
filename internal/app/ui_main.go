@@ -29,6 +29,7 @@ func (a *app) view(c *ui.Context) {
 	p := a.pal
 
 	a.bindShortcuts(c)
+	a.syncMenuBarEnabled()
 
 	if c.Vibrancy() {
 		c.Root().Background(ui.Transparent)
