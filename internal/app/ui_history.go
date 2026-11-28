@@ -88,6 +88,28 @@ type historyState struct {
 	// the state.
 	graphWidth graphWidthCache
 
+	// treeMode groups the changed files in folders; it is the repository's
+	// saved choice, read when the repository opens, independently of the
+	// Local Changes view choice. The collapse state of the folder rows lives
+	// in treeCollapsed keyed by the merged folder path, and treeCollapseRev
+	// is the version the row derivation rebuilds on. None of it persists,
+	// and treeCollapsed survives choosing another commit — paths repeat
+	// across the commits of one repository — but not the repository switch.
+	treeMode        bool
+	treeCollapsed   map[string]bool
+	treeCollapseRev uint64
+	// treeRows is the cached derivation of the tree rows, valid for one
+	// commit's files and one collapse revision.
+	treeRows historyTreeCache
+	// treeRowSel is the selected row of the tree, a row index rather than
+	// the file index fileSel is in the flat list. treeFocus is the merged
+	// path of the folder row the selection rests on, "" while it rests on
+	// the file fileSel names; treeCommit is the commit the focus belongs
+	// to, so choosing another commit drops it.
+	treeRowSel int
+	treeFocus  string
+	treeCommit string
+
 	// mode is the detail pane's current mode; selection holds every chosen
 	// commit hash, as the list's multi-selection does. compare is the
 	// two-commit comparison state, meaningful only in historyCompare mode,
@@ -169,6 +191,11 @@ func (a *app) historyPage(c *ui.Context) {
 		a.session.cancelRead("history-detail")
 		hv.diff.Clear(a.session, "history-diff")
 		hv.resetForRepo(gen)
+		if a.store != nil {
+			if meta, ok := a.store.Get(a.session.Meta().ID); ok {
+				hv.treeMode = meta.Local.Diff.HistoryFileListTree
+			}
+		}
 	}
 
 	c.OnWindowShortcut(ui.Cmd, ui.KeyF, a.openHistorySearch)
@@ -532,7 +559,9 @@ func (a *app) historyCommitInfo(c *ui.Context, p palette) {
 }
 
 // historyFileList renders the files the selected commit changes. Clicking a
-// file loads its diff into the shared diff panel.
+// file loads its diff into the shared diff panel. The header carries the
+// icon button switching the list between the flat list and the tree, its
+// label the view a click turns on.
 func (a *app) historyFileList(c *ui.Context, p palette) {
 	hv := &a.historyView
 	ui.Column(c.Key("history-files")).Grow(1).FillWidth().MinHeight(0).Children(func() {
@@ -540,6 +569,16 @@ func (a *app) historyFileList(c *ui.Context, p palette) {
 			ui.Text(c, "Changed files").FontSize(11).FontWeight(600).TextColor(p.muted).SingleLine()
 			if len(hv.files) > 0 {
 				ui.Text(c, fmt.Sprint(len(hv.files))).FontSize(11).TextColor(p.faint).SingleLine()
+			}
+			ui.Spacer(c)
+			label := "Show as Tree"
+			icon, fb := "list.bullet.indent", fallbackTreeList
+			if hv.treeMode {
+				label = "Show as List"
+				icon, fb = "list.bullet", fallbackFlatList
+			}
+			if iconBtn(c.Key("history-files-view-toggle"), icon, fb, 13, p.muted, label, p).Clicked() {
+				a.toggleHistoryTree()
 			}
 		})
 		ui.Box(c).Height(1).FillWidth().Background(p.hairline).Shrink(0)
@@ -550,6 +589,8 @@ func (a *app) historyFileList(c *ui.Context, p palette) {
 			ui.Row(c.Key("history-files-empty")).Padding(8, 14).FillWidth().Shrink(0).Children(func() {
 				ui.Text(c, "No files changed").FontSize(11.5).TextColor(p.faint).SingleLine()
 			})
+		case hv.treeMode:
+			a.historyFileTree(c.Key("history-files"), p)
 		default:
 			changedFileList(c.Key("history-files"), &hv.fileList, hv.files, p, &hv.fileSel,
 				func(m *ui.Menu, f git.FileChange) {

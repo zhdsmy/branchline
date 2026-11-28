@@ -31,9 +31,12 @@ type refsState struct {
 
 	// pick is the sidebar's multi-selection, keyed by reference kind and
 	// name; pickAnchor is the row range clicks start from. Keys whose rows a
-	// refresh dropped stay until they are filtered out at use.
-	pick       map[sidebarPickKey]bool
-	pickAnchor sidebarPickKey
+	// refresh dropped stay until they are filtered out at use. pickVersion
+	// steps at every mutation of the selection, so the cached sidebar row
+	// list and pick counts rebuild exactly when the selection changed.
+	pick        map[sidebarPickKey]bool
+	pickAnchor  sidebarPickKey
+	pickVersion uint64
 
 	batchDelOpen       bool
 	batchDelRows       []batchDelRow
@@ -60,6 +63,14 @@ type refsState struct {
 	localSortCache  refSortCache[git.Branch]
 	remoteSortCache refSortCache[git.Branch]
 	tagSortCache    refSortCache[git.Tag]
+
+	// sidebarList is the scroll state of the sidebar's virtual row list, and
+	// sidebarRows the cached row table it shows: the rows in display order,
+	// the sorted reference slices they were built from, and the multi-select
+	// counts, all recomputed only when one of the inputs they were built
+	// from changes.
+	sidebarList ui.ListState
+	sidebarRows sidebarRowCache
 }
 
 // resetForRepoGen discards dialog drafts belonging to another repository
@@ -74,44 +85,13 @@ func (a *app) refsResetForRepoGen() {
 	a.refsView = refsState{repoGen: a.session.Generation()}
 }
 
-// refsSidebar is the collapsible Branches, Remotes, and Tags
-// sidebar: the current branch is marked, double-clicking a local branch
+// refsSidebar mounts the dialogs of the collapsible Branches, Remotes, and
+// Tags sidebar: the current branch is marked, double-clicking a local branch
 // checks it out, branches are created from a dialog and deleted through a
-// confirmation dialog with a merged-state check.
+// confirmation dialog with a merged-state check. The rows themselves are
+// entries of the sidebar's virtual row list, drawn there; the dialogs mount
+// outside it, unchanged and in the order they always mounted.
 func (a *app) refsSidebar(c *ui.Context) {
-	p := a.pal
-	refs := a.session.Snapshot().Refs
-	a.refsResetForRepoGen()
-	inflight := a.refsView.delOpen && a.refsView.delChecking
-
-	sidebarSectionHeader(c, "Branches", len(refs.Branches), &a.branchesCollapsed, p).ContextMenu(a.branchesSectionContextMenu)
-	if !a.branchesCollapsed {
-		a.newBranchRow(c)
-		if len(refs.Branches) == 0 {
-			a.refPlaceholderRow(c, "No branches")
-		} else {
-			ordered := a.sortedLocalBranches(refs.Branches)
-			pickedCount := sidebarPickCount(a.refsView.pick, ordered)
-			for _, br := range ordered {
-				a.branchRow(c, br, inflight, ordered, pickedCount)
-			}
-		}
-	}
-
-	sidebarSectionHeader(c, "Remotes", len(refs.Remotes), &a.remotesCollapsed, p).ContextMenu(a.remotesSectionContextMenu)
-	if !a.remotesCollapsed {
-		a.newRemoteRow(c)
-		if len(refs.Remotes) == 0 {
-			a.refPlaceholderRow(c, "No remotes")
-		} else {
-			for _, rem := range refs.Remotes {
-				a.remoteRows(c, rem, refs)
-			}
-		}
-	}
-
-	a.tagsSidebarSection(c)
-
 	a.newBranchDialog(c)
 	a.deleteBranchDialog(c)
 	a.batchBranchDialogs(c)
@@ -219,10 +199,7 @@ func (a *app) branchRow(c *ui.Context, br git.Branch, inflight bool, ordered []g
 		a.clickSidebarBranch(br.Name, row.ClickModifiers(), ordered)
 	}
 	if row.DoubleClicked() && !br.Current {
-		name := br.Name
-		a.session.do("Checkout "+name, func(r *git.Repo) error {
-			return r.Checkout(name)
-		})
+		a.checkoutLocalBranch(br.Name)
 	}
 	row.ContextMenu(func(m *ui.Menu) {
 		pick := a.refsView.pick
@@ -251,73 +228,66 @@ func (a *app) branchRow(c *ui.Context, br git.Branch, inflight bool, ordered []g
 	})
 }
 
-// remoteRows shows one remote and, indented under it, its tracking branches
-// in the order the settings ask for. Sorting a copy of the whole list keeps
-// this remote's subsequence sorted, and the snapshot's own slice is never
-// reordered. Clicking selects the row in the sidebar's multi-selection —
-// Cmd-click toggles it, Shift-click selects the range from the anchor along
-// the rows as the sidebar shows them, remote by remote — and with two or
-// more rows selected every selected row carries the selected wash and the
-// row's right-click menu becomes the batch menu of the selection. A right
-// click on a row outside the selection narrows the selection to it first.
-func (a *app) remoteRows(c *ui.Context, remote string, refs git.Refs) {
-	a.remoteRow(c, remote)
-	sorted := a.sortedRemoteBranches(refs.Remote)
-	pickedCount := sidebarRemotePickCount(a.refsView.pick, sorted)
-	for _, rb := range sorted {
-		if rb.Remote != remote {
-			continue
-		}
-		p := a.pal
-		multi := pickedCount >= 2
-		picked := a.refsView.pick[remoteBranchPickKey(rb.FullName)]
-		row := ui.Row(c.Key("rem-br-"+rb.FullName)).
-			Height(24).
-			Padding(0, 10, 0, 29).
-			Gap(8).
-			AlignItems(ui.Center).
-			Focusable().
-			Role(ui.RoleListItem).
-			Label(rb.Name).
-			AccessSelected(multi && picked)
-		switch {
-		case multi && picked:
-			row.Background(p.selected)
-		case row.Hovered():
-			row.Background(p.hover)
-		}
-		row.Children(func() {
-			symbolIcon(c, "arrow.triangle.branch", fallbackBr, 12, p.faint)
-			ui.Text(c, rb.Name).FontSize(12).TextColor(p.muted).SingleLine().Shrink(1).MinWidth(0)
-		})
-		if row.Clicked() {
-			a.clickSidebarRemoteBranch(rb, row.ClickModifiers(), refs)
-		}
-		row.ContextMenu(func(m *ui.Menu) {
-			pick := a.refsView.pick
-			key := remoteBranchPickKey(rb.FullName)
-			if !pick[key] {
-				// The right click landed outside the selection: the menu opens
-				// on this row alone, exactly as if the row had been clicked
-				// first. The narrowing happens in the build the press runs,
-				// as it does for local branches.
-				a.selectOnlySidebarRef(key)
-				pick = a.refsView.pick
-			}
-			if pick[key] && sidebarRemotePickCount(pick, sorted) >= 2 {
-				a.remoteBranchBatchMenuItems(m, pickedRemoteBranches(pick, refs, sorted))
-				return
-			}
-			a.remoteBranchCheckoutMenuItems(m, rb)
-			a.remoteBranchPullMenuItems(m, rb)
-			a.remoteBranchMergeMenuItems(m, rb)
-			a.remoteBranchRebaseMenuItems(m, rb)
-			a.remoteBranchCreateMenuItems(m, rb)
-			a.remoteBranchDeleteMenuItems(m, rb)
-			a.remoteBranchWebMenuItems(m, rb)
-			a.remoteBranchCopyMenuItem(m, rb)
-		})
+// remoteBranchRow is one remote-tracking branch row indented under its
+// remote, in the order the settings ask for. Sorting a copy of the whole
+// list keeps this remote's subsequence sorted, and the snapshot's own slice
+// is never reordered. Clicking selects the row in the sidebar's
+// multi-selection — Cmd-click toggles it, Shift-click selects the range
+// from the anchor along the rows as the sidebar shows them, remote by
+// remote — and with two or more rows selected every selected row carries
+// the selected wash and the row's right-click menu becomes the batch menu
+// of the selection. A right click on a row outside the selection narrows
+// the selection to it first.
+func (a *app) remoteBranchRow(c *ui.Context, rb git.Branch, refs git.Refs, sorted []git.Branch, pickedCount int) {
+	p := a.pal
+	multi := pickedCount >= 2
+	picked := a.refsView.pick[remoteBranchPickKey(rb.FullName)]
+	row := ui.Row(c.Key("rem-br-"+rb.FullName)).
+		Height(24).
+		Padding(0, 10, 0, 29).
+		Gap(8).
+		AlignItems(ui.Center).
+		Focusable().
+		Role(ui.RoleListItem).
+		Label(rb.Name).
+		AccessSelected(multi && picked)
+	switch {
+	case multi && picked:
+		row.Background(p.selected)
+	case row.Hovered():
+		row.Background(p.hover)
 	}
+	row.Children(func() {
+		symbolIcon(c, "arrow.triangle.branch", fallbackBr, 12, p.faint)
+		ui.Text(c, rb.Name).FontSize(12).TextColor(p.muted).SingleLine().Shrink(1).MinWidth(0)
+	})
+	if row.Clicked() {
+		a.clickSidebarRemoteBranch(rb, row.ClickModifiers(), refs)
+	}
+	row.ContextMenu(func(m *ui.Menu) {
+		pick := a.refsView.pick
+		key := remoteBranchPickKey(rb.FullName)
+		if !pick[key] {
+			// The right click landed outside the selection: the menu opens
+			// on this row alone, exactly as if the row had been clicked
+			// first. The narrowing happens in the build the press runs,
+			// as it does for local branches.
+			a.selectOnlySidebarRef(key)
+			pick = a.refsView.pick
+		}
+		if pick[key] && sidebarRemotePickCount(pick, sorted) >= 2 {
+			a.remoteBranchBatchMenuItems(m, pickedRemoteBranches(pick, refs, sorted))
+			return
+		}
+		a.remoteBranchCheckoutMenuItems(m, rb)
+		a.remoteBranchPullMenuItems(m, rb)
+		a.remoteBranchMergeMenuItems(m, rb)
+		a.remoteBranchRebaseMenuItems(m, rb)
+		a.remoteBranchCreateMenuItems(m, rb)
+		a.remoteBranchDeleteMenuItems(m, rb)
+		a.remoteBranchWebMenuItems(m, rb)
+		a.remoteBranchCopyMenuItem(m, rb)
+	})
 }
 
 func (a *app) refPlaceholderRow(c *ui.Context, text string) {

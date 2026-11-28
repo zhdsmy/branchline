@@ -82,3 +82,37 @@ func changedFileRow(c *ui.Context, hovered bool, p palette, f git.FileChange, se
 		ui.Text(c, name).FontSize(11.5).TextColor(p.text).SingleLine().Ellipsis("…").Shrink(1).MinWidth(0)
 	})
 }
+
+// changedFileTreeRow renders one file row of a tree view: the same status
+// badge, background and context menu as the flat row, but indented by the
+// row's depth and displaying the tree's display name — the bare file name,
+// with the original path of a rename after the arrow — because the folders
+// are rows of their own.
+func changedFileTreeRow(c *ui.Context, hovered bool, p palette, r changesTreeRow, selected bool, menu func(m *ui.Menu, file git.FileChange)) {
+	f := r.file
+	row := ui.Row(c).
+		Height(24).
+		FillWidth().
+		PaddingStart(14 + changesTreeIndent*float32(r.depth)).
+		PaddingEnd(14).
+		Gap(7).
+		AlignItems(ui.Center)
+	switch {
+	case selected:
+		row.Background(p.selected)
+	case hovered:
+		row.Background(p.hover)
+	}
+	if menu != nil {
+		row.ContextMenu(func(m *ui.Menu) {
+			menu(m, f)
+		})
+	}
+	row.Children(func() {
+		col := historyStatusColor(p, f.Status)
+		ui.Box(c).Size(16, 16).Radius(4).Background(col.Alpha(0.18)).Center().Shrink(0).Children(func() {
+			ui.Text(c, string(f.Status)).FontSize(9.5).FontWeight(700).TextColor(col).SingleLine()
+		})
+		ui.Text(c, r.display).FontSize(11.5).TextColor(p.text).SingleLine().Ellipsis("…").Shrink(1).MinWidth(0)
+	})
+}
