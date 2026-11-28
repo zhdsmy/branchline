@@ -216,6 +216,13 @@ func noted(note string, err error) error {
 	return err
 }
 
+// syncActionsEnabled is the one enabled condition of the sync actions —
+// the toolbar's Fetch, Pull and Push buttons and the Repository menu's six
+// sync items alike: a repository is open and no operation is in flight.
+func (a *app) syncActionsEnabled() bool {
+	return a.session.HasRepo() && !a.session.Busy()
+}
+
 // syncToolbar builds the top-right toolbar: repository operation
 // busy status, dismissible error status, and the Fetch, Pull, Push actions.
 func (a *app) syncToolbar(c *ui.Context) {
@@ -267,7 +274,7 @@ func (a *app) syncToolbar(c *ui.Context) {
 		}
 	}
 
-	disabled := !a.session.HasRepo() || a.session.Busy()
+	disabled := !a.syncActionsEnabled()
 	// The Fetch button opens the Fetch dialog; holding Option it fetches all
 	// remotes as a click always did.
 	fetch := toolbarActionBtnTip(c.Key("sync-fetch"), "arrow.triangle.2.circlepath", fallbackSync, "Fetch",
