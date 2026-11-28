@@ -70,10 +70,24 @@ type app struct {
 
 	toast string
 
+	// menubar is the application menu bar while it is attached to this app:
+	// assigned in Run for the live window, or by tests driving the enabled
+	// state updates of their own menu instance. menubarEnabled is the last
+	// enabled state applied to each repository-dependent item, so the
+	// per-frame syncMenuBarEnabled calls MenuItem.SetEnabled only when a
+	// state changed.
+	menubar        *mygo.Menu
+	menubarEnabled map[string]bool
+
 	// Test hooks: nil in production.
 	postFn     func(func())
 	spawnFn    func(func())
 	openRepoFn func(store.Repo) *git.Repo
+
+	// menuSetEnabledFn applies a menu item's enabled state instead of
+	// MenuItem.SetEnabled, which posts a native menu update tests have no
+	// running event loop for.
+	menuSetEnabledFn func(it *mygo.MenuItem, enabled bool)
 
 	// Settings hooks: production implementations assigned in newApp,
 	// replaced by recorders in tests.
@@ -262,8 +276,10 @@ func Run() error {
 		return nil
 	}
 	var mainApp *app
+	menubar := appMenuBar(func() *app { return mainApp })
 	mygo.App.WhenReady(func() {
 		a := newApp(openUserStore())
+		a.menubar = menubar
 		a.applyStartupAppearance()
 		a.win = mygo.NewWindow(mygo.WindowOptions{
 			Title:                mygo.App.Name(),
@@ -297,30 +313,8 @@ func Run() error {
 	mygo.App.OnWindowAllClosed(func() {
 		mygo.App.Quit()
 	})
-	// The first menu keeps the system's application-menu roles and adds
-	// Settings… after About; the other menus stay the default role menus.
-	mygo.App.SetMenu(mygo.NewMenu([]*mygo.MenuItem{
-		{Label: mygo.App.Name(), Submenu: []*mygo.MenuItem{
-			{Role: mygo.RoleAbout},
-			mygo.Separator(),
-			{Label: "Settings…", Accelerator: "CmdOrCtrl+,", Click: func(*mygo.MenuItem, *mygo.Window) {
-				if mainApp != nil {
-					mainApp.openSettings()
-				}
-			}},
-			mygo.Separator(),
-			{Role: mygo.RoleServices},
-			mygo.Separator(),
-			{Role: mygo.RoleHide},
-			{Role: mygo.RoleHideOthers},
-			{Role: mygo.RoleUnhide},
-			mygo.Separator(),
-			{Role: mygo.RoleQuit},
-		}},
-		{Role: mygo.RoleFileMenu},
-		{Role: mygo.RoleEditMenu},
-		{Role: mygo.RoleViewMenu},
-		{Role: mygo.RoleWindowMenu},
-	}))
+	// The menu bar is the one appMenuBar built above; its items act on the
+	// app WhenReady assigns to mainApp, resolved when each click runs.
+	mygo.App.SetMenu(menubar)
 	return mygo.App.Run()
 }
