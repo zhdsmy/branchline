@@ -1,11 +1,33 @@
 package app
 
 import (
+	"context"
+	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/zhdsmy/branchline/internal/git"
 	"github.com/zhdsmy/branchline/internal/store"
 )
+
+// totalGitCountingExecutor counts every git command executed (not only blame)
+// so cache-hit tests prove zero git invocations — neither BlobContent nor
+// blame — run when the cache serves a result.
+type totalGitCountingExecutor struct {
+	delegate git.Executor
+	total    atomic.Int32
+	blames   atomic.Int32
+}
+
+func (e *totalGitCountingExecutor) Describe() string { return e.delegate.Describe() }
+
+func (e *totalGitCountingExecutor) Run(ctx context.Context, stdin []byte, args ...string) ([]byte, error) {
+	e.total.Add(1)
+	if len(args) > 0 && args[0] == "blame" {
+		e.blames.Add(1)
+	}
+	return e.delegate.Run(ctx, stdin, args...)
+}
 
 // The tests of this file drive the blame cache through the real UI of real
 // repositories, opening Blame through the real context menu entries, and count
@@ -43,7 +65,7 @@ func closeInspector(t *testing.T, h *testHarness) {
 // field by field the ones a direct blame read of the revision produces.
 func TestFileBlameCacheSecondOpenHitsWithoutGit(t *testing.T) {
 	repo := blameStreamFixture(t, "fbc-second-open")
-	ex := &blameCountingExecutor{delegate: &git.LocalExecutor{Dir: repo.Path()}}
+	ex := &totalGitCountingExecutor{delegate: &git.LocalExecutor{Dir: repo.Path()}}
 
 	h := openBlameHarness(t, repo, "code.txt", ex)
 	h.drain()
@@ -71,14 +93,18 @@ func TestFileBlameCacheSecondOpenHitsWithoutGit(t *testing.T) {
 	firstLines := len(st.blameLines)
 
 	closeInspector(t, h)
+	totalBeforeHit := ex.total.Load()
 
-	// The second open serves the cache: no blame command runs, and the first
-	// frame after the menu choice already shows the finished view — the
-	// progress row of a computing blame never appears.
+	// The second open serves the cache: zero git commands of any kind run,
+	// and the first frame after the menu choice already shows the finished
+	// view — the progress row of a computing blame never appears.
 	chooseFileMenuItem(t, h, "Unstaged code.txt", "Blame…")
 	h.ui.Frame()
 	h.drain()
 
+	if n := ex.total.Load(); n != totalBeforeHit {
+		t.Fatalf("total git invocations after the cached reopen = %d (before=%d), want 0 new git commands", n, totalBeforeHit)
+	}
 	if n := ex.blames.Load(); n != 1 {
 		t.Fatalf("git blame invocations after the cached reopen = %d, want still 1", n)
 	}
@@ -479,4 +505,257 @@ func TestFileBlameCacheOversizedFileNotStored(t *testing.T) {
 	if n := ex.blames.Load(); n != 3 {
 		t.Fatalf("git blame invocations after reopening small = %d, want still 3: the oversized file must not evict the cached one", n)
 	}
+}
+
+// The cache clones the line slice on both store and lookup, so mutating
+// blameLines in the inspector state — whether right after the initial
+// streaming read or after a cache hit — never corrupts the cached copy.
+func TestFileBlameCacheIsolatesStoredSlices(t *testing.T) {
+	repo := blameStreamFixture(t, "fbc-slice-iso")
+	ex := &totalGitCountingExecutor{delegate: &git.LocalExecutor{Dir: repo.Path()}}
+
+	h := openBlameHarness(t, repo, "code.txt", ex)
+	h.drain()
+
+	st := h.app.fileInspectorUI()
+	if st.blameErr != nil || len(st.blameLines) == 0 {
+		t.Fatalf("initial blame failed: err=%v len=%d", st.blameErr, len(st.blameLines))
+	}
+	origFirst := st.blameLines[0]
+
+	// Corrupt the UI slice right after initial load (testing put isolation).
+	st.blameLines[0].Hash = "corrupted-after-put"
+	st.blameLines[0].Subject = "corrupted-after-put"
+	st.blameLines[0].Text = "corrupted-after-put"
+	st.blameLines[0].First = !origFirst.First
+
+	closeInspector(t, h)
+	totalBefore := ex.total.Load()
+
+	// Reopen: cache hit must serve the pristine line, zero git calls.
+	chooseFileMenuItem(t, h, "Unstaged code.txt", "Blame…")
+	h.ui.Frame()
+	h.drain()
+
+	if ex.total.Load() != totalBefore {
+		t.Fatalf("cache hit ran git commands: before=%d after=%d", totalBefore, ex.total.Load())
+	}
+	if st.blameLines[0] != origFirst {
+		t.Fatalf("mutating UI slice after put corrupted cache: got %+v, want %+v", st.blameLines[0], origFirst)
+	}
+
+	// Corrupt the UI slice returned by the cache hit (testing get isolation).
+	st.blameLines[0].Hash = "corrupted-after-get"
+	st.blameLines[0].Subject = "corrupted-after-get"
+	st.blameLines[0].First = !origFirst.First
+
+	closeInspector(t, h)
+	chooseFileMenuItem(t, h, "Unstaged code.txt", "Blame…")
+	h.ui.Frame()
+	h.drain()
+
+	if ex.total.Load() != totalBefore {
+		t.Fatalf("second cache hit ran git commands: before=%d after=%d", totalBefore, ex.total.Load())
+	}
+	if st.blameLines[0] != origFirst {
+		t.Fatalf("mutating UI slice after get corrupted cache: got %+v, want %+v", st.blameLines[0], origFirst)
+	}
+}
+
+// Total line cap evicts least-recently-used entries when multiple files
+// together exceed fileBlameCacheMaxLines even though the file cap still has
+// room.
+func TestFileBlameCacheLineCapEvictsLRU(t *testing.T) {
+	installBlameCacheCaps(t, 16, 6)
+	repo := newGitRepo(t, "fbc-line-cap")
+	for _, f := range []string{"f1.txt", "f2.txt", "f3.txt"} {
+		repo.CommitFile(f, f+" l1\n"+f+" l2\n"+f+" l3\n", "add "+f)
+		repo.WriteFile(f, f+" l1\n"+f+" l2\n"+f+" l3\ndirty\n")
+	}
+	ex := &totalGitCountingExecutor{delegate: &git.LocalExecutor{Dir: repo.Path()}}
+
+	h := openBlameHarness(t, repo, "f1.txt", ex)
+	h.drain()
+	closeInspector(t, h)
+
+	open := func(f string) {
+		t.Helper()
+		chooseFileMenuItem(t, h, "Unstaged "+f, "Blame…")
+		h.drain()
+		if st := h.app.fileInspectorUI(); st.blameErr != nil {
+			t.Fatalf("blame of %s errored: %v", f, st.blameErr)
+		}
+		closeInspector(t, h)
+	}
+
+	// f1 (3) + f2 (3) = 6 lines: both fit.
+	open("f2.txt")
+	if n := ex.blames.Load(); n != 2 {
+		t.Fatalf("blames after f1 and f2 = %d, want 2", n)
+	}
+	// Touch f1 so f2 becomes least recently used.
+	totalBefore := ex.total.Load()
+	open("f1.txt")
+	if ex.total.Load() != totalBefore {
+		t.Fatalf("reopening f1 ran git commands: before=%d after=%d", totalBefore, ex.total.Load())
+	}
+	// Opening f3 (3 lines) brings total to 9 > 6: evicts f2, keeps f1 and f3.
+	open("f3.txt")
+	if n := ex.blames.Load(); n != 3 {
+		t.Fatalf("blames after f3 = %d, want 3", n)
+	}
+	// f1 still hits with zero git commands.
+	totalBefore = ex.total.Load()
+	open("f1.txt")
+	if ex.total.Load() != totalBefore {
+		t.Fatalf("f1 was unexpectedly evicted by line cap: git calls before=%d after=%d", totalBefore, ex.total.Load())
+	}
+	// f2 was evicted and must re-run blame.
+	open("f2.txt")
+	if n := ex.blames.Load(); n != 4 {
+		t.Fatalf("blames after reopening evicted f2 = %d, want 4", n)
+	}
+}
+
+// Empty files cache as non-nil empty slices and hit with zero git commands;
+// an empty snapshot HEAD leaves the blame revision as literal HEAD and marks
+// it uncacheable.
+func TestFileBlameCacheEmptyFileAndUnresolvedHead(t *testing.T) {
+	if at, ok := resolveBlameRevision("", ""); at != "HEAD" || ok {
+		t.Fatalf("resolveBlameRevision(\"\", \"\") = (%q, %v), want (\"HEAD\", false)", at, ok)
+	}
+	if at, ok := resolveBlameRevision("HEAD", ""); at != "HEAD" || ok {
+		t.Fatalf("resolveBlameRevision(\"HEAD\", \"\") = (%q, %v), want (\"HEAD\", false)", at, ok)
+	}
+	const fakeHead = "0123456789abcdef0123456789abcdef01234567"
+	if at, ok := resolveBlameRevision("HEAD", fakeHead); at != fakeHead || !ok {
+		t.Fatalf("resolveBlameRevision(\"HEAD\", head) = (%q, %v), want (%q, true)", at, ok, fakeHead)
+	}
+
+	repo := newGitRepo(t, "fbc-empty")
+	repo.CommitFile("empty.txt", "", "add empty")
+	repo.WriteFile("empty.txt", "dirty\n")
+	ex := &totalGitCountingExecutor{delegate: &git.LocalExecutor{Dir: repo.Path()}}
+
+	h := openBlameHarness(t, repo, "empty.txt", ex)
+	h.drain()
+	st := h.app.fileInspectorUI()
+	if st.blameErr != nil || st.blameLines == nil || len(st.blameLines) != 0 || st.blameSel != -1 {
+		t.Fatalf("first empty-file blame state: err=%v lines=%#v sel=%d", st.blameErr, st.blameLines, st.blameSel)
+	}
+	closeInspector(t, h)
+	totalBefore := ex.total.Load()
+
+	// Reopening the cached empty file runs zero git commands (not even
+	// BlobContent) and renders the empty-file placeholder cleanly.
+	chooseFileMenuItem(t, h, "Unstaged empty.txt", "Blame…")
+	h.ui.Frame()
+	h.drain()
+	if ex.total.Load() != totalBefore {
+		t.Fatalf("cached empty-file reopen ran git commands: before=%d after=%d", totalBefore, ex.total.Load())
+	}
+	if st.blameLines == nil || len(st.blameLines) != 0 || st.blameSel != -1 || st.blameLoading || st.blameErr != nil {
+		t.Fatalf("cached empty-file state = {lines:%#v sel:%d loading:%v err:%v}", st.blameLines, st.blameSel, st.blameLoading, st.blameErr)
+	}
+	if !h.ui.HasText("This file has no lines") {
+		t.Fatalf("empty-file placeholder missing on cache hit; texts=%q", h.ui.Texts())
+	}
+	if h.ui.HasText("Loading blame") {
+		t.Fatalf("progress row rendered on empty-file cache hit; texts=%q", h.ui.Texts())
+	}
+}
+
+// Incomplete reads (hunks not covering every line), retried failures, and
+// reads superseded by switching to another file never enter the cache.
+func TestFileBlameCacheIncompleteAndSupersededNotCached(t *testing.T) {
+	t.Run("incomplete coverage not cached", func(t *testing.T) {
+		repo := blameStreamFixture(t, "fbc-incomplete")
+		fake := writeBlameFakeGit(t, syntheticPartialHunk(8, 3), false)
+		ex := &totalGitCountingExecutor{delegate: &git.LocalExecutor{Dir: repo.Path(), Git: fake}}
+
+		h := openBlameHarness(t, repo, "code.txt", ex)
+		h.drain()
+		st := h.app.fileInspectorUI()
+		if st.blameErr == nil || !strings.Contains(st.blameErr.Error(), "blame did not cover every line") {
+			t.Fatalf("expected incomplete blame error, got %v", st.blameErr)
+		}
+		if n := ex.blames.Load(); n != 1 {
+			t.Fatalf("blames after incomplete read = %d, want 1", n)
+		}
+		// Switch delegate to real git and click Retry Blame: must re-run and
+		// then cache the completed result.
+		ex.delegate = &git.LocalExecutor{Dir: repo.Path()}
+		if err := h.ui.Click("Retry Blame"); err != nil {
+			t.Fatalf("click Retry Blame: %v", err)
+		}
+		h.drain()
+		if st.blameErr != nil {
+			t.Fatalf("retry blame failed: %v", st.blameErr)
+		}
+		if n := ex.blames.Load(); n != 2 {
+			t.Fatalf("blames after retry = %d, want 2", n)
+		}
+		closeInspector(t, h)
+		totalBefore := ex.total.Load()
+		chooseFileMenuItem(t, h, "Unstaged code.txt", "Blame…")
+		h.ui.Frame()
+		h.drain()
+		if ex.total.Load() != totalBefore {
+			t.Fatalf("reopen after clean retry ran git commands: before=%d after=%d", totalBefore, ex.total.Load())
+		}
+	})
+
+	t.Run("superseded read not cached", func(t *testing.T) {
+		repo := blameStreamFixture(t, "fbc-superseded")
+		repo.CommitFile("other.txt", "o1\no2\n", "add other")
+		otherCommit := strings.TrimSpace(repo.Git("rev-parse", "HEAD"))
+
+		blocker := newBlameBlockerExecutor(t, &git.LocalExecutor{Dir: repo.Path()})
+		ex := &totalGitCountingExecutor{delegate: blocker}
+
+		h := openBlameHarness(t, repo, "code.txt", ex)
+		h.queue.RunNext(t) // content batch of code.txt
+		h.ui.Frame()
+		blocker.awaitEntered(t)
+		if n := ex.blames.Load(); n != 1 {
+			t.Fatalf("blames while code.txt blocked = %d, want 1", n)
+		}
+
+		// Supersede code.txt by opening Blame on other.txt from History.
+		if err := h.ui.Click("History"); err != nil {
+			t.Fatalf("click History: %v", err)
+		}
+		h.ui.Frame()
+		clickCommitRow(t, h, otherCommit, "add other")
+		h.queue.RunNext(t) // commit detail
+		h.queue.RunNext(t) // selected file diff
+		h.ui.Frame()
+		chooseFileMenuItem(t, h, "File other.txt", "Blame…")
+		blocker.unblock()
+		h.drain()
+
+		st := h.app.fileInspectorUI()
+		if st.blameErr != nil || st.path != "other.txt" {
+			t.Fatalf("other.txt blame state: path=%q err=%v", st.path, st.blameErr)
+		}
+		closeInspector(t, h)
+
+		// Return to Changes and open code.txt again: the superseded
+		// read must not have cached it.
+		if err := h.ui.Click("Changes"); err != nil {
+			t.Fatalf("click Changes: %v", err)
+		}
+		h.ui.Frame()
+		blamesBefore := ex.blames.Load()
+		chooseFileMenuItem(t, h, "Unstaged code.txt", "Blame…")
+		h.drain()
+		if ex.blames.Load() != blamesBefore+1 {
+			t.Fatalf("reopening superseded code.txt ran %d blames, want 1", ex.blames.Load()-blamesBefore)
+		}
+		if st.blameErr != nil {
+			t.Fatalf("code.txt blame after superseding errored: %v", st.blameErr)
+		}
+		assertBlameLinesMatchPorcelain(t, st.blameLines,
+			repo.Git("blame", "--porcelain", "-w", "HEAD", "--", "code.txt"))
+	})
 }

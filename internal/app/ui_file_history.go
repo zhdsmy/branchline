@@ -262,6 +262,20 @@ func splitBlameLines(content []byte) []git.BlameLine {
 // A cached finished blame of the same file at the same commit needs no read
 // at all: the inspector fills from the cache at once, with no progress row
 // and no git invocation.
+// resolveBlameRevision pins a revisionless or HEAD blame to head (the
+// snapshot's HEAD commit hash) when one exists. An empty head leaves the
+// revision as the literal HEAD and marks it uncacheable so it never caches
+// under a moving symbolic target.
+func resolveBlameRevision(rev, head string) (at string, cacheable bool) {
+	if rev == "" || rev == "HEAD" {
+		if head != "" {
+			return head, true
+		}
+		return "HEAD", false
+	}
+	return rev, true
+}
+
 func (a *app) startFileBlameLoad() {
 	st := a.fileInspectorUI()
 	if !st.open || !a.session.HasRepo() {
@@ -271,16 +285,9 @@ func (a *app) startFileBlameLoad() {
 
 	// Resolve the revision on the UI thread, where the snapshot is stable:
 	// the background worker never re-reads it.
-	at := rev
-	if at == "" || at == "HEAD" {
-		if head := a.session.Snapshot().Status.Head; head != "" {
-			at = head
-		} else {
-			at = "HEAD"
-		}
-	}
+	at, cacheable := resolveBlameRevision(rev, a.session.Snapshot().Status.Head)
 
-	if at != "HEAD" {
+	if cacheable {
 		if lines, ok := a.fileBlameCache().get(at, path, a.session.Generation()); ok {
 			st.blameLines = lines
 			st.blameCovered = len(lines)
@@ -378,8 +385,8 @@ func (a *app) startFileBlameLoad() {
 			// Only a finished read — no error, every line covered — is worth
 			// caching, and only at a resolved commit: a read that still ran at
 			// the literal HEAD would cache its result under a moving target.
-			// The stored slice is never written again (see fileBlameCache).
-			if at != "HEAD" {
+			// fileBlameCache clones the slice on put and get.
+			if cacheable {
 				a.fileBlameCache().put(at, path, st.blameLines, a.session.Generation())
 			}
 		})

@@ -2,6 +2,7 @@ package app
 
 import (
 	"container/list"
+	"slices"
 
 	"github.com/zhdsmy/branchline/internal/git"
 )
@@ -24,9 +25,7 @@ type fileBlameCacheKey struct {
 	path   string
 }
 
-// fileBlameCacheValue is one cached entry: the finished attribution and its
-// line count, kept separately because evicting compares counts without
-// walking slices.
+// fileBlameCacheValue holds one cached blame result.
 type fileBlameCacheValue struct {
 	lines []git.BlameLine
 }
@@ -44,14 +43,9 @@ type fileBlameCacheValue struct {
 // count as a use, and once either cap is exceeded the entry unused the
 // longest is dropped first.
 //
-// A cached slice is never written again after it is stored. applyFileBlameBatch
-// is the only writer of the elements of a blameLines slice, and it runs only
-// for batches of a streaming read — whose first batch always replaces the
-// slice wholesale before any hunk touches it. When the inspector shows a
-// cached result no read is running for it at all, so no batch arrives that
-// could write into the slice, and a later read of the file starts over with
-// its own fresh content slice. Aliasing the cached slice into the inspector
-// state is therefore safe.
+// Both put and get clone the line slice so the inspector state and the cache
+// never share a backing array: any later mutation of blameLines on the UI
+// thread cannot corrupt a cached entry.
 type fileBlameCache struct {
 	gen     uint64
 	entries map[fileBlameCacheKey]*list.Element
@@ -109,9 +103,10 @@ func (c *fileBlameCache) prune(gen uint64) {
 }
 
 // get looks up the finished blame of path at commit, counting a hit as a use
-// of the entry. The second result is false when nothing is cached — and a
-// cached empty file counts as cached, so callers tell it apart by the bool,
-// never by the slice.
+// of the entry and returning an independent copy of the cached lines. The
+// second result is false when nothing is cached — and a cached empty file
+// counts as cached (returned as a non-nil empty slice), so callers tell it
+// apart by the bool, never by the slice.
 func (c *fileBlameCache) get(commit, path string, gen uint64) ([]git.BlameLine, bool) {
 	c.prune(gen)
 	el, ok := c.entries[fileBlameCacheKey{commit: commit, path: path}]
@@ -119,16 +114,16 @@ func (c *fileBlameCache) get(commit, path string, gen uint64) ([]git.BlameLine, 
 		return nil, false
 	}
 	c.order.MoveToFront(el)
-	return el.Value.(fileBlameCacheEntry).value.lines, true
+	return slices.Clone(el.Value.(fileBlameCacheEntry).value.lines), true
 }
 
-// put stores the finished blame of path at commit. A file whose line count
-// exceeds the line cap is never stored — and evicts nothing, since it never
-// enters — and storing counts as a use, so the fresh entry is the last one
-// eviction would pick.
+// put stores an independent copy of the finished blame of path at commit. A
+// file whose line count exceeds the line cap is never stored — and evicts
+// nothing, since it never enters — and storing counts as a use, so the fresh
+// entry is the last one eviction would pick.
 func (c *fileBlameCache) put(commit, path string, lines []git.BlameLine, gen uint64) {
 	c.prune(gen)
-	if lines == nil || len(lines) > fileBlameCacheMaxLines {
+	if lines == nil || fileBlameCacheMaxFiles <= 0 || len(lines) > fileBlameCacheMaxLines {
 		return
 	}
 	key := fileBlameCacheKey{commit: commit, path: path}
@@ -139,10 +134,11 @@ func (c *fileBlameCache) put(commit, path string, lines []git.BlameLine, gen uin
 		c.order.MoveToFront(el)
 		return
 	}
+	stored := slices.Clone(lines)
 	c.entries[key] = c.order.PushFront(fileBlameCacheEntry{
 		key:   key,
-		value: fileBlameCacheValue{lines: lines},
+		value: fileBlameCacheValue{lines: stored},
 	})
-	c.lines += len(lines)
+	c.lines += len(stored)
 	c.prune(gen)
 }
