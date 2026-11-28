@@ -194,38 +194,38 @@ func (a *app) remoteBranchCheckoutDialog(c *ui.Context) {
 	if !st.coOpen {
 		return
 	}
-	ui.Modal(c.Key("rb-checkout-modal"), &st.coOpen, func() {
-		ui.Column(c.Key("rb-checkout-body")).Width(460).Padding(18, 18, 14, 18).Gap(10).Children(func() {
-			ui.Text(c, "Checkout Remote Branch").FontSize(17).FontWeight(650).TextColor(p.text)
-			ui.Field(c, "Remote Branch:", func() {
-				ui.Text(c, st.coRemote).Font("monospace").FontSize(12).TextColor(p.text).SingleLine().Ellipsis("…")
-			})
-			ui.Field(c, "Local Branch Name:", func() {
-				in := ui.TextInput(c, &st.coName).FillWidth().AutoFocus().Label("Local Branch Name")
-				if in.Changed() {
-					st.coNameChanged = true
-				}
-				if in.Submitted() && a.remoteCheckoutCanSubmit() {
-					a.submitRemoteBranchCheckout()
-				}
-			})
-			name := strings.TrimSpace(st.coName)
-			switch {
-			case a.remoteCheckoutProblem(st.coRemote, name) != "" && (st.coNameChanged || name != ""):
-				ui.Text(c, a.remoteCheckoutProblem(st.coRemote, name)).FontSize(12).TextColor(p.danger).MaxWidth(424)
-			case a.remoteCheckoutSwitchesToExisting(st.coRemote, name):
-				ui.Text(c, "A local branch named "+name+" already tracks "+st.coRemote+"; checkout switches to it.").FontSize(12).TextColor(p.muted).MaxWidth(424)
-			}
-			ui.Row(c.Key("rb-checkout-actions")).Gap(8).Justify(ui.End).Children(func() {
-				if ui.Button(c.Key("rb-checkout-cancel"), "Cancel").Label("Cancel").Clicked() {
-					a.closeRemoteBranchCheckout()
-				}
-				if ui.PrimaryButton(c.Key("rb-checkout-confirm"), "Checkout").Label("Confirm Checkout Remote Branch").Disabled(!a.remoteCheckoutCanSubmit()).Clicked() {
-					a.submitRemoteBranchCheckout()
-				}
-			})
+	_, cancelled, confirmed := dialogFrame(c, p, "rb-checkout", &st.coOpen, "Checkout Remote Branch", 460, func() {
+		ui.Field(c, "Remote Branch:", func() {
+			ui.Text(c, st.coRemote).Font("monospace").FontSize(12).TextColor(p.text).SingleLine().Ellipsis("…")
 		})
-	})
+		ui.Field(c, "Local Branch Name:", func() {
+			in := ui.TextInput(c, &st.coName).FillWidth().AutoFocus().Label("Local Branch Name")
+			if in.Changed() {
+				st.coNameChanged = true
+			}
+			// The single-line field takes Enter before the frame's shortcut,
+			// so its own submission stays the only way Enter inside it
+			// confirms.
+			if in.Submitted() && a.remoteCheckoutCanSubmit() {
+				a.submitRemoteBranchCheckout()
+			}
+		})
+		name := strings.TrimSpace(st.coName)
+		switch {
+		case a.remoteCheckoutProblem(st.coRemote, name) != "" && (st.coNameChanged || name != ""):
+			ui.Text(c, a.remoteCheckoutProblem(st.coRemote, name)).FontSize(12).TextColor(p.danger).MaxWidth(424)
+		case a.remoteCheckoutSwitchesToExisting(st.coRemote, name):
+			ui.Text(c, "A local branch named "+name+" already tracks "+st.coRemote+"; checkout switches to it.").FontSize(12).TextColor(p.muted).MaxWidth(424)
+		}
+	},
+		dialogAction{key: "rb-checkout-cancel", text: "Cancel", label: "Cancel"},
+		dialogAction{key: "rb-checkout-confirm", text: "Checkout", label: "Confirm Checkout Remote Branch", disabled: !a.remoteCheckoutCanSubmit()})
+	if cancelled {
+		a.closeRemoteBranchCheckout()
+	}
+	if confirmed {
+		a.submitRemoteBranchCheckout()
+	}
 	if !st.coOpen {
 		a.closeRemoteBranchCheckout()
 	}
@@ -354,23 +354,22 @@ func (a *app) remoteBranchDeleteDialog(c *ui.Context) {
 	if !st.rdOpen {
 		return
 	}
-	ui.Modal(c.Key("rb-delete-modal"), &st.rdOpen, func() {
-		ui.Column(c.Key("rb-delete-body")).Width(460).Padding(18, 18, 14, 18).Gap(10).Children(func() {
-			ui.Text(c, "Delete Remote Branch").FontSize(17).FontWeight(650).TextColor(p.text)
-			ui.Field(c, "Remote Branch:", func() {
-				ui.Text(c, st.rdFull).Font("monospace").FontSize(12).TextColor(p.text).SingleLine().Ellipsis("…")
-			})
-			ui.Text(c, "This deletes '"+st.rdBranch+"' on the server '"+st.rdRemote+"'. Local branches tracking it lose their upstream.").FontSize(12).TextColor(p.muted).MaxWidth(424)
-			ui.Row(c.Key("rb-delete-actions")).Gap(8).Justify(ui.End).Children(func() {
-				if ui.Button(c.Key("rb-delete-cancel"), "Cancel").Label("Cancel").Clicked() {
-					a.closeRemoteBranchDelete()
-				}
-				if ui.Button(c.Key("rb-delete-confirm"), "Delete").Label("Confirm Delete Remote Branch").Disabled(a.session.Busy() || a.session.Snapshot().Status.State != "").Clicked() {
-					a.submitRemoteBranchDelete()
-				}
-			})
+	_, cancelled, confirmed := dialogFrame(c, p, "rb-delete", &st.rdOpen, "Delete Remote Branch", 460, func() {
+		ui.Field(c, "Remote Branch:", func() {
+			ui.Text(c, st.rdFull).Font("monospace").FontSize(12).TextColor(p.text).SingleLine().Ellipsis("…")
 		})
-	})
+		ui.Text(c, "This deletes '"+st.rdBranch+"' on the server '"+st.rdRemote+"'. Local branches tracking it lose their upstream.").FontSize(12).TextColor(p.muted).MaxWidth(424)
+	},
+		dialogAction{key: "rb-delete-cancel", text: "Cancel", label: "Cancel"},
+		// Deleting a branch on the server discards what others may share:
+		// the destructive confirmation — red, never armed by Enter.
+		dialogAction{key: "rb-delete-confirm", text: "Delete", label: "Confirm Delete Remote Branch", disabled: a.session.Busy() || a.session.Snapshot().Status.State != "", destructive: true})
+	if cancelled {
+		a.closeRemoteBranchDelete()
+	}
+	if confirmed {
+		a.submitRemoteBranchDelete()
+	}
 	if !st.rdOpen {
 		a.closeRemoteBranchDelete()
 	}

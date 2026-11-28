@@ -160,10 +160,13 @@ func (d *passDialog) close() {
 }
 
 // view renders the modal for the pending question. It is built at the end of
-// the app view so ui.Modal mounts into the window-level overlay. Any dismissal
-// path — Escape, clicking the backdrop, or the Cancel button — must answer
-// ok=false immediately so the waiting worker never hangs.
-func (d *passDialog) view(c *ui.Context) {
+// the app view so the frame's modal mounts into the window-level overlay. Any
+// dismissal path — Escape, clicking the backdrop, or the Cancel button — must
+// answer ok=false immediately so the waiting worker never hangs. Every path
+// ends in the one answer call, which resolves the pending question exactly
+// once: answer resets current with the first delivery, so no dismissal
+// combination can ever answer a second time.
+func (d *passDialog) view(c *ui.Context, p palette) {
 	d.mu.Lock()
 	closed := d.closed
 	d.mu.Unlock()
@@ -174,59 +177,65 @@ func (d *passDialog) view(c *ui.Context) {
 	if d.current == nil {
 		return
 	}
-	modal := ui.Modal(c, &d.open, func() {
-		ui.Column(c).Width(440).Gap(12).Children(func() {
-			d.content(c)
-		})
-	})
-	if modal.Dismissed() || !d.open {
-		d.answer("", false)
-	}
-}
-
-func (d *passDialog) content(c *ui.Context) {
-	t := c.Theme()
 	prompt := d.current.prompt
 	kind := kindOfPrompt(prompt)
-	title, label, note, okLabel := "The remote host requires password", "Password:", prompt, "OK"
+	title, label, okLabel := "The remote host requires password", "Password:", "OK"
 	switch kind {
 	case askPassphrase:
 		title, label = "Passphrase for SSH key", "Passphrase:"
-		if m := keyPrompt.FindStringSubmatch(prompt); m != nil {
-			note = "Enter passphrase for SSH key '" + m[1] + "'"
-		}
 	case askUsername:
 		title, label = "The remote host requires user name", "User name:"
 	case askYesNo:
 		title, label, okLabel = "Connect to this host?", "Answer:", "Connect"
 	}
-	ui.Text(c, title).FontSize(16).Bold()
-	ui.Text(c, note).FontSize(12).TextColor(t.TextMuted).Selectable()
 	submitted := false
-	if kind != askYesNo {
-		// c.Key(d.seq) isolates the draft editing state and undo history of
-		// each question from the previous one.
-		input := ui.TextInput(c.Key(d.seq), &d.value).FillWidth().AutoFocus().Label(strings.TrimSuffix(label, ":"))
-		if kind != askUsername {
-			input.Password()
+	dismissed, cancelled, confirmed := dialogFrame(c, p, "askpass", &d.open, title, 440, func() {
+		submitted = d.content(c, p, kind, label)
+	},
+		dialogAction{key: "askpass-cancel", text: "Cancel", label: "Cancel"},
+		// Connecting to a host whose key ssh has never seen is the user
+		// trusting it: a destructive-style decision the primary button paints
+		// red for, with Enter left to the focused Cancel so it can never
+		// connect by accident.
+		dialogAction{key: "askpass-confirm", text: okLabel, label: okLabel, destructive: kind == askYesNo})
+	if confirmed || submitted {
+		if kind == askYesNo {
+			d.answer("yes", true)
+		} else {
+			d.answer(d.value, true)
 		}
-		submitted = input.Submitted()
-		ui.Text(c, "The answer goes to git or ssh for this command only. Branchline does not save it.").FontSize(11).TextColor(t.TextMuted)
 	}
-	ui.Row(c).FillWidth().Gap(8).Margin(8, 0, 0, 0).Children(func() {
-		ui.Spacer(c)
-		if ui.Button(c, "Cancel").Clicked() {
-			d.answer("", false)
-			return
+	if cancelled || dismissed {
+		d.answer("", false)
+	}
+}
+
+// content builds the body of the askpass dialog: the prompt note, the input
+// for password, passphrase and user name questions, and the no-persistence
+// note. It reports whether the input's own Enter submitted — the single-line
+// field takes the key before the frame's shortcut, so this is the only way
+// Enter inside it confirms.
+func (d *passDialog) content(c *ui.Context, p palette, kind passKind, label string) (submitted bool) {
+	prompt := d.current.prompt
+	note := prompt
+	if kind == askPassphrase {
+		if m := keyPrompt.FindStringSubmatch(prompt); m != nil {
+			note = "Enter passphrase for SSH key '" + m[1] + "'"
 		}
-		if ui.PrimaryButton(c, okLabel).Clicked() || submitted {
-			if kind == askYesNo {
-				d.answer("yes", true)
-			} else {
-				d.answer(d.value, true)
-			}
-		}
-	})
+	}
+	ui.Text(c, note).FontSize(12).TextColor(p.muted).Selectable()
+	if kind == askYesNo {
+		return false
+	}
+	// c.Key(d.seq) isolates the draft editing state and undo history of
+	// each question from the previous one.
+	input := ui.TextInput(c.Key(d.seq), &d.value).FillWidth().AutoFocus().Label(strings.TrimSuffix(label, ":"))
+	if kind != askUsername {
+		input.Password()
+	}
+	submitted = input.Submitted()
+	ui.Text(c, "The answer goes to git or ssh for this command only. Branchline does not save it.").FontSize(11).TextColor(p.muted)
+	return submitted
 }
 
 // repoWithAskPass returns a shallow copy of r whose executor asks through ask,
