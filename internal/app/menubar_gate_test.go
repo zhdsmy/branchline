@@ -341,3 +341,27 @@ func TestMenuBarGateAppliesOnlyChangedItems(t *testing.T) {
 		}
 	}
 }
+
+// Refresh needs a repository like the other View items: with none open a
+// reload answers nothing, so the item is disabled rather than clickable for
+// no effect, and it enables once a repository opens.
+func TestMenuBarGateRefreshNeedsRepository(t *testing.T) {
+	repo := newGitRepo(t, "menugate-refresh")
+	repo.CommitFile("a.txt", "one\n", "initial commit")
+
+	h := newTestApp(t)
+	rig := installMenuBar(h)
+	h.ui.Frame()
+
+	if state, applied := rig.states[menuIDRefresh]; !applied {
+		t.Fatal("Refresh was never synced to the menu; the test proves nothing")
+	} else if state {
+		t.Error("Refresh is enabled without a repository")
+	}
+
+	h.openRepo(repo.StoreRepo())
+	h.drain()
+	if !rig.states[menuIDRefresh] {
+		t.Error("Refresh is disabled with a repository open")
+	}
+}

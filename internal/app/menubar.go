@@ -239,8 +239,10 @@ func (a *app) menuOpenInEditorEnabled() bool {
 // create condition of the reference context menus, Quick Stash shares its
 // own working-tree condition, Open in Editor needs a repository on this
 // Mac, and the page, Finder, Terminal and Save Stash… items need only an
-// open repository, while the File menu's four entries and Refresh have no
-// repository side at all. Over that the dialog gate of the main window
+// open repository. Refresh joins them: with no repository open a reload
+// answers nothing, so the item is disabled rather than clickable for no
+// effect. The File menu's four entries alone have no repository side at
+// all. Over that the dialog gate of the main window
 // sits: a frame that drew a dialog disables every managed item, so nothing
 // a menu click would do — opening a second dialog over the first, starting
 // a git operation, moving the page under the dialog — runs while one is
@@ -258,7 +260,7 @@ func (a *app) menuBarEnabledStates() map[string]bool {
 		menuIDAddSSHRepository:   true,
 		menuIDLocalChanges:       hasRepo,
 		menuIDHistory:            hasRepo,
-		menuIDRefresh:            true,
+		menuIDRefresh:            hasRepo,
 		menuIDFetch:              syncOK,
 		menuIDQuickFetch:         syncOK,
 		menuIDPull:               syncOK,
