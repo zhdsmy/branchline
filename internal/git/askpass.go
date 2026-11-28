@@ -64,6 +64,17 @@ const askMarker = "\x1eBRANCHLINE-ASKPASS "
 // broken connection cannot leave it waiting forever. The watchdog closes
 // the pipes it inherits, so that it cannot keep the command waiting, and
 // it leaves by itself once the pipe is gone: nothing is left behind.
+//
+// The read is tried again when it fails with nothing read: opening a
+// named pipe for reading blocks until a writer comes, and POSIX has the
+// blocked open fail with EINTR when a signal without a restarting
+// handler arrives — with the whole login lost to a stray signal when the
+// script gives up. SIGCHLD is such a signal on a /bin/sh of the bash
+// line, which reaps with a handler that does not restart, and shells of
+// the dash line interrupt on further signals they do not ignore. The
+// retry costs nothing: an interrupted or emptied attempt blocks in the
+// open of the next one until a writer comes, and INT, TERM and HUP keep
+// their traps, so the watchdog's deadline is unchanged.
 const askScript = `#!/bin/sh
 # Branchline askpass
 r=$(mktemp -u "${TMPDIR:-/tmp}/branchline-ap.XXXXXXXX") || exit 1
@@ -83,7 +94,8 @@ trap 'exit 1' INT TERM HUP
 ) >&- 2>&- &
 p=$(printf '%s' "$1" | tr '\n\r\036' '   ')
 printf '\036BRANCHLINE-ASKPASS @WHERE@ %s %s\n' "$r" "$p" >&2
-IFS= read -r a < "$r" || exit 1
+a=
+until IFS= read -r a < "$r"; do a=; done
 case $a in
 +*) printf '%s\n' "${a#+}" ;;
 *) exit 1 ;;
