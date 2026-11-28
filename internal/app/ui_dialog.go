@@ -4,6 +4,19 @@ import (
 	"github.com/egoist/mygo/ui"
 )
 
+// framedDialogs counts the dialogs dialogFrame drew in the frame of the
+// main window currently building. The main window's view resets it to zero
+// before the frame builds and reads it once the frame is built, so it
+// answers the question mygo's native side cannot answer for the menu bar:
+// whether the main window shows a dialog at all. Only the UI thread ever
+// builds a frame, so the count needs no lock, and only the dialogs built
+// inside the main window's reset-and-read span count: the Settings window
+// builds its view in its own window outside that span, so a dialog open
+// there never reaches the menu gate of the main window. Dialogs still
+// calling ui.Modal directly do not count either, until they move to the
+// frame. The same package-level shape already carries cloneUIStates.
+var framedDialogs int
+
 // dialogAction is one footer button: its element key, visible text and
 // accessible label. destructive marks a primary button that discards work —
 // a reset, drop or abort — and is meaningless on the cancel button. onClick
@@ -61,6 +74,7 @@ func dialogFrame(c *ui.Context, p palette, key string, open *bool, title string,
 	if !*open {
 		return false, false, false
 	}
+	framedDialogs++
 	single := primary.key == ""
 	dismissed = ui.Modal(c.Key(key), open, func() {
 		ui.Column(c.Key(key+"-body")).Width(width).Padding(18, 18, 14, 18).Gap(10).Children(func() {

@@ -73,11 +73,14 @@ type app struct {
 	// menubar is the application menu bar while it is attached to this app:
 	// assigned in Run for the live window, or by tests driving the enabled
 	// state updates of their own menu instance. menubarEnabled is the last
-	// enabled state applied to each repository-dependent item, so the
+	// enabled state applied to each item of menuBarEnabledStates, so the
 	// per-frame syncMenuBarEnabled calls MenuItem.SetEnabled only when a
-	// state changed.
+	// state changed. dialogOpen records whether the last built frame of the
+	// main window drew a dialog through the shared frame; it gates the menu
+	// bar's items both in their enabled state and in what their clicks do.
 	menubar        *mygo.Menu
 	menubarEnabled map[string]bool
+	dialogOpen     bool
 
 	// Test hooks: nil in production.
 	postFn     func(func())

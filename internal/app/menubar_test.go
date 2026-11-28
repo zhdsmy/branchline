@@ -667,33 +667,6 @@ func TestMenuBarNewTagTarget(t *testing.T) {
 	}
 }
 
-// A menu click for a dialog while another dialog is open opens the second
-// one on top of the first: the menu is native and mygo's native UI offers no
-// way to ask whether a modal is showing, so the menu does not gate itself
-// and both dialogs stay open, the later one in front. This test pins the
-// behavior rather than approving it.
-func TestMenuBarDialogOpensOnTopOfOpenDialog(t *testing.T) {
-	repo := newGitRepo(t, "menu-stack")
-	repo.CommitFile("a.txt", "one\n", "initial commit")
-	repo.AddBareRemote("origin")
-
-	h := newTestApp(t)
-	rig := installMenuBar(h)
-	openSyncRepo(t, h, repo.StoreRepo())
-
-	clickMenuItem(t, rig, menuIDNewBranch)
-	if !h.app.branchCreateUI().open {
-		t.Fatal("New Branch… did not open the dialog")
-	}
-	clickMenuItem(t, rig, menuIDFetch)
-	if !syncStateFor(h.app).fetchDlg.open {
-		t.Fatal("Fetch… did not open its dialog while the New Branch dialog was open")
-	}
-	if !h.app.branchCreateUI().open {
-		t.Fatal("the New Branch dialog closed when the Fetch dialog opened over it")
-	}
-}
-
 // The File menu entries reach the same actions as the repository switcher's
 // footer, and Settings… opens the Settings window.
 func TestMenuBarFileAndSettingsEntries(t *testing.T) {
