@@ -1,7 +1,10 @@
 package app
 
 import (
+	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -12,11 +15,11 @@ import (
 	"github.com/zhdsmy/branchline/internal/store"
 )
 
-// recordedPushes returns the argument lists of the git push invocations the
-// recorder saw, in the order they ran. Leading -c key=value pairs, which git
-// options ahead of the subcommand come in, are skipped when picking the
-// subcommand, exactly like isCommitGraphWrite does.
-func recordedPushes(rec *commandRecorder) [][]string {
+// quickPushRecordedPushes returns the argument lists of the git push
+// invocations the recorder saw, in the order they ran. Leading -c key=value
+// pairs, which git options ahead of the subcommand come in, are skipped when
+// picking the subcommand, exactly like isCommitGraphWrite does.
+func quickPushRecordedPushes(rec *commandRecorder) [][]string {
 	rec.mu.Lock()
 	defer rec.mu.Unlock()
 	var out [][]string
@@ -36,7 +39,7 @@ func recordedPushes(rec *commandRecorder) [][]string {
 // these arguments, and returns it as one line for failure messages.
 func wantOnePush(t *testing.T, rec *commandRecorder, want []string) {
 	t.Helper()
-	pushes := recordedPushes(rec)
+	pushes := quickPushRecordedPushes(rec)
 	if len(pushes) != 1 {
 		t.Fatalf("recorded %d git push invocation(s), want exactly one: %v", len(pushes), pushes)
 	}
@@ -284,5 +287,281 @@ func TestQuickPushTargetPushDefaultMatchingLoopbackSSH(t *testing.T) {
 	}
 	if got := srv.RunGit(t, bareDir, "rev-parse", "refs/heads/side"); got != sideOnServer {
 		t.Fatalf("the SSH quick push moved the remote side branch to %q — work never chosen for pushing; it must stay at %q", got, sideOnServer)
+	}
+}
+
+// TestQuickPushTargetSlashRemoteAndBranch checks that a branch tracking an
+// upstream whose remote name and branch name both contain slashes (remote
+// team/a, branch feature/x) splits cleanly against the configured remotes and
+// pushes only to team/a refs/heads/feature/x, even with push.default=matching.
+func TestQuickPushTargetSlashRemoteAndBranch(t *testing.T) {
+	repo := newGitRepo(t, "quickpush-slash-remote")
+	repo.CommitFile("a.txt", "one\n", "initial commit")
+	originBare := repo.AddBareRemote("origin")
+	teamBare := addSecondBareRemote(t, repo, "team/a")
+	repo.Git("config", "push.default", "matching")
+
+	// Sibling branch on origin carries unpushed work that matching would push.
+	repo.CreateBranch("side")
+	repo.Git("push", "origin", "side:refs/heads/side")
+	sideOnOrigin := strings.TrimSpace(runGitCommand(t, originBare, "rev-parse", "refs/heads/side"))
+	repo.Checkout("side")
+	repo.CommitFile("side.txt", "unpublished\n", "unpublished side")
+
+	// Branch feat tracks team/a/feature/x (slashes in both remote and branch).
+	repo.Checkout("main")
+	repo.Git("checkout", "-b", "feat")
+	repo.Git("push", "-u", "team/a", "refs/heads/feat:refs/heads/feature/x")
+	featHead := repo.CommitFile("feat.txt", "feat work\n", "feat work")
+
+	rec := &commandRecorder{}
+	h := newTestApp(t)
+	h.app.openRepoFn = recordingOpenRepoFn(h, rec)
+	openSyncRepo(t, h, repo.StoreRepo())
+
+	if err := h.ui.ClickWith(ui.Alt, "Push"); err != nil {
+		t.Fatalf("Option+click Push: %v", err)
+	}
+	h.drain()
+
+	if err := h.app.session.ActionErr(); err != nil {
+		t.Fatalf("quick push to slash remote failed: %v", err)
+	}
+	if got := strings.TrimSpace(runGitCommand(t, teamBare, "rev-parse", "refs/heads/feature/x")); got != featHead {
+		t.Fatalf("team/a refs/heads/feature/x = %q, want %q", got, featHead)
+	}
+	if bareHasRef(t, teamBare, "refs/heads/feat") {
+		t.Fatal("team/a unexpectedly received refs/heads/feat")
+	}
+	if got := strings.TrimSpace(runGitCommand(t, originBare, "rev-parse", "refs/heads/side")); got != sideOnOrigin {
+		t.Fatalf("origin refs/heads/side moved to %q, want unchanged %q", got, sideOnOrigin)
+	}
+
+	wantOnePush(t, rec, []string{"push", "team/a", "refs/heads/feat:refs/heads/feature/x", "--porcelain"})
+}
+
+// failStatusAndRefsExecutor wraps an executor and fails both git status and
+// git for-each-ref so the snapshot never loads and the worker's live ref
+// re-read fails too.
+type failStatusAndRefsExecutor struct {
+	real git.Executor
+	err  error
+}
+
+func (e *failStatusAndRefsExecutor) Run(ctx context.Context, stdin []byte, args ...string) ([]byte, error) {
+	for _, a := range args {
+		if a == "status" || a == "for-each-ref" {
+			return nil, e.err
+		}
+	}
+	return e.real.Run(ctx, stdin, args...)
+}
+
+func (e *failStatusAndRefsExecutor) Describe() string { return e.real.Describe() }
+
+// TestQuickPushTargetWorkerRefsFailureNeverFallsBackToBarePush checks that
+// when the snapshot failed to load and the worker's live re-read of refs also
+// fails, Quick Push reports an error and never falls back to a bare git push.
+func TestQuickPushTargetWorkerRefsFailureNeverFallsBackToBarePush(t *testing.T) {
+	repo := newGitRepo(t, "quickpush-refs-fail")
+	repo.CommitFile("a.txt", "one\n", "initial commit")
+	bareDir := repo.AddBareRemote("origin")
+	bareBefore := strings.TrimSpace(runGitCommand(t, bareDir, "rev-parse", "refs/heads/main"))
+	repo.CommitFile("b.txt", "two\n", "local commit")
+
+	readErr := errors.New("refs unreadable for the test")
+	rec := &commandRecorder{}
+	h := newTestApp(t)
+	h.app.openRepoFn = func(meta store.Repo) *git.Repo {
+		prefs := h.app.store.Settings()
+		r := git.New(meta.ExecutorFor(prefs))
+		r.Exec = &recordingExecutor{real: &failStatusAndRefsExecutor{real: r.Exec, err: readErr}, shared: rec}
+		return r
+	}
+	openSyncRepo(t, h, repo.StoreRepo())
+
+	if h.app.session.Loaded() || h.app.session.LoadErr() == nil {
+		t.Fatal("fixture broken: snapshot loaded despite failing status and refs")
+	}
+
+	if err := h.ui.ClickWith(ui.Alt, "Push"); err != nil {
+		t.Fatalf("Option+click Push: %v", err)
+	}
+	h.drain()
+	h.ui.Frame()
+
+	if err := h.app.session.ActionErr(); err == nil {
+		t.Fatal("quick push succeeded when worker refs re-read failed")
+	}
+	if _, ok := h.ui.AccessByRole(ui.RoleStatus, "Repository Error"); !ok {
+		t.Fatalf("Repository Error status missing after worker refs failure; texts=%q", h.ui.Texts())
+	}
+	if pushes := quickPushRecordedPushes(rec); len(pushes) != 0 {
+		t.Fatalf("worker refs failure still ran git push: %v", pushes)
+	}
+	if got := strings.TrimSpace(runGitCommand(t, bareDir, "rev-parse", "refs/heads/main")); got != bareBefore {
+		t.Fatalf("bare refs/heads/main moved to %q, want unchanged %q", got, bareBefore)
+	}
+}
+
+// TestQuickPushTargetUpToDateAndRejected checks that Quick Push keeps the
+// same user-visible notices as before: an up-to-date branch toasts
+// UpToDatePush without an error, and a non-fast-forward rejection surfaces a
+// dismissible Repository Error without forcing or pushing local tags.
+func TestQuickPushTargetUpToDateAndRejected(t *testing.T) {
+	repo := newGitRepo(t, "quickpush-notices")
+	repo.CommitFile("a.txt", "one\n", "initial commit")
+	bareDir := repo.AddBareRemote("origin")
+	repo.Git("tag", "local-only")
+
+	h := newTestApp(t)
+	openSyncRepo(t, h, repo.StoreRepo())
+
+	// Already up to date -> toast, no error.
+	if err := h.ui.ClickWith(ui.Alt, "Push"); err != nil {
+		t.Fatalf("Option+click Push (up to date): %v", err)
+	}
+	h.drain()
+	h.ui.Frame()
+
+	if err := h.app.session.ActionErr(); err != nil {
+		t.Fatalf("up-to-date quick push reported error: %v", err)
+	}
+	if !h.ui.HasText(git.UpToDatePush) {
+		t.Fatalf("up-to-date quick push toast missing; texts=%q", h.ui.Texts())
+	}
+	if bareHasRef(t, bareDir, "refs/tags/local-only") {
+		t.Fatal("quick push unexpectedly pushed local tag")
+	}
+
+	// Diverge remote and local -> non-fast-forward rejection, dismissible error,
+	// remote stays at peer's commit (no force push).
+	peerDir := filepath.Join(t.TempDir(), "peer")
+	runGitCommand(t, "", "clone", bareDir, peerDir)
+	runGitCommand(t, peerDir, "config", "user.name", "Peer")
+	runGitCommand(t, peerDir, "config", "user.email", "peer@branchline.invalid")
+	if err := os.WriteFile(filepath.Join(peerDir, "peer.txt"), []byte("peer\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitCommand(t, peerDir, "add", "--", "peer.txt")
+	runGitCommand(t, peerDir, "commit", "-m", "peer ahead")
+	runGitCommand(t, peerDir, "push", "origin", "main")
+	peerHead := strings.TrimSpace(runGitCommand(t, bareDir, "rev-parse", "refs/heads/main"))
+
+	repo.CommitFile("local.txt", "local\n", "local diverge")
+
+	if err := h.ui.ClickWith(ui.Alt, "Push"); err != nil {
+		t.Fatalf("Option+click Push (rejected): %v", err)
+	}
+	h.drain()
+	h.ui.Frame()
+
+	if err := h.app.session.ActionErr(); err == nil {
+		t.Fatal("non-fast-forward quick push succeeded, want rejection error")
+	}
+	if _, ok := h.ui.AccessByRole(ui.RoleStatus, "Repository Error"); !ok {
+		t.Fatalf("no Repository Error after rejected quick push; texts=%q", h.ui.Texts())
+	}
+	if got := strings.TrimSpace(runGitCommand(t, bareDir, "rev-parse", "refs/heads/main")); got != peerHead {
+		t.Fatalf("rejected quick push moved bare main to %q, want peer %q", got, peerHead)
+	}
+	if bareHasRef(t, bareDir, "refs/tags/local-only") {
+		t.Fatal("rejected quick push sent local tag")
+	}
+	if err := h.ui.Click("Dismiss Error"); err != nil {
+		t.Fatalf("click Dismiss Error: %v", err)
+	}
+	h.ui.Frame()
+	if _, ok := h.ui.AccessByRole(ui.RoleStatus, "Repository Error"); ok {
+		t.Fatal("Repository Error still visible after dismiss")
+	}
+}
+
+// TestConfiguredLinuxQuickPushTarget checks Quick Push on a configured Linux
+// SSH server (including Git 2.25): publishing an untracked branch with
+// --set-upstream and explicit refs/heads/main:refs/heads/main sets both
+// branch.main.remote and branch.main.merge, subsequent quick push with
+// push.default=matching updates only the upstream branch without moving a
+// sibling branch, and pushing with nothing new shows UpToDatePush.
+func TestConfiguredLinuxQuickPushTarget(t *testing.T) {
+	repo, srv := configuredLinuxRepo(t)
+	repoDir := repo.Path
+	bareDir := srv.InitBareRepo(t, "origin")
+	srv.RunGit(t, repoDir, "remote", "add", "origin", bareDir)
+
+	h := newTestApp(t, repo)
+	closeSync(t, h)
+	selectRepo(t, h, repo)
+	if err := h.app.session.LoadErr(); err != nil {
+		t.Fatalf("Linux SSH snapshot load failed: %v", err)
+	}
+	if !h.app.session.Loaded() {
+		t.Fatal("Linux SSH snapshot did not load")
+	}
+
+	// 1. Untracked main: Quick Push sets upstream with explicit refspec.
+	firstHead := srv.RunGit(t, repoDir, "rev-parse", "HEAD")
+	if err := h.ui.ClickWith(ui.Alt, "Push"); err != nil {
+		t.Fatalf("Option+click Push (initial publish): %v", err)
+	}
+	h.drain()
+	if err := h.app.session.ActionErr(); err != nil {
+		t.Fatalf("initial Linux quick push failed: %v", err)
+	}
+	if got := srv.RunGit(t, bareDir, "rev-parse", "refs/heads/main"); got != firstHead {
+		t.Fatalf("bare refs/heads/main = %q, want %q", got, firstHead)
+	}
+	if got := srv.RunGit(t, repoDir, "config", "branch.main.remote"); got != "origin" {
+		t.Fatalf("server branch.main.remote = %q, want origin", got)
+	}
+	if got := srv.RunGit(t, repoDir, "config", "branch.main.merge"); got != "refs/heads/main" {
+		t.Fatalf("server branch.main.merge = %q, want refs/heads/main", got)
+	}
+	if got := srv.RunGit(t, repoDir, "rev-parse", "--abbrev-ref", "main@{upstream}"); got != "origin/main" {
+		t.Fatalf("server main@{upstream} = %q, want origin/main", got)
+	}
+
+	// 2. Tracked main under push.default=matching: sibling side must not move.
+	srv.RunGit(t, repoDir, "config", "push.default", "matching")
+	srv.RunGit(t, repoDir, "branch", "side")
+	srv.RunGit(t, repoDir, "push", "origin", "side:refs/heads/side")
+	sideOnServer := srv.RunGit(t, bareDir, "rev-parse", "refs/heads/side")
+	srv.RunGit(t, repoDir, "checkout", "side")
+	srv.WriteFile(t, repoDir, "side.txt", []byte("unpublished work\n"))
+	srv.RunGit(t, repoDir, "add", "--", "side.txt")
+	srv.RunGit(t, repoDir, "commit", "-m", "unpublished work")
+	srv.RunGit(t, repoDir, "checkout", "main")
+	srv.WriteFile(t, repoDir, "m.txt", []byte("main work\n"))
+	srv.RunGit(t, repoDir, "add", "--", "m.txt")
+	srv.RunGit(t, repoDir, "commit", "-m", "main work")
+	secondHead := srv.RunGit(t, repoDir, "rev-parse", "HEAD")
+
+	h.app.session.Reload()
+	h.drain()
+	if err := h.ui.ClickWith(ui.Alt, "Push"); err != nil {
+		t.Fatalf("Option+click Push (matching): %v", err)
+	}
+	h.drain()
+	if err := h.app.session.ActionErr(); err != nil {
+		t.Fatalf("tracked Linux quick push failed: %v", err)
+	}
+	if got := srv.RunGit(t, bareDir, "rev-parse", "refs/heads/main"); got != secondHead {
+		t.Fatalf("bare refs/heads/main = %q, want %q", got, secondHead)
+	}
+	if got := srv.RunGit(t, bareDir, "rev-parse", "refs/heads/side"); got != sideOnServer {
+		t.Fatalf("Linux quick push moved remote side to %q, want unchanged %q", got, sideOnServer)
+	}
+
+	// 3. Up-to-date Quick Push shows UpToDatePush toast without error.
+	if err := h.ui.ClickWith(ui.Alt, "Push"); err != nil {
+		t.Fatalf("Option+click Push (up to date): %v", err)
+	}
+	h.drain()
+	h.ui.Frame()
+	if err := h.app.session.ActionErr(); err != nil {
+		t.Fatalf("up-to-date Linux quick push failed: %v", err)
+	}
+	if !h.ui.HasText(git.UpToDatePush) {
+		t.Fatalf("up-to-date Linux quick push toast missing; texts=%q", h.ui.Texts())
 	}
 }
