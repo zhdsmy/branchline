@@ -37,16 +37,58 @@ func (r *Repo) RemoveBranches(list []RemoveBranchOptions) error {
 	return errors.Join(errs...)
 }
 
+// deleteOnRemote deletes refs from one remote in a single push. A ref the
+// remote no longer has is not an error: it is already gone. git refuses
+// the whole push for one such ref, so the others then go one by one.
+// withDashdash puts the remote and the refs behind "--" when one starts
+// with "-": the tag references never can, but the remote name is read from
+// the repository's configuration, and without the separator such a name
+// would be parsed as the push's own options.
+func (r *Repo) deleteOnRemote(remote string, refs []string) error {
+	if len(refs) == 0 {
+		return nil
+	}
+	args := withDashdash([]string{"push", "--delete"}, append([]string{remote}, refs...)...)
+	_, err := r.run(slow, args...)
+	if err == nil || !onlyMissingRefs(err) {
+		return err
+	}
+	if len(refs) == 1 {
+		return nil
+	}
+	var errs []error
+	for _, ref := range refs {
+		if _, err := r.run(slow, withDashdash([]string{"push", "--delete"}, remote, ref)...); err != nil && !onlyMissingRefs(err) {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// onlyMissingRefs reports whether every ref a push rejected was missing
+// on the remote.
+func onlyMissingRefs(err error) bool {
+	msg := err.Error()
+	if !strings.Contains(msg, "remote ref does not exist") {
+		return false
+	}
+	for _, line := range strings.Split(msg, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "error:") && !strings.Contains(line, "remote ref does not exist") && !strings.Contains(line, "failed to push some refs") {
+			return false
+		}
+	}
+	return true
+}
+
 // DeleteTags deletes several tags here and, for each of remotes, from
-// that remote: every tag that remote still has goes out with the exact
-// lease ls-remote just answered, so a tag someone else moved on the
-// server keeps its new value. A remote without some of the tags skips
-// them.
+// that remote in one push. A remote without some of the tags skips them.
 func (r *Repo) DeleteTags(names, remotes []string) error {
-	var tags []string
+	var tags, refs []string
 	for _, name := range names {
 		if name = strings.TrimSpace(name); name != "" {
 			tags = append(tags, name)
+			refs = append(refs, "refs/tags/"+name)
 		}
 	}
 	if len(tags) == 0 {
@@ -60,18 +102,8 @@ func (r *Repo) DeleteTags(names, remotes []string) error {
 		if remote = strings.TrimSpace(remote); remote == "" {
 			continue
 		}
-		for _, name := range tags {
-			oid, exists, err := r.RemoteTagOID(remote, name)
-			if err != nil {
-				failed = append(failed, remote+": "+err.Error())
-				continue
-			}
-			if !exists {
-				continue
-			}
-			if err := r.SafeDeleteRemoteTag(remote, name, oid, nil); err != nil {
-				failed = append(failed, remote+": "+err.Error())
-			}
+		if err := r.deleteOnRemote(remote, refs); err != nil {
+			failed = append(failed, remote+": "+err.Error())
 		}
 	}
 	if len(failed) > 0 {

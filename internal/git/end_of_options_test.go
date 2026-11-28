@@ -26,6 +26,20 @@ func markerScript(t *testing.T, path, scriptPath string) {
 	}
 }
 
+// markerScriptInPATH writes an executable script named name inside a fresh
+// temporary directory, prepends that directory to PATH for the duration of
+// the test, and returns name. Keeping the temporary directory's path out
+// of the reference name ensures git check-ref-format accepts the reference
+// even when TMPDIR contains path components git forbids in refs (such as a
+// dot-prefixed directory).
+func markerScriptInPATH(t *testing.T, marker, name string) string {
+	t.Helper()
+	binDir := t.TempDir()
+	markerScript(t, marker, filepath.Join(binDir, name))
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return name
+}
+
 func endOfOptionsRepo(t *testing.T) (dir, bare string) {
 	t.Helper()
 	dir = initRepo(t)
@@ -51,6 +65,36 @@ func TestEndOfOptionsDeleteTagsBatch(t *testing.T) {
 	}
 	if out := gitOut(t, dir, "tag", "--list"); strings.Contains(out, "--evil") {
 		t.Fatalf("tag survived the deletion: %q", out)
+	}
+}
+
+// TestEndOfOptionsDeleteTagsDashRemote covers the batch deletion of tags
+// from a remote whose name starts with "-": the deletion push must read
+// the name as the remote behind the separator, so the tag is deleted from
+// the server and the program the name smuggles never runs. The tag
+// references themselves cannot start with "-" — they carry their
+// refs/tags/ prefix — so the remote is the only positional argument this
+// path can hand to the push unprotected. git remote add refuses such a
+// name, so it is written into the configuration directly, as a careless or
+// hostile repository setup would.
+func TestEndOfOptionsDeleteTagsDashRemote(t *testing.T) {
+	dir, bare := endOfOptionsRepo(t)
+	marker := filepath.Join(t.TempDir(), "executed")
+	script := markerScriptInPATH(t, marker, "receive-pack.sh")
+	evil := "--receive-pack=" + script
+	gitRun(t, dir, "config", "remote."+evil+".url", bare)
+	gitRun(t, dir, "tag", "v1")
+	gitRun(t, dir, "push", "-q", bare, "refs/tags/v1:refs/tags/v1")
+
+	r := New(&LocalExecutor{Dir: dir})
+	if err := r.DeleteTags([]string{"v1"}, []string{evil}); err != nil {
+		t.Fatalf("DeleteTags: %v", err)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("the receive-pack script ran: %s exists", marker)
+	}
+	if out := gitOut(t, bare, "tag", "--list"); strings.Contains(out, "v1") {
+		t.Fatalf("tag survived the deletion on the remote: %q", out)
 	}
 }
 
