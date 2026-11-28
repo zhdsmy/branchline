@@ -2,6 +2,7 @@ package git
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os/exec"
 	"strconv"
@@ -56,10 +57,11 @@ type pgidWriter struct {
 	hold   []byte // bytes not passed on yet: a possible start of the marker
 	closed bool   // the marker line was lifted; the rest passes through
 	pg     int
+	ready  chan struct{} // closed the first time pg is set
 }
 
 func newPgidWriter() *pgidWriter {
-	return &pgidWriter{}
+	return &pgidWriter{ready: make(chan struct{})}
 }
 
 // chain aims the writer at out. The plumbing calls it once before the
@@ -129,6 +131,10 @@ func (w *pgidWriter) scanLocked() {
 		case i > 0 && i < len(rest) && rest[i] == '\n':
 			if pg, err := strconv.Atoi(string(rest[:i])); err == nil && pg > 0 {
 				w.pg = pg
+				if w.ready != nil {
+					close(w.ready)
+					w.ready = nil
+				}
 			}
 			w.closed = true
 			w.hold = h[len(pgidMarker)+i+1:]
@@ -173,6 +179,29 @@ func (w *pgidWriter) pgid() int {
 	return w.pg
 }
 
+// waitPgid blocks until the server named its process group or the bound
+// passes, and returns what is known then. The naming is written before the
+// command itself starts, so the wait is the difference between a fast
+// cancellation reaching the server's processes and one that only ends the
+// connection.
+func (w *pgidWriter) waitPgid(bound time.Duration) int {
+	w.mu.Lock()
+	if w.pg > 0 || w.ready == nil {
+		pg := w.pg
+		w.mu.Unlock()
+		return pg
+	}
+	ready := w.ready
+	w.mu.Unlock()
+	timer := time.NewTimer(bound)
+	defer timer.Stop()
+	select {
+	case <-ready:
+	case <-timer.C:
+	}
+	return w.pgid()
+}
+
 // cancelWait is how long a canceled command gets for its pipes before the
 // wait for them ends. While the connection is shared, the ssh client hands
 // its pipes to the master process, which keeps them open after the client
@@ -180,8 +209,28 @@ func (w *pgidWriter) pgid() int {
 // its children holding them the same way.
 const cancelWait = 3 * time.Second
 
-// remoteKillTimeout bounds the command that stops the server's processes.
+// pgidWait is how long a cancellation gives the server's naming of its
+// process group to arrive before it ends the connection anyway. The naming
+// is the first thing the server's shell writes, ahead of the command
+// itself, so anything but a connection that never got going answers well
+// inside the bound; ending the client before the naming arrived would drop
+// it with the connection and leave the command running on the server with
+// nobody left to end it.
+const pgidWait = cancelWait
+
+// remoteKillTimeout bounds one round trip of the command that stops the
+// server's processes.
 const remoteKillTimeout = 5 * time.Second
+
+// remoteKillAttempts is how often the stop is sent when the round trip
+// itself fails: one lost connection must not leave the server's processes
+// running with nobody to end them. A round trip that reaches the server
+// ends the retries whatever the kill answers — an answer of no such process
+// means the group is already gone.
+const remoteKillAttempts = 3
+
+// remoteKillSpacing is the pause between the attempts.
+const remoteKillSpacing = time.Second
 
 // stopRemoteGroup sends TERM to the process group pg on the server, the
 // one the command itself named in its marker line. The stop rides the same
@@ -192,9 +241,24 @@ func (s *SSHExecutor) stopRemoteGroup(pg int) {
 		return
 	}
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), remoteKillTimeout)
-		defer cancel()
-		_, _ = s.RunShell(ctx, remoteGroupKillScript(pg))
+		for attempt := 0; attempt < remoteKillAttempts; attempt++ {
+			if attempt > 0 {
+				time.Sleep(remoteKillSpacing)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), remoteKillTimeout)
+			_, err := s.RunShell(ctx, remoteGroupKillScript(pg))
+			cancel()
+			// Only a round trip that never reached the server is tried
+			// again: a kill the server answered either ended the group or
+			// found it gone.
+			if err == nil {
+				return
+			}
+			var ge *Error
+			if errors.As(err, &ge) && ge.ExitCode != 255 && ge.ExitCode != -1 {
+				return
+			}
+		}
 	}()
 }
 
@@ -205,22 +269,26 @@ func (s *SSHExecutor) stopRemoteGroup(pg int) {
 // would either overwrite it or never run.
 type configureCancel func(cmd *exec.Cmd)
 
-// configureSSHCancel makes canceling the ssh command stop the local ssh
-// (or its local process group when askpass configured one) at once and,
-// when the server already named its process group, that group too; the
-// wait for the pipes is bounded by cancelWait.
+// configureSSHCancel makes canceling the ssh command stop the server's
+// process group and the local ssh (or its local process group when askpass
+// configured one); the wait for the pipes is bounded by cancelWait. The
+// cancellation first gives the server's naming of its process group a
+// moment to arrive: the naming leads the command itself, so a cancellation
+// landing in between would otherwise end the connection while the command
+// keeps running on the server, its process group unknown and unreachable.
 func configureSSHCancel(cmd *exec.Cmd, ssh *SSHExecutor, pw *pgidWriter) {
 	prev := cmd.Cancel
 	cmd.WaitDelay = cancelWait
 	cmd.Cancel = func() error {
+		pg := pw.waitPgid(pgidWait)
+		if pg > 0 {
+			ssh.stopRemoteGroup(pg)
+		}
 		var err error
 		if prev != nil {
 			err = prev()
 		} else if cmd.Process != nil {
 			err = cmd.Process.Kill()
-		}
-		if pg := pw.pgid(); pg > 0 {
-			ssh.stopRemoteGroup(pg)
 		}
 		return err
 	}

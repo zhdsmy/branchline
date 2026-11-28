@@ -565,22 +565,42 @@ func TestTeardownInFlightReadSwitch(t *testing.T) {
 		}
 	}
 
-	// Empirical half: a git shim that delays log makes the read's child
-	// processes observable across a switch. They must still be there right
-	// after switching — nothing kills them — and gone once they run out.
+	// Empirical half: a git shim that holds log until the test releases it
+	// makes the read's child processes observable across a switch. They must
+	// still be there right after switching — nothing kills them — and gone
+	// once they run out. The shim waits on a file the test creates after the
+	// assertion rather than on a fixed delay: switching can take longer than
+	// any chosen delay on a loaded machine, and a child that finished on its
+	// own before the count would look exactly like a killed one. The poll
+	// loop still ends by itself half a minute in, so a failing test cannot
+	// leave the shims behind.
+	release := filepath.Join(t.TempDir(), "release-git-log")
 	slowLog := filepath.Join(t.TempDir(), "git-slow-log")
 	realGit, err := exec.LookPath("git")
 	if err != nil {
 		t.Fatalf("locate git: %v", err)
 	}
 	shim := "#!/bin/sh\n" +
+		"hold=\n" +
 		"for a in \"$@\"; do\n" +
-		"  if [ \"$a\" = log ]; then sleep 1; break; fi\n" +
+		"  if [ \"$a\" = log ]; then hold=yes; break; fi\n" +
 		"done\n" +
+		"if [ -n \"$hold\" ]; then\n" +
+		"  _w=0\n" +
+		"  while [ ! -e " + git.ShellQuote(release) + " ] && [ \"$_w\" -lt 30 ]; do\n" +
+		"    sleep 1\n" +
+		"    _w=$((_w + 1))\n" +
+		"  done\n" +
+		"fi\n" +
 		"exec " + git.ShellQuote(realGit) + " \"$@\"\n"
 	if err := os.WriteFile(slowLog, []byte(shim), 0o755); err != nil {
 		t.Fatalf("write git shim: %v", err)
 	}
+	t.Cleanup(func() {
+		// A failure before the release must not leave the shim's polls
+		// running for their half-minute bound.
+		_ = os.WriteFile(release, []byte("release\n"), 0o644)
+	})
 	if ex, ok := h.app.session.Repo().Exec.(*git.LocalExecutor); ok {
 		copy := *ex
 		copy.Git = slowLog
@@ -609,6 +629,11 @@ func TestTeardownInFlightReadSwitch(t *testing.T) {
 		t.Fatal("the old repository's git child processes are gone immediately after the switch — they WERE killed")
 	} else {
 		t.Logf("MEASURE c.in-flight children: %d git child process(es) of the old repository survive the switch", n)
+	}
+	// The shim proved its point; let the held reads finish so the drain and
+	// the measurements below see a settled app rather than polls.
+	if err := os.WriteFile(release, []byte("release\n"), 0o644); err != nil {
+		t.Fatalf("release the shim: %v", err)
 	}
 	h.drain()
 	final := measureStable(t, h, nil, "in-flight after the slowed load")
