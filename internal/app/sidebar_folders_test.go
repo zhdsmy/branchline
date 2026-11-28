@@ -49,23 +49,6 @@ func sidebarFolderFixture(t *testing.T, name string) *gitRepoFixture {
 	return repo
 }
 
-// sidebarRowKindName is the test-readable name of a row kind.
-func sidebarRowKindName(kind sidebarRowKind) string {
-	switch kind {
-	case sidebarRowFolder:
-		return "folder"
-	case sidebarRowBranch:
-		return "branch"
-	case sidebarRowRemoteBranch:
-		return "remotebranch"
-	case sidebarRowTag:
-		return "tag"
-	case sidebarRowSection:
-		return "section"
-	}
-	return fmt.Sprint(int(kind))
-}
-
 // sidebarRefRowSummary is the test view of one folder or reference row of
 // the sidebar's row table: its kind, the name it groups or shows by — the
 // folder path or the reference name — and its nesting depth.
