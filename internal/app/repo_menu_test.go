@@ -69,16 +69,17 @@ func rightClickRepoRow(t *testing.T, h *testHarness, name string) {
 }
 
 // The repository row's context menu is Open, Show in Finder, Open in
-// Terminal, Rename…, Copy Location, a separator and Remove from List, for
-// local and SSH repositories alike — except Show in Finder, which only a
-// local folder can serve and so disables on the SSH row.
+// Terminal, Open in Editor, Rename…, Copy Location, a separator and Remove
+// from List, for local and SSH repositories alike — except Show in Finder
+// and Open in Editor, which only a local folder can serve and so disable
+// on the SSH row.
 func TestRepoMenuItemsAndEnabledState(t *testing.T) {
 	local := newGitRepo(t, "menulocal")
 	local.CommitFile("a.txt", "a\n", "commit")
 
 	h := newTestApp(t, local.StoreRepo(), menuSSHRepo())
 
-	want := []string{"Open", "Show in Finder", "Open in Terminal", "Rename…", "Copy Location", "-", "Remove from List"}
+	want := []string{"Open", "Show in Finder", "Open in Terminal", "Open in Editor", "Rename…", "Copy Location", "-", "Remove from List"}
 
 	openSwitcherPopup(t, h)
 	rightClickRepoRow(t, h, "menulocal")
@@ -468,7 +469,7 @@ func TestRepoMenuShiftF10OpensMenu(t *testing.T) {
 	// row's open button — the only focusable element below with a context
 	// menu — and the menu key opens its menu.
 	openSwitcherPopup(t, h)
-	want := []string{"Open", "Show in Finder", "Open in Terminal", "Rename…", "Copy Location", "-", "Remove from List"}
+	want := []string{"Open", "Show in Finder", "Open in Terminal", "Open in Editor", "Rename…", "Copy Location", "-", "Remove from List"}
 	menu := []string(nil)
 	for range 12 {
 		h.ui.Key(0, ui.KeyTab)
