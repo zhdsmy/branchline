@@ -12,6 +12,10 @@ import (
 type Repo struct {
 	Exec   Executor
 	cmdLog *CommandLog
+	// ctx is the parent of every command's context, context.Background()
+	// until WithContext replaces it. Canceling it stops the commands the
+	// copy runs, never those of the Repo it was copied from.
+	ctx context.Context
 }
 
 // New returns the repository ex runs git in.
@@ -28,12 +32,36 @@ func (r *Repo) WithCommandLog(l *CommandLog) *Repo {
 	return &copy
 }
 
-// WithExecutor returns a new Repo backed by ex while preserving r's CommandLog.
+// WithExecutor returns a new Repo backed by ex while preserving r's
+// CommandLog and context.
 func (r *Repo) WithExecutor(ex Executor) *Repo {
 	if r == nil {
 		return New(ex)
 	}
-	return New(ex).WithCommandLog(r.cmdLog)
+	copy := *r
+	copy.Exec = ex
+	return &copy
+}
+
+// WithContext returns a shallow copy of r whose commands run under ctx:
+// each command's timeout is still added on top, and canceling ctx stops
+// the copy's commands in flight. A nil ctx resets the copy to
+// context.Background(). r itself is not affected.
+func (r *Repo) WithContext(ctx context.Context) *Repo {
+	if r == nil {
+		return nil
+	}
+	copy := *r
+	copy.ctx = ctx
+	return &copy
+}
+
+// baseCtx is the parent every command's timeout context derives from.
+func (r *Repo) baseCtx() context.Context {
+	if r == nil || r.ctx == nil {
+		return context.Background()
+	}
+	return r.ctx
 }
 
 // CommandLog returns the CommandLog bound to r, if any.
@@ -68,7 +96,9 @@ const emptyTree = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 
 const (
 	quick = 30 * time.Second
-	slow  = 10 * time.Minute // fetch, pull, push: the network
+	// fetch, pull, push: the network. Also file history and blame in large
+	// repositories, where git log -- path and git blame can take minutes.
+	slow = 10 * time.Minute
 )
 
 // Run runs a git command whose arguments come from a custom command.
@@ -85,13 +115,13 @@ func (r *Repo) run(timeout time.Duration, args ...string) ([]byte, error) {
 }
 
 func (r *Repo) runInput(timeout time.Duration, stdin []byte, args ...string) ([]byte, error) {
-	return r.runContext(context.Background(), timeout, stdin, args...)
+	return r.runContext(r.baseCtx(), timeout, stdin, args...)
 }
 
 // runPrepared keeps Git's prepared messages and supplies our sequence editor.
 // The policy is scoped to this invocation, including on an SSH server.
 func (r *Repo) runPrepared(stdin []byte, args ...string) ([]byte, error) {
-	return r.runContext(context.WithValue(context.Background(), preparedEditorsKey{}, true), slow, stdin, args...)
+	return r.runContext(context.WithValue(r.baseCtx(), preparedEditorsKey{}, true), slow, stdin, args...)
 }
 
 type preparedEditorsKey struct{}
