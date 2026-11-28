@@ -241,43 +241,41 @@ func (a *app) addRemoteDialog(c *ui.Context) {
 	if !st.addOpen {
 		return
 	}
-	ui.Modal(c.Key("remote-add-modal"), &st.addOpen, func() {
-		ui.Column(c.Key("remote-add-body")).Width(440).Padding(18, 18, 14, 18).Gap(10).Children(func() {
-			ui.Text(c, "Add Remote").FontSize(16).FontWeight(600).TextColor(p.text)
-			ui.Field(c, "Name:", func() {
-				in := ui.TextInput(c.Key("remote-add-name"), &st.addName).FillWidth().AutoFocus().Placeholder("Remote name").Label("Name")
-				if in.Changed() {
-					st.addNameChanged = true
-				}
-				if in.Submitted() && a.addRemoteCanSubmit() {
-					a.submitAddRemote()
-				}
-			})
-			ui.Field(c, "URL:", func() {
-				in := ui.TextInput(c.Key("remote-add-url"), &st.addURL).FillWidth().Placeholder("Remote URL").Label("URL")
-				if in.Changed() {
-					st.addURLChanged = true
-				}
-				if in.Submitted() && a.addRemoteCanSubmit() {
-					a.submitAddRemote()
-				}
-			})
-			if problem := a.addRemoteProblem(); problem != "" && (st.addNameChanged || st.addURLChanged) {
-				ui.Text(c, problem).FontSize(12).TextColor(p.danger)
+	_, cancelled, confirmed := dialogFrame(c, p, "remote-add", &st.addOpen, "Add Remote", 440, func() {
+		ui.Field(c, "Name:", func() {
+			in := ui.TextInput(c.Key("remote-add-name"), &st.addName).FillWidth().AutoFocus().Placeholder("Remote name").Label("Name")
+			if in.Changed() {
+				st.addNameChanged = true
 			}
-			ui.Checkbox(c, &st.addFetch, "Fetch after adding")
-			ui.Row(c.Key("remote-add-actions")).Gap(8).Justify(ui.End).Children(func() {
-				cancel := ui.Button(c.Key("remote-add-cancel"), "Cancel").Label("Cancel")
-				if cancel.Clicked() {
-					st.addOpen = false
-				}
-				add := ui.PrimaryButton(c.Key("remote-add-submit"), "Add Remote").Label("Add Remote").Disabled(!a.addRemoteCanSubmit())
-				if add.Clicked() {
-					a.submitAddRemote()
-				}
-			})
+			// Enter in either input submits through the input itself: a
+			// single-line field takes the key before the frame's window-level
+			// shortcut ever sees it, so exactly one of the two paths can fire.
+			if in.Submitted() && a.addRemoteCanSubmit() {
+				a.submitAddRemote()
+			}
 		})
-	})
+		ui.Field(c, "URL:", func() {
+			in := ui.TextInput(c.Key("remote-add-url"), &st.addURL).FillWidth().Placeholder("Remote URL").Label("URL")
+			if in.Changed() {
+				st.addURLChanged = true
+			}
+			if in.Submitted() && a.addRemoteCanSubmit() {
+				a.submitAddRemote()
+			}
+		})
+		if problem := a.addRemoteProblem(); problem != "" && (st.addNameChanged || st.addURLChanged) {
+			ui.Text(c, problem).FontSize(12).TextColor(p.danger)
+		}
+		ui.Checkbox(c, &st.addFetch, "Fetch after adding")
+	},
+		dialogAction{key: "remote-add-cancel", text: "Cancel", label: "Cancel"},
+		dialogAction{key: "remote-add-submit", text: "Add Remote", label: "Add Remote", disabled: !a.addRemoteCanSubmit()})
+	if cancelled {
+		st.addOpen = false
+	}
+	if confirmed {
+		a.submitAddRemote()
+	}
 }
 
 // submitAddRemote captures the dialog values on the UI thread, closes the
@@ -351,36 +349,31 @@ func (a *app) editRemoteDialog(c *ui.Context) {
 	if !st.editOpen {
 		return
 	}
-	ui.Modal(c.Key("remote-edit-modal"), &st.editOpen, func() {
-		ui.Column(c.Key("remote-edit-body")).Width(440).Padding(18, 18, 14, 18).Gap(10).Children(func() {
-			ui.Text(c, "Edit Remote").FontSize(16).FontWeight(600).TextColor(p.text)
-			ui.Field(c, "Name:", func() {
-				in := ui.TextInput(c.Key("remote-edit-name"), &st.editName).FillWidth().AutoFocus().Placeholder("Remote name").Label("Name")
-				if in.Submitted() && a.editRemoteCanSubmit() {
-					a.submitEditRemote()
-				}
-			})
-			ui.Field(c, "URL:", func() {
-				in := ui.TextInput(c.Key("remote-edit-url"), &st.editURL).FillWidth().Placeholder("Remote URL").Label("URL")
-				if in.Submitted() && a.editRemoteCanSubmit() {
-					a.submitEditRemote()
-				}
-			})
-			if problem := a.editRemoteProblem(); problem != "" && strings.TrimSpace(st.editName) != "" && strings.TrimSpace(st.editURL) != "" {
-				ui.Text(c, problem).FontSize(12).TextColor(p.danger)
+	_, cancelled, confirmed := dialogFrame(c, p, "remote-edit", &st.editOpen, "Edit Remote", 440, func() {
+		ui.Field(c, "Name:", func() {
+			in := ui.TextInput(c.Key("remote-edit-name"), &st.editName).FillWidth().AutoFocus().Placeholder("Remote name").Label("Name")
+			if in.Submitted() && a.editRemoteCanSubmit() {
+				a.submitEditRemote()
 			}
-			ui.Row(c.Key("remote-edit-actions")).Gap(8).Justify(ui.End).Children(func() {
-				cancel := ui.Button(c.Key("remote-edit-cancel"), "Cancel").Label("Cancel")
-				if cancel.Clicked() {
-					st.editOpen = false
-				}
-				save := ui.PrimaryButton(c.Key("remote-edit-save"), "Save").Label("Save").Disabled(!a.editRemoteCanSubmit())
-				if save.Clicked() {
-					a.submitEditRemote()
-				}
-			})
 		})
-	})
+		ui.Field(c, "URL:", func() {
+			in := ui.TextInput(c.Key("remote-edit-url"), &st.editURL).FillWidth().Placeholder("Remote URL").Label("URL")
+			if in.Submitted() && a.editRemoteCanSubmit() {
+				a.submitEditRemote()
+			}
+		})
+		if problem := a.editRemoteProblem(); problem != "" && strings.TrimSpace(st.editName) != "" && strings.TrimSpace(st.editURL) != "" {
+			ui.Text(c, problem).FontSize(12).TextColor(p.danger)
+		}
+	},
+		dialogAction{key: "remote-edit-cancel", text: "Cancel", label: "Cancel"},
+		dialogAction{key: "remote-edit-save", text: "Save", label: "Save", disabled: !a.editRemoteCanSubmit()})
+	if cancelled {
+		st.editOpen = false
+	}
+	if confirmed {
+		a.submitEditRemote()
+	}
 }
 
 // submitEditRemote captures the dialog values on the UI thread, closes the
@@ -429,30 +422,25 @@ func (a *app) deleteRemoteDialog(c *ui.Context) {
 	if !st.delOpen {
 		return
 	}
-	ui.Modal(c.Key("remote-delete-modal"), &st.delOpen, func() {
-		ui.Column(c.Key("remote-delete-body")).Width(460).Padding(18, 18, 14, 18).Gap(10).Children(func() {
-			ui.Text(c, "Delete Remote").FontSize(16).FontWeight(600).TextColor(p.text)
-			ui.Field(c, "Remote:", func() {
-				ui.Text(c, st.delTarget).Font("monospace").FontSize(12).TextColor(p.text)
-			})
-			if st.delExpectKnown {
-				ui.Field(c, "URL:", func() {
-					ui.Text(c, git.RedactText(st.delExpectURL)).Font("monospace").FontSize(12).TextColor(p.text).Wrap()
-				})
-			}
-			ui.Text(c, "Deleting this remote also deletes its remote-tracking branches. Local branches tracking them lose their upstream. The branches on the server are not touched.").FontSize(12).TextColor(p.muted).Wrap()
-			ui.Row(c.Key("remote-delete-actions")).Gap(8).Justify(ui.End).Children(func() {
-				cancel := ui.Button(c.Key("remote-delete-cancel"), "Cancel").Label("Cancel")
-				if cancel.Clicked() {
-					st.delOpen = false
-				}
-				confirm := ui.Button(c.Key("remote-delete-confirm"), "Delete").Label("Confirm Delete Remote").Disabled(a.session.Busy())
-				if confirm.Clicked() {
-					a.submitDeleteRemote()
-				}
-			})
+	_, cancelled, confirmed := dialogFrame(c, p, "remote-delete", &st.delOpen, "Delete Remote", 460, func() {
+		ui.Field(c, "Remote:", func() {
+			ui.Text(c, st.delTarget).Font("monospace").FontSize(12).TextColor(p.text)
 		})
-	})
+		if st.delExpectKnown {
+			ui.Field(c, "URL:", func() {
+				ui.Text(c, git.RedactText(st.delExpectURL)).Font("monospace").FontSize(12).TextColor(p.text).Wrap()
+			})
+		}
+		ui.Text(c, "Deleting this remote also deletes its remote-tracking branches. Local branches tracking them lose their upstream. The branches on the server are not touched.").FontSize(12).TextColor(p.muted).Wrap()
+	},
+		dialogAction{key: "remote-delete-cancel", text: "Cancel", label: "Cancel"},
+		dialogAction{key: "remote-delete-confirm", text: "Delete", label: "Confirm Delete Remote", disabled: a.session.Busy(), destructive: true})
+	if cancelled {
+		st.delOpen = false
+	}
+	if confirmed {
+		a.submitDeleteRemote()
+	}
 }
 
 // submitDeleteRemote deletes the dialog's target through the session's write

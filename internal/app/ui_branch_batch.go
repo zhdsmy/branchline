@@ -216,43 +216,38 @@ func (a *app) batchBranchDialogs(c *ui.Context) {
 		}
 	}
 
-	if ui.Modal(c.Key("batch-delete-modal"), &st.batchDelOpen, func() {
-		ui.Column(c.Key("batch-delete-body")).Width(460).Padding(18, 18, 14, 18).Gap(10).Children(func() {
-			ui.Text(c, "Delete Branches").FontSize(17).FontWeight(650).TextColor(p.text)
-			ui.Column(c.Key("batch-delete-rows")).FillWidth().Gap(6).Children(func() {
-				for i := range st.batchDelRows {
-					row := &st.batchDelRows[i]
-					ui.Row(c.Key("batch-del-row-" + row.name)).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
-						ui.Checkbox(c.Key("batch-del-"+row.name), &row.checked, row.name)
-						if row.upstream != "" {
-							ui.Text(c, "→ "+row.upstream).FontSize(12).TextColor(p.muted).SingleLine().Ellipsis("…").Shrink(1).MinWidth(0)
-						}
-					})
-				}
-			})
-			if anyUpstream {
-				ui.Checkbox(c.Key("batch-del-remote"), &st.batchDelAlsoRemote, "Also delete corresponding remote branches")
+	canSubmit := batchDeleteBranchCount(st.batchDelRows) > 0 && !a.session.Busy() &&
+		a.session.Snapshot().Status.State == ""
+	dismissed, cancelled, confirmed := dialogFrame(c, p, "batch-delete", &st.batchDelOpen, "Delete Branches", 460, func() {
+		ui.Column(c.Key("batch-delete-rows")).FillWidth().Gap(6).Children(func() {
+			for i := range st.batchDelRows {
+				row := &st.batchDelRows[i]
+				ui.Row(c.Key("batch-del-row-" + row.name)).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
+					ui.Checkbox(c.Key("batch-del-"+row.name), &row.checked, row.name)
+					if row.upstream != "" {
+						ui.Text(c, "→ "+row.upstream).FontSize(12).TextColor(p.muted).SingleLine().Ellipsis("…").Shrink(1).MinWidth(0)
+					}
+				})
 			}
-			msg := "Commits only these branches have are lost from the log."
-			if st.batchDelAlsoRemote {
-				msg += " The remote branches are deleted on the server for everyone."
-			}
-			ui.Text(c, msg).FontSize(12).TextColor(p.muted)
-			ui.Row(c.Key("batch-delete-actions")).Gap(8).Justify(ui.End).Children(func() {
-				if ui.Button(c.Key("batch-del-cancel"), "Cancel").Label("Cancel").Clicked() {
-					a.closeBatchDeleteDialog()
-				}
-				canSubmit := batchDeleteBranchCount(st.batchDelRows) > 0 && !a.session.Busy() &&
-					a.session.Snapshot().Status.State == ""
-				if ui.PrimaryButton(c.Key("batch-del-confirm"), "Delete").
-					Label("Confirm Delete Branches").
-					Disabled(!canSubmit).
-					Clicked() {
-					a.submitBatchDeleteBranches()
-				}
-			})
 		})
-	}).Dismissed() {
+		if anyUpstream {
+			ui.Checkbox(c.Key("batch-del-remote"), &st.batchDelAlsoRemote, "Also delete corresponding remote branches")
+		}
+		msg := "Commits only these branches have are lost from the log."
+		if st.batchDelAlsoRemote {
+			msg += " The remote branches are deleted on the server for everyone."
+		}
+		ui.Text(c, msg).FontSize(12).TextColor(p.muted)
+	},
+		dialogAction{key: "batch-del-cancel", text: "Cancel", label: "Cancel"},
+		dialogAction{key: "batch-del-confirm", text: "Delete", label: "Confirm Delete Branches", disabled: !canSubmit, destructive: true})
+	if cancelled {
+		a.closeBatchDeleteDialog()
+	}
+	if confirmed {
+		a.submitBatchDeleteBranches()
+	}
+	if dismissed {
 		a.closeBatchDeleteDialog()
 	}
 }
