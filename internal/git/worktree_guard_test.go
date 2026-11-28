@@ -1,9 +1,11 @@
 package git
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -391,5 +393,79 @@ func TestWorktreeGuardDiscardRestoresMovedSubmoduleSSH(t *testing.T) {
 	head := strings.TrimSpace(gitOut(t, sub, "rev-parse", "HEAD"))
 	if head != indexed {
 		t.Fatalf("the submodule HEAD is %s, want the index's %s", head, indexed)
+	}
+}
+
+// othersScanCounter counts the entries and bytes the obstruction check
+// reads back from ls-files --others, nothing else.
+type othersScanCounter struct {
+	inner   Executor
+	entries int
+	bytes   int
+}
+
+func (c *othersScanCounter) Describe() string { return c.inner.Describe() }
+
+func (c *othersScanCounter) Run(ctx context.Context, stdin []byte, args ...string) ([]byte, error) {
+	out, err := c.inner.Run(ctx, stdin, args...)
+	scanning := false
+	for i, a := range args {
+		if a == "ls-files" && i+1 < len(args) && args[i+1] == "--others" {
+			scanning = true
+		}
+	}
+	if scanning {
+		c.bytes += len(out)
+		for _, entry := range strings.Split(string(out), "\x00") {
+			if entry != "" {
+				c.entries++
+			}
+		}
+	}
+	return out, err
+}
+
+// The check's reads must not grow with untracked or ignored files that
+// cannot obstruct anything: a directory of two thousand ignored files next
+// to the target's parent leaves the check a handful of entries, while the
+// obstruction at the target's own place is still found. Without the
+// collapsed scan of the parent directories every one of the two thousand
+// files would be listed, at 2001 entries instead of a few.
+func TestWorktreeGuardCheckIgnoresUnrelatedIgnoredFiles(t *testing.T) {
+	dir := initRepo(t)
+	writeFileDeep(t, dir, "web/src/a.txt", "base\n")
+	writeFile(t, dir, ".gitignore", "node_modules\n")
+	gitRun(t, dir, "add", ".")
+	gitRun(t, dir, "commit", "-qm", "initial")
+	for i := 0; i < 2000; i++ {
+		writeFileDeep(t, dir, filepath.Join("web/node_modules", "pkg", "f"+strconv.Itoa(i)+".js"), "ignored\n")
+	}
+	// The obstruction itself: a directory of untracked work at the file's place.
+	if err := os.Remove(filepath.Join(dir, "web/src/a.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "web/src/a.txt"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, dir, "web/src/a.txt/inner.txt", "untracked work\n")
+
+	counter := &othersScanCounter{inner: &LocalExecutor{Dir: dir, NoGlobalConfig: true}}
+	r := New(counter)
+	err := r.Discard(FileChange{Path: "web/src/a.txt", Status: 'D'})
+	if err == nil {
+		t.Fatal("discard reported success although web/src/a.txt holds a directory of untracked files")
+	}
+	if !strings.Contains(err.Error(), "web/src/a.txt") {
+		t.Fatalf("the error does not name the obstructed path: %v", err)
+	}
+	if counter.entries > 8 {
+		t.Fatalf("the obstruction check read %d entries (%d bytes) from ls-files --others, want at most a few: the scan is following unrelated ignored files", counter.entries, counter.bytes)
+	}
+	if counter.bytes > 2000 {
+		t.Fatalf("the obstruction check read %d bytes, want a few hundred at most", counter.bytes)
+	}
+	got, ok := readFileOr(t, filepath.Join(dir, "web/src/a.txt", "inner.txt"))
+	if !ok || got != "untracked work\n" {
+		t.Fatalf("the untracked content was destroyed: content %q, read ok %v", got, ok)
 	}
 }

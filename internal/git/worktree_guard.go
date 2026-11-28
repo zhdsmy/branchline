@@ -30,15 +30,24 @@ func (r *Repo) checkWorktreeObstructions(paths []string) error {
 	if len(paths) == 0 {
 		return nil
 	}
-	// The pathspecs are the targets themselves — for the files inside a
-	// directory at a target's place — plus every parent directory, whose
-	// exact name in the output means an untracked file stands there.
+	// The scans are split in two because the two questions need different
+	// listings. The targets are scanned file by file: a directory at a
+	// target's place must show the files inside it, and --directory never
+	// descends there at all (measured: with the target's place a directory
+	// of untracked files, the collapsed listing is empty). The parent
+	// directories are scanned with --directory --no-empty-directory: an
+	// untracked or ignored file standing at a parent's place still comes
+	// back under its exact name, but an unrelated directory of thousands
+	// of ignored files next to the target collapses to a single line
+	// instead of flooding the output — and the SSH connection it travels
+	// over — with content that cannot block anything.
+	targetSpecs := []string{}
+	ancSpecs := []string{}
 	specs := map[string]bool{}
-	ordered := []string{}
-	add := func(s string) {
+	addAnc := func(s string) {
 		if s != "" && !specs[s] {
 			specs[s] = true
-			ordered = append(ordered, s)
+			ancSpecs = append(ancSpecs, s)
 		}
 	}
 	targets := []string{}
@@ -47,31 +56,43 @@ func (r *Repo) checkWorktreeObstructions(paths []string) error {
 		if p == "" {
 			continue
 		}
-		add(p)
-		for anc := parentDir(p); anc != ""; anc = parentDir(anc) {
-			add(anc)
-		}
 		if !seen[p] {
 			seen[p] = true
 			targets = append(targets, p)
+			targetSpecs = append(targetSpecs, p)
+		}
+		for anc := parentDir(p); anc != ""; anc = parentDir(anc) {
+			addAnc(anc)
 		}
 	}
-	others, err := r.worktreeOthers(ordered)
+	under, err := r.worktreeOthers(targetSpecs, false)
 	if err != nil {
 		return err
 	}
-	if len(others) == 0 {
-		return nil
+	blockers, err := r.worktreeOthers(ancSpecs, true)
+	if err != nil {
+		return err
 	}
-	sort.Strings(others)
 	loose := map[string]bool{}
-	for _, o := range others {
-		loose[o] = true
+	for _, o := range blockers {
+		if !strings.HasSuffix(o, "/") {
+			loose[o] = true
+		}
 	}
 	var problems []string
+	obstructed := map[string]bool{}
+	if len(under) > 0 {
+		sort.Strings(under)
+		for _, p := range targets {
+			if hasPathBelow(under, p+"/") {
+				problems = append(problems, "the place of "+p+" in the working tree is a directory holding untracked or ignored files")
+				obstructed[p] = true
+			}
+		}
+	}
 	for _, p := range targets {
-		if hasPathBelow(others, p+"/") {
-			problems = append(problems, "the place of "+p+" in the working tree is a directory holding untracked or ignored files")
+		if obstructed[p] {
+			// Already reported at its own place.
 			continue
 		}
 		for anc := parentDir(p); anc != ""; anc = parentDir(anc) {
@@ -110,8 +131,12 @@ func hasPathBelow(sorted []string, dir string) bool {
 // exclusion options lists every file the index does not hold, the files
 // the ignore rules exclude included — exactly the content a working-tree
 // write must never destroy. A pathspec matching a file names the file
-// itself; one matching a directory names the files inside it.
-func (r *Repo) worktreeOthers(pathspecs []string) ([]string, error) {
+// itself; one matching a directory names the files inside it. collapse
+// adds --directory --no-empty-directory, folding a directory of nothing
+// but untracked files into one line: right for scanning parent
+// directories, where a file's exact name still surfaces but unrelated
+// trees of ignored files stay out of the output.
+func (r *Repo) worktreeOthers(pathspecs []string, collapse bool) ([]string, error) {
 	var all []string
 	var batch []string
 	size := 0
@@ -119,7 +144,12 @@ func (r *Repo) worktreeOthers(pathspecs []string) ([]string, error) {
 		if len(batch) == 0 {
 			return nil
 		}
-		args := append([]string{"--literal-pathspecs", "ls-files", "--others", "-z", "--"}, batch...)
+		args := []string{"--literal-pathspecs", "ls-files", "--others"}
+		if collapse {
+			args = append(args, "--directory", "--no-empty-directory")
+		}
+		args = append(args, "-z", "--")
+		args = append(args, batch...)
 		out, err := r.run(quick, args...)
 		if err != nil {
 			return err
