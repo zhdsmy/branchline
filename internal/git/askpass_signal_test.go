@@ -29,6 +29,7 @@ func askPassScriptForTest(t *testing.T, timeout int) string {
 type askPassExchange struct {
 	cmd    *exec.Cmd
 	pipe   string
+	script string
 	stdout *strings.Builder
 	errCh  chan error
 }
@@ -37,7 +38,8 @@ type askPassExchange struct {
 // standard error, the way the plumbing of a real command does.
 func startAskPassScript(t *testing.T, timeout int) *askPassExchange {
 	t.Helper()
-	cmd := exec.Command(askPassScriptForTest(t, timeout), "Password for 'https://example.com': ")
+	script := askPassScriptForTest(t, timeout)
+	cmd := exec.Command(script, "Password for 'https://example.com': ")
 	errPipe, err := cmd.StderrPipe()
 	if err != nil {
 		t.Fatal(err)
@@ -49,7 +51,7 @@ func startAskPassScript(t *testing.T, timeout int) *askPassExchange {
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	ex := &askPassExchange{cmd: cmd, stdout: &strings.Builder{}, errCh: make(chan error, 1)}
+	ex := &askPassExchange{cmd: cmd, script: script, stdout: &strings.Builder{}, errCh: make(chan error, 1)}
 	pipeCh := make(chan string, 1)
 	go func() {
 		sc := bufio.NewScanner(errPipe)
@@ -184,5 +186,50 @@ func TestAskPassSignalWatchdogStillEnds(t *testing.T) {
 	}
 	if got := ex.stdout.String(); got != "" {
 		t.Fatalf("an unanswered script printed %q", got)
+	}
+}
+
+// The read is only tried again while the pipe exists. A pipe removed while
+// the script waits — a temporary-folder cleanup is what does this in
+// practice — must end the script within a couple of seconds: the keeper's
+// round notices the pipe is gone, its exit closes the last write end, and
+// the end of file wakes the read, which sees the pipe is gone and leaves.
+// Without the check the script spins on a path that no longer exists, and
+// nothing ever ends it.
+func TestAskPassSignalFifoRemoved(t *testing.T) {
+	ex := startAskPassScript(t, askScriptTimeout)
+	// The script is waiting inside a blocked open or read of its pipe when
+	// the deletion lands; it cannot notice by itself — an unlink does not
+	// wake either — so the wait would outlive the bound without the keeper.
+	if err := os.Remove(ex.pipe); err != nil {
+		t.Fatalf("remove the pipe: %v", err)
+	}
+	started := time.Now()
+	err := ex.finished(t, 5*time.Second)
+	elapsed := time.Since(started)
+	if err == nil {
+		t.Fatal("the script survived the removal of its pipe")
+	}
+	t.Logf("script exited %v, %s after the pipe was removed", err, elapsed)
+	// Nothing of the script's tree may be left: the keeper, which holds the
+	// pipe's write end, is the one process that could outlive the script.
+	// It is a fork of the script, so it carries the script's path in its
+	// command line; the script itself is gone at this point, so any match
+	// left is a leak.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		leftover := 0
+		for _, e := range psEntries(t) {
+			if strings.Contains(e[2], ex.script) {
+				leftover++
+			}
+		}
+		if leftover == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d process(es) of the askpass script outlived its end", leftover)
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 }

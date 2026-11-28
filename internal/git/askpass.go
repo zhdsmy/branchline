@@ -59,43 +59,59 @@ const askMarker = "\x1eBRANCHLINE-ASKPASS "
 // It makes a named pipe, says on standard error where it waits and what
 // it asks, then reads the answer from the pipe. The answer goes through
 // the pipe only and is never written to a file. A line starting with +
-// is the answer; anything else cancels. A watchdog ends the script when
-// no answer arrives within @TIMEOUT@ seconds, so that a crashed app or a
-// broken connection cannot leave it waiting forever. The watchdog closes
-// the pipes it inherits, so that it cannot keep the command waiting, and
-// it leaves by itself once the pipe is gone: nothing is left behind.
+// is the answer; anything else cancels.
 //
-// The read is tried again when it fails with nothing read: opening a
-// named pipe for reading blocks until a writer comes, and POSIX has the
-// blocked open fail with EINTR when a signal without a restarting
-// handler arrives — with the whole login lost to a stray signal when the
-// script gives up. SIGCHLD is such a signal on a /bin/sh of the bash
-// line, which reaps with a handler that does not restart, and shells of
-// the dash line interrupt on further signals they do not ignore. The
-// retry costs nothing: an interrupted or emptied attempt blocks in the
-// open of the next one until a writer comes, and INT, TERM and HUP keep
-// their traps, so the watchdog's deadline is unchanged.
+// The keeper holds the pipe's write end open and watches it. Holding the
+// write end is what makes every end of the wait observable: the read never
+// sees an end of file while a writer stays open, so a read that returns
+// empty-handed — an interrupted one — is free to try again, and when the
+// pipe disappears the keeper's exit closes the last write end, the end of
+// file wakes the read within the keeper's one-second round, and the script
+// leaves instead of spinning on a path that no longer exists. The round
+// trips nothing through signals: opening a named pipe for reading blocks
+// until a writer comes, an unlink does not wake the blocked open, and
+// POSIX has the blocked open fail with EINTR when a signal without a
+// restarting handler arrives — with the whole login lost to a stray
+// signal when the script gives up. SIGCHLD is such a signal on a /bin/sh
+// of the bash line, which reaps with a handler that does not restart, and
+// shells of the dash line interrupt on further signals they do not
+// ignore. INT, TERM and HUP keep their traps.
+//
+// The keeper ends the script when no answer arrives within @TIMEOUT@
+// seconds, so that a crashed app or a broken connection cannot leave it
+// waiting forever: it removes the pipe and exits, and the end of file
+// does the rest — no signal, so no number of a recycled process is ever
+// signalled by mistake. It closes the pipes it inherits, so that it
+// cannot keep the command waiting, and its own exit is the script's doing
+// or the pipe's end: nothing is left behind.
 const askScript = `#!/bin/sh
 # Branchline askpass
 r=$(mktemp -u "${TMPDIR:-/tmp}/branchline-ap.XXXXXXXX") || exit 1
 r=$(printf '%s' "$r" | tr -s /)
 mkfifo -m 600 "$r" || exit 1
-trap 'rm -f "$r"' EXIT
+trap 'kill "$k" 2>/dev/null; rm -f "$r"' EXIT
 trap 'exit 1' INT TERM HUP
 (
+  exec 9>"$r" || exit 0
   w=0
   while [ "$w" -lt @TIMEOUT@ ]; do
     sleep 1
     [ -e "$r" ] || exit 0
     w=$((w + 1))
   done
-  [ -e "$r" ] && kill -TERM $$ 2>/dev/null
+  rm -f "$r" 2>/dev/null
   exit 0
-) >&- 2>&- &
+) <&- >&- 2>&- &
+k=$!
 p=$(printf '%s' "$1" | tr '\n\r\036' '   ')
 printf '\036BRANCHLINE-ASKPASS @WHERE@ %s %s\n' "$r" "$p" >&2
 a=
-until IFS= read -r a < "$r"; do a=; done
+while [ -e "$r" ]; do
+  if IFS= read -r a < "$r"; then
+    break
+  fi
+  a=
+done
 case $a in
 +*) printf '%s\n' "${a#+}" ;;
 *) exit 1 ;;
