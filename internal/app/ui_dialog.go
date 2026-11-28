@@ -6,11 +6,14 @@ import (
 
 // dialogAction is one footer button: its element key, visible text and
 // accessible label. destructive marks a primary button that discards work —
-// a reset, drop or abort — and is meaningless on the cancel button.
+// a reset, drop or abort — and is meaningless on the cancel button. onClick
+// belongs to the extra buttons alone: it is what clicking one runs, and the
+// frame reads it of no other button.
 type dialogAction struct {
 	key, text, label    string
 	disabled, autoFocus bool
 	destructive         bool
+	onClick             func()
 }
 
 // dialogFrame shows a dialog in the app's single look while *open is true:
@@ -43,17 +46,29 @@ type dialogAction struct {
 // primary is silently ignored, for the same reason: a focused button takes
 // Enter before every shortcut, and the focus ring of a destructive dialog
 // belongs on cancel, the first focusable control of its footer.
-func dialogFrame(c *ui.Context, p palette, key string, open *bool, title string, width float32, body func(), cancel, primary dialogAction) (dismissed, cancelled, confirmed bool) {
+//
+// A primary action with no key is a dialog with one button, the cancel's:
+// the footer draws it alone, the frame autofocuses it itself so Enter and
+// Space press it — Enter is nobody else's in such a dialog, the frame
+// registers no shortcut and confirms nothing — and a disabled one still
+// locks Escape and the click outside.
+//
+// Extra actions sit between cancel and the primary button in the order they
+// are given, drawn as plain buttons, each answering its click by calling
+// its onClick. They are no shortcut of the dialog's: Enter never presses
+// one, and destructive and autoFocus mean nothing on them.
+func dialogFrame(c *ui.Context, p palette, key string, open *bool, title string, width float32, body func(), cancel, primary dialogAction, extra ...dialogAction) (dismissed, cancelled, confirmed bool) {
 	if !*open {
 		return false, false, false
 	}
+	single := primary.key == ""
 	dismissed = ui.Modal(c.Key(key), open, func() {
 		ui.Column(c.Key(key+"-body")).Width(width).Padding(18, 18, 14, 18).Gap(10).Children(func() {
 			ui.Text(c, title).FontSize(17).FontWeight(650).TextColor(p.text)
 			if body != nil {
 				body()
 			}
-			if !primary.destructive {
+			if !primary.destructive && !single {
 				// Register even while the primary button is disabled: the
 				// registration alone keeps Enter out of a focused toggle,
 				// and the consumption here, not the registration, decides
@@ -64,8 +79,22 @@ func dialogFrame(c *ui.Context, p palette, key string, open *bool, title string,
 			}
 			ui.Row(c.Key(key + "-actions")).Gap(8).Justify(ui.End).Children(func() {
 				cancelEl := ui.Button(c.Key(cancel.key), cancel.text).Label(cancel.label).Disabled(cancel.disabled)
+				if single {
+					// The one button of the dialog is where its focus ring
+					// belongs: with no primary button to hold it, cancel takes
+					// it so Enter and Space press the button itself.
+					cancelEl = cancelEl.AutoFocus()
+				}
 				if cancelEl.Clicked() {
 					cancelled = true
+				}
+				for _, x := range extra {
+					if ui.Button(c.Key(x.key), x.text).Label(x.label).Disabled(x.disabled).Clicked() && !x.disabled && x.onClick != nil {
+						x.onClick()
+					}
+				}
+				if single {
+					return
 				}
 				buildPrimary := func() ui.Element {
 					primaryEl := ui.PrimaryButton(c.Key(primary.key), primary.text).Label(primary.label).Disabled(primary.disabled)

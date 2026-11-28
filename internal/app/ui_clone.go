@@ -142,77 +142,97 @@ func (a *app) cloneModal(c *ui.Context) {
 		return
 	}
 	p := a.pal
-	ui.Modal(c.Key("clone-modal"), &st.open, func() {
-		ui.Column(c).Width(520).Padding(20).Gap(14).Children(func() {
-			ui.Text(c, "Clone Repository").FontSize(17).FontWeight(600)
-			if ui.Segmented(c.Key("clone-location"), &st.location, "This Mac", "SSH Server").Label("Clone Location").Disabled(st.busy).Changed() {
-				// The error of one location's failed clone does not describe
-				// the form of the other.
-				st.err = ""
+	// Enter in any of the single-line inputs submits here, never twice: a
+	// focused single-line input takes the key before every window shortcut,
+	// so the frame's Enter cannot fire for the same press. While Clone is
+	// disabled the key does nothing at all.
+	submit := func() {
+		if !a.cloneDisabled(st) {
+			a.runClone(st)
+		}
+	}
+	_, cancelled, confirmed := dialogFrame(c, p, "clone-modal", &st.open, "Clone Repository", 520, func() {
+		if ui.Segmented(c.Key("clone-location"), &st.location, "This Mac", "SSH Server").Label("Clone Location").Disabled(st.busy).Changed() {
+			// The error of one location's failed clone does not describe
+			// the form of the other.
+			st.err = ""
+		}
+		ui.Field(c, "Repository URL", func() {
+			urlInput := ui.TextInput(c.Key("clone-url"), &st.url).Placeholder("https://github.com/owner/repository.git").FillWidth().AutoFocus().Disabled(st.busy)
+			if urlInput.Changed() && !st.nameEdited {
+				st.name = git.RepoNameFromURL(st.url)
 			}
-			ui.Field(c, "Repository URL", func() {
-				urlInput := ui.TextInput(c.Key("clone-url"), &st.url).Placeholder("https://github.com/owner/repository.git").FillWidth().AutoFocus().Disabled(st.busy)
-				if urlInput.Changed() && !st.nameEdited {
-					st.name = git.RepoNameFromURL(st.url)
-				}
-			})
-			if st.location == cloneSSHServer {
-				ui.Text(c, "The server runs git clone, so this URL must be reachable from the server.").FontSize(12).TextColor(p.muted)
-				ui.Field(c, "Server Folder", func() {
-					ui.TextInput(c.Key("clone-server-folder"), &st.serverFolder).Placeholder("user@server:/srv/repos  or  ssh://user@server:2222/srv/repos").FillWidth().Disabled(st.busy)
-				})
-				ui.Field(c, "Identity file (optional)", func() {
-					ui.TextInput(c.Key("clone-server-identity"), &st.serverIdentity).Placeholder("~/.ssh/id_ed25519").FillWidth().Disabled(st.busy)
-				})
-			} else {
-				ui.Field(c, "Parent Folder", func() {
-					ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
-						ui.TextInput(c.Key("clone-parent"), &st.parent).Placeholder("~/code").FillWidth().Disabled(st.busy)
-						if ui.Button(c.Key("clone-choose"), "Choose…").Disabled(st.busy).Clicked() {
-							a.pickCloneFolder(st)
-						}
-					})
-				})
+			if urlInput.Submitted() {
+				submit()
 			}
-			ui.Field(c, "Folder Name", func() {
-				nameInput := ui.TextInput(c.Key("clone-name"), &st.name).FillWidth().Disabled(st.busy)
-				if nameInput.Changed() {
-					st.nameEdited = true
-				}
-			})
-			target := cloneTargetDisplay(st.parent, st.name)
-			if st.location == cloneSSHServer {
-				target = cloneSSHTargetDisplay(st.serverFolder, st.name)
-			}
-			ui.Text(c, "Clones into "+target).FontSize(12).TextColor(p.muted)
-			if st.busy {
-				ui.Row(c.Key("clone-status")).
-					FillWidth().
-					Role(ui.RoleStatus).
-					Label("Clone Status").
-					Busy(true).
-					Gap(8).
-					AlignItems(ui.Center).
-					Children(func() {
-						ui.Spinner(c)
-						ui.Text(c, "Cloning…").FontSize(12.5).TextColor(p.muted)
-					})
-			} else if st.err != "" {
-				ui.Text(c, st.err).FontSize(12.5).TextColor(p.danger)
-			}
-			ui.Row(c).FillWidth().Gap(8).Children(func() {
-				ui.Spacer(c)
-				if ui.Button(c.Key("clone-cancel"), "Cancel").Clicked() {
-					a.cancelClone(st)
-					st.busy = false
-					st.open = false
-				}
-				if ui.PrimaryButton(c.Key("clone-submit"), "Clone").Disabled(a.cloneDisabled(st)).Clicked() {
-					a.runClone(st)
-				}
-			})
 		})
-	})
+		if st.location == cloneSSHServer {
+			ui.Text(c, "The server runs git clone, so this URL must be reachable from the server.").FontSize(12).TextColor(p.muted)
+			ui.Field(c, "Server Folder", func() {
+				in := ui.TextInput(c.Key("clone-server-folder"), &st.serverFolder).Placeholder("user@server:/srv/repos  or  ssh://user@server:2222/srv/repos").FillWidth().Disabled(st.busy)
+				if in.Submitted() {
+					submit()
+				}
+			})
+			ui.Field(c, "Identity file (optional)", func() {
+				in := ui.TextInput(c.Key("clone-server-identity"), &st.serverIdentity).Placeholder("~/.ssh/id_ed25519").FillWidth().Disabled(st.busy)
+				if in.Submitted() {
+					submit()
+				}
+			})
+		} else {
+			ui.Field(c, "Parent Folder", func() {
+				ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
+					in := ui.TextInput(c.Key("clone-parent"), &st.parent).Placeholder("~/code").FillWidth().Disabled(st.busy)
+					if in.Submitted() {
+						submit()
+					}
+					if ui.Button(c.Key("clone-choose"), "Choose…").Disabled(st.busy).Clicked() {
+						a.pickCloneFolder(st)
+					}
+				})
+			})
+		}
+		ui.Field(c, "Folder Name", func() {
+			nameInput := ui.TextInput(c.Key("clone-name"), &st.name).FillWidth().Disabled(st.busy)
+			if nameInput.Changed() {
+				st.nameEdited = true
+			}
+			if nameInput.Submitted() {
+				submit()
+			}
+		})
+		target := cloneTargetDisplay(st.parent, st.name)
+		if st.location == cloneSSHServer {
+			target = cloneSSHTargetDisplay(st.serverFolder, st.name)
+		}
+		ui.Text(c, "Clones into "+target).FontSize(12).TextColor(p.muted)
+		if st.busy {
+			ui.Row(c.Key("clone-status")).
+				FillWidth().
+				Role(ui.RoleStatus).
+				Label("Clone Status").
+				Busy(true).
+				Gap(8).
+				AlignItems(ui.Center).
+				Children(func() {
+					ui.Spinner(c)
+					ui.Text(c, "Cloning…").FontSize(12.5).TextColor(p.muted)
+				})
+		} else if st.err != "" {
+			ui.Text(c, st.err).FontSize(12.5).TextColor(p.danger)
+		}
+	},
+		dialogAction{key: "clone-cancel", text: "Cancel", label: "Cancel"},
+		dialogAction{key: "clone-submit", text: "Clone", label: "Clone", disabled: a.cloneDisabled(st)})
+	if cancelled {
+		a.cancelClone(st)
+		st.busy = false
+		st.open = false
+	}
+	if confirmed {
+		a.runClone(st)
+	}
 	if !st.open {
 		// The dialog was dismissed (Escape, the backdrop, or Cancel): stop a
 		// running clone like Cancel does.
