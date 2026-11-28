@@ -7,13 +7,21 @@ import (
 	"time"
 )
 
-// Refs returns the branches, remote branches and tags.
+// Refs returns the branches, remote branches and tags. References are
+// scanned in two passes: branches and remote branches without peeling, then
+// tags peeling each annotated tag to the commit it names. for-each-ref
+// prints references ordered by full name, so heads, remotes and tags read
+// in the same order one scan would print them.
 func (r *Repo) Refs() (Refs, error) {
-	out, err := r.run(quick, "for-each-ref", "--format="+refFormat, "refs/heads", "refs/remotes", "refs/tags")
+	out, err := r.run(quick, "for-each-ref", "--format="+refFormatBranches, "refs/heads", "refs/remotes")
 	if err != nil {
 		return Refs{}, err
 	}
-	refs := ParseRefs(out)
+	tags, err := r.run(quick, "for-each-ref", "--format="+refFormatTags, "refs/tags")
+	if err != nil {
+		return Refs{}, err
+	}
+	refs := ParseRefs(append(out, tags...))
 	// Remotes without branches fetched yet show too.
 	if out, err := r.run(quick, "remote"); err == nil {
 		have := map[string]bool{}
