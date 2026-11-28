@@ -6,30 +6,11 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 
 	"github.com/zhdsmy/branchline/internal/git"
 	"github.com/zhdsmy/branchline/internal/store"
 )
-
-// pickNewRepoFolderFn shows the folder picker of the New Repository dialog's
-// Choose button. It is a package-level variable so tests can substitute a
-// picker that never shows the system dialog.
-var pickNewRepoFolderFn = func(parent *mygo.Window) (string, error) {
-	paths, err := mygo.Dialog.Open(mygo.OpenDialogOptions{
-		Parent:    parent,
-		Title:     "New Repository",
-		Directory: true,
-	})
-	if err != nil {
-		return "", err
-	}
-	if len(paths) == 0 {
-		return "", nil
-	}
-	return paths[0], nil
-}
 
 // newRepoUIState is the New Repository dialog of one app instance: the form
 // draft, the busy state of a running create, and the generation discarding
@@ -96,7 +77,7 @@ func (a *app) newRepoModal(c *ui.Context) {
 		return
 	}
 	p := a.pal
-	_, cancelled, confirmed := dialogFrame(c, p, "new-repo-modal", &st.open, "New Repository", 520, func() {
+	_, cancelled, confirmed := dialogFrame(c, p, "new-repo", &st.open, "New Repository", 520, func() {
 		if ui.Segmented(c.Key("new-repo-location"), &st.location, "This Mac", "SSH Server").Label("Repository Location").Disabled(st.busy).Changed() {
 			// The error of one location's failed create does not describe the
 			// form of the other.
@@ -172,23 +153,16 @@ func (a *app) newRepoDisabled(st *newRepoUIState) bool {
 }
 
 // pickNewRepoFolder runs the system folder picker in the background and puts
-// the chosen folder into the parent field, as the Clone dialog's Choose
-// does. Canceling the picker leaves the field unchanged, and a picker
-// finishing after the dialog closed or reopened is dropped.
+// the chosen folder into the parent field, sharing the picker helper with
+// the Clone dialog. Canceling the picker leaves the field unchanged, and a
+// picker finishing after the dialog closed or reopened is dropped.
 func (a *app) pickNewRepoFolder(st *newRepoUIState) {
-	win := a.win
 	gen := st.gen
-	a.spawn(func() {
-		dir, err := pickNewRepoFolderFn(win)
-		if err != nil || dir == "" {
+	a.pickParentFolder("New Repository", func(dir string) {
+		if !st.open || st.gen != gen {
 			return
 		}
-		a.post(func() {
-			if !st.open || st.gen != gen {
-				return
-			}
-			st.parent = dir
-		})
+		st.parent = dir
 	})
 }
 

@@ -459,12 +459,17 @@ func TestNewRepositoryCreateHereInitsChosenFolder(t *testing.T) {
 }
 
 // The folder picker of the New Repository dialog's Choose button fills the
-// parent field, and canceling it leaves the field unchanged.
+// parent field with the dialog's title, and canceling it leaves the field
+// unchanged.
 func TestNewRepositoryChooseFolderPicker(t *testing.T) {
 	var picked func() (string, error)
-	prev := pickNewRepoFolderFn
-	pickNewRepoFolderFn = func(_ *mygo.Window) (string, error) { return picked() }
-	t.Cleanup(func() { pickNewRepoFolderFn = prev })
+	var gotTitle string
+	prev := pickParentFolderFn
+	pickParentFolderFn = func(_ *mygo.Window, title string) (string, error) {
+		gotTitle = title
+		return picked()
+	}
+	t.Cleanup(func() { pickParentFolderFn = prev })
 
 	h := newTestApp(t)
 	closeSync(t, h)
@@ -477,6 +482,9 @@ func TestNewRepositoryChooseFolderPicker(t *testing.T) {
 	}
 	h.ui.Frame()
 	h.drain()
+	if gotTitle != "New Repository" {
+		t.Fatalf("picker title = %q, want %q", gotTitle, "New Repository")
+	}
 	if got := h.app.newRepoUI().parent; got != chosen {
 		t.Fatalf("parent after Choose = %q, want %q", got, chosen)
 	}

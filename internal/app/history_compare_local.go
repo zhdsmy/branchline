@@ -23,11 +23,13 @@ type historyCompareLocalState struct {
 	commit git.Commit
 
 	files   []git.FileChange
+	loaded  bool
 	loading bool
 	err     error
 	fileSel int
 	// fileList is the scroll state of the comparison's changed-file list;
-	// it resets wherever fileSel does, as in the two-commit comparison.
+	// it resets on an initial load or when the previously selected file
+	// disappears across a refresh.
 	fileList ui.ListState
 
 	// refresh counts the snapshot loads the comparison re-read for. It is
@@ -66,7 +68,7 @@ func (a *app) startHistoryCompareLocal(cm git.Commit) {
 		commit:  cm,
 		snapKey: a.session.Snapshot().Commits,
 	}
-	a.startHistoryCompareLocalLoad()
+	a.startHistoryCompareLocalLoad(false)
 }
 
 // startHistoryCompareLocalLoad begins the asynchronous read of the files the
@@ -74,30 +76,37 @@ func (a *app) startHistoryCompareLocal(cm git.Commit) {
 // "history-compare-local" scope. Only the hash crosses into the worker.
 // Results of superseded reads are discarded by sessionRead itself; done
 // additionally checks the state still compares the same commit before
-// applying, so a slow read cannot surface after the selection changed. The
-// previously selected file keeps its selection when it still exists after a
-// refresh, so a working-tree change does not take the diff the user reads
-// away; otherwise the first file is selected.
-func (a *app) startHistoryCompareLocalLoad() {
+// applying, so a slow read cannot surface after the selection changed.
+//
+// When keepExisting is true (a snapshot refresh after the comparison has
+// already loaded without error), the previous file list, selection and diff
+// stay visible until the replacement arrives, avoiding a loading flash on
+// every external save. The previously selected file is read at completion
+// time so a click made while the refresh is in flight wins; if it still
+// exists in the new list it stays selected and its diff refreshes in place,
+// otherwise the first file is selected.
+func (a *app) startHistoryCompareLocalLoad(keepExisting bool) {
 	hv := &a.historyView
 	cl := &hv.compareLocal
 	hash := cl.commit.Hash
 	rev := strconv.Itoa(cl.refresh)
-	prevPath := ""
-	if cl.fileSel >= 0 && cl.fileSel < len(cl.files) {
-		prevPath = cl.files[cl.fileSel].Path
+	if !keepExisting {
+		cl.loading = true
+		cl.err = nil
+		cl.files = nil
+		cl.fileSel = -1
+		cl.fileList = ui.ListState{}
+		hv.diff.Clear(a.session, "history-diff")
 	}
-	cl.loading = true
-	cl.err = nil
-	cl.files = nil
-	cl.fileSel = -1
-	cl.fileList = ui.ListState{}
-	hv.diff.Clear(a.session, "history-diff")
 	started := sessionRead(a.session, "history-compare-local", func(repo *git.Repo) ([]git.FileChange, error) {
 		return repo.WorktreeFiles(hash)
 	}, func(files []git.FileChange, err error) {
 		if hv.mode != historyCompareLocal || cl.commit.Hash != hash {
 			return
+		}
+		prevPath := ""
+		if cl.fileSel >= 0 && cl.fileSel < len(cl.files) {
+			prevPath = cl.files[cl.fileSel].Path
 		}
 		cl.loading = false
 		if err != nil {
@@ -105,25 +114,37 @@ func (a *app) startHistoryCompareLocalLoad() {
 			cl.files = nil
 			cl.fileSel = -1
 			cl.fileList = ui.ListState{}
+			hv.diff.Clear(a.session, "history-diff")
 			return
 		}
+		cl.loaded = true
 		cl.files = files
 		cl.err = nil
 		if len(files) == 0 {
 			cl.fileSel = -1
 			cl.fileList = ui.ListState{}
+			hv.diff.Clear(a.session, "history-diff")
 			return
 		}
 		sel := 0
+		kept := false
 		for i, f := range files {
 			if f.Path == prevPath {
 				sel = i
+				kept = true
 				break
 			}
 		}
 		cl.fileSel = sel
-		cl.fileList = ui.ListState{}
-		hv.diff.Load(a.session, "history-diff", worktreeFileDiffRequest(cl.commit, files[sel], rev))
+		if !keepExisting || !kept {
+			cl.fileList = ui.ListState{}
+		}
+		req := worktreeFileDiffRequest(cl.commit, files[sel], rev)
+		if keepExisting && kept {
+			hv.diff.Refresh(a.session, "history-diff", req)
+		} else {
+			hv.diff.Load(a.session, "history-diff", req)
+		}
 	})
 	if !started {
 		cl.loading = false
@@ -148,7 +169,7 @@ func (a *app) maybeRefreshHistoryCompareLocal(snap repository.Snapshot) {
 	}
 	cl.snapKey = snap.Commits
 	cl.refresh++
-	a.startHistoryCompareLocalLoad()
+	a.startHistoryCompareLocalLoad(cl.loaded && cl.err == nil)
 }
 
 // showHistoryCompareLocalCommit leaves the comparison for the commit's
@@ -228,7 +249,7 @@ func (a *app) historyCompareLocalFileList(c *ui.Context, p palette) {
 				ui.Text(c, "Failed to load changed files").FontSize(11.5).FontWeight(600).TextColor(p.danger)
 				ui.Text(c, cl.err.Error()).FontSize(11).TextColor(p.muted)
 				if ui.Button(c.Key("compare-local-files-retry"), "Retry").Label("Retry Comparison").Clicked() {
-					a.startHistoryCompareLocalLoad()
+					a.startHistoryCompareLocalLoad(false)
 				}
 			})
 		case len(cl.files) == 0:

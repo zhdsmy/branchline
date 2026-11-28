@@ -367,6 +367,83 @@ func TestHistoryCompareLocalWorktreeChangeRefreshes(t *testing.T) {
 	}
 }
 
+// While a snapshot refresh is re-reading the file list and then the selected
+// file's diff, the previously loaded file list and diff stay on screen
+// instead of flashing a loading placeholder on every external save; once
+// both reads finish, the updated list and diff replace them.
+func TestHistoryCompareLocalRefreshKeepsListAndDiffWhileLoading(t *testing.T) {
+	repo, f := newCompareRepo(t, "cl-refresh-keep")
+	repo.WriteFile("alpha.txt", "alpha v1\nworktree line\n")
+	repo.WriteFile("beta.txt", "beta v1\nbeta initial\n")
+
+	h := newTestApp(t)
+	openHistoryPage(t, h, repo.StoreRepo())
+	enterCompareLocal(t, h, f.c3, "third shrink")
+	h.drain()
+
+	if err := h.ui.Click("File beta.txt"); err != nil {
+		t.Fatalf("click File beta.txt: %v\ntexts=%q", err, h.ui.Texts())
+	}
+	h.drain()
+	if ins := diffAccessLines(h.ui, ui.RoleInsertion); !slices.Contains(ins, "beta initial") {
+		t.Fatalf("setup diff insertions = %q, want beta initial", ins)
+	}
+
+	// Modify beta.txt and add an untracked file, then reload the snapshot
+	// with background workers paused so each phase can be observed mid-flight.
+	repo.WriteFile("beta.txt", "beta v1\nbeta initial\nbeta updated\n")
+	repo.WriteFile("gamma.txt", "gamma\n")
+	h.queue.PauseWorkers()
+	h.app.session.Reload()
+	snapWorker := h.queue.WaitWorker(t)
+	h.queue.ReleaseWorker(snapWorker)
+	h.queue.RunNext(t)
+	h.ui.Frame()
+
+	// The new snapshot started WorktreeFiles; while it is paused in flight,
+	// the old list and the old diff must both remain visible with no loading
+	// placeholder.
+	listWorker := h.queue.WaitWorker(t)
+	h.ui.Frame()
+	if h.ui.HasText("Loading changed files…") {
+		t.Fatalf("file list flashed Loading during snapshot refresh; texts=%q", h.ui.Texts())
+	}
+	if h.ui.HasText("Loading diff…") || h.ui.HasText("No File Selected") {
+		t.Fatalf("diff panel cleared during snapshot refresh; texts=%q", h.ui.Texts())
+	}
+	if _, ok := h.ui.AccessByRole(ui.RoleListItem, "File beta.txt"); !ok {
+		t.Fatalf("previous file list disappeared while WorktreeFiles ran; texts=%q", h.ui.Texts())
+	}
+	if ins := diffAccessLines(h.ui, ui.RoleInsertion); !slices.Contains(ins, "beta initial") {
+		t.Fatalf("previous diff disappeared while WorktreeFiles ran; insertions=%q", ins)
+	}
+
+	// Release WorktreeFiles; it starts the diff refresh worker, which stays
+	// paused. Both the updated file list and the previous diff must stay on
+	// screen without flashing Loading diff.
+	h.queue.ReleaseWorker(listWorker)
+	h.queue.RunNext(t)
+	diffWorker := h.queue.WaitWorker(t)
+	h.ui.Frame()
+	if h.ui.HasText("Loading diff…") {
+		t.Fatalf("diff panel flashed Loading during diff refresh; texts=%q", h.ui.Texts())
+	}
+	if _, ok := h.ui.AccessByRole(ui.RoleListItem, "File gamma.txt"); !ok {
+		t.Fatalf("new file gamma.txt missing after WorktreeFiles completed; texts=%q", h.ui.Texts())
+	}
+	if ins := diffAccessLines(h.ui, ui.RoleInsertion); !slices.Contains(ins, "beta initial") {
+		t.Fatalf("previous diff disappeared while diff refresh ran; insertions=%q", ins)
+	}
+
+	// Release the diff refresh worker: the updated diff replaces the old one.
+	h.queue.ReleaseWorker(diffWorker)
+	h.queue.ResumeWorkers()
+	h.drain()
+	if ins := diffAccessLines(h.ui, ui.RoleInsertion); !slices.Contains(ins, "beta updated") {
+		t.Fatalf("updated diff insertions = %q, want beta updated", ins)
+	}
+}
+
 // Switching to another commit while the comparison's file list is still
 // being read discards the read: the slow result never surfaces under the
 // single commit the selection moved to.

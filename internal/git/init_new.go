@@ -54,13 +54,13 @@ func InitNew(ex Executor, name, branch string) (string, error) {
 func childExecutor(ex Executor, name string) Executor {
 	switch e := ex.(type) {
 	case *LocalExecutor:
-		copy := *e
-		copy.Dir = filepath.Join(e.Dir, name)
-		return &copy
+		child := *e
+		child.Dir = filepath.Join(e.Dir, name)
+		return &child
 	case *SSHExecutor:
-		copy := *e
-		copy.Dir = path.Join(e.Dir, name)
-		return &copy
+		child := *e
+		child.Dir = path.Join(e.Dir, name)
+		return &child
 	}
 	return nil
 }
