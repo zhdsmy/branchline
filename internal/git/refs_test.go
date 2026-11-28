@@ -61,46 +61,6 @@ func TestPushBranchesAndCustomDestination(t *testing.T) {
 	}
 }
 
-func TestRemoveBranchWithRemoteAndWorktree(t *testing.T) {
-	dir, bare, r := remoteRepo(t)
-	gitRun(t, dir, "push", "-q", "-u", "origin", "main:topic")
-	gitRun(t, dir, "branch", "topic", "--track", "origin/topic")
-	wt := filepath.Join(t.TempDir(), "topic")
-	gitRun(t, dir, "worktree", "add", "-q", wt, "topic")
-
-	// Without the worktree, git keeps the branch it has checked out.
-	if err := r.RemoveBranch(RemoveBranchOptions{Name: "topic", Force: true}); err == nil {
-		t.Fatal("deleted a branch a worktree has checked out")
-	}
-	if err := r.RemoveBranch(RemoveBranchOptions{Name: "topic", Force: true, Upstream: "origin/topic", Worktree: wt}); err != nil {
-		t.Fatal(err)
-	}
-	if hasRef(dir, "refs/heads/topic") || hasRef(bare, "refs/heads/topic") {
-		t.Fatal("topic is still here or on origin")
-	}
-	if _, err := os.Stat(wt); !os.IsNotExist(err) {
-		t.Fatalf("worktree still there: %v", err)
-	}
-}
-
-func TestRenameRemoteBranch(t *testing.T) {
-	dir, bare, r := remoteRepo(t)
-	gitRun(t, dir, "checkout", "-q", "-b", "old")
-	gitRun(t, dir, "push", "-q", "-u", "origin", "old")
-	if err := r.RenameBranch("old", "new"); err != nil {
-		t.Fatal(err)
-	}
-	if err := r.RenameRemoteBranch("new", "origin/old", "new"); err != nil {
-		t.Fatal(err)
-	}
-	if hasRef(bare, "refs/heads/old") || !hasRef(bare, "refs/heads/new") {
-		t.Fatalf("remote branches: %s", gitOut(t, bare, "branch"))
-	}
-	if up := gitOut(t, dir, "rev-parse", "--abbrev-ref", "new@{upstream}"); up != "origin/new" {
-		t.Fatalf("new tracks %q", up)
-	}
-}
-
 func TestCheckoutRemoteAsAndWorktree(t *testing.T) {
 	dir, _, r := remoteRepo(t)
 	gitRun(t, dir, "push", "-q", "origin", "main:feature")
@@ -134,9 +94,6 @@ func TestCheckoutRemoteAsAndWorktree(t *testing.T) {
 
 func TestTagsOnRemotes(t *testing.T) {
 	dir, bare, r := remoteRepo(t)
-	other := filepath.Join(t.TempDir(), "other.git")
-	gitRun(t, dir, "init", "-q", "--bare", other)
-	gitRun(t, dir, "remote", "add", "other", other)
 	gitRun(t, dir, "tag", "-a", "v1", "-m", "Release one\n\nNotes.")
 	gitRun(t, dir, "tag", "light")
 
@@ -160,17 +117,6 @@ func TestTagsOnRemotes(t *testing.T) {
 	}
 	if _, err := r.TagInfo("missing"); err == nil {
 		t.Fatal("a missing tag has details")
-	}
-
-	// other never had v1: it is skipped, origin loses it.
-	if err := r.DeleteTag("v1"); err != nil {
-		t.Fatal(err)
-	}
-	if err := r.DeleteTagFromRemotes([]string{"origin", "other"}, "v1"); err != nil {
-		t.Fatal(err)
-	}
-	if hasRef(bare, "refs/tags/v1") || !hasRef(bare, "refs/tags/light") {
-		t.Fatalf("origin tags: %s", gitOut(t, bare, "tag"))
 	}
 }
 

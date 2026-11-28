@@ -7,6 +7,7 @@ package app
 // already carry a reference kind for them.
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
@@ -17,12 +18,18 @@ import (
 
 // batchDelRow is one branch of the Delete Branches dialog as it was captured
 // when the dialog opened, on the UI thread: its name, the commit it pointed
-// at, and its upstream when that upstream was live. The worker re-verifies
-// the repository against every row before deleting anything.
+// at, and its upstream when that upstream was live. A live upstream carries
+// the remote and branch names the deletion sends and the commit its tracking
+// reference pointed at — the lease the remote deletion is confirmed against.
+// The worker re-verifies the repository against every row before deleting
+// anything.
 type batchDelRow struct {
 	name     string
 	hash     string
 	upstream string
+	upRemote string
+	upBranch string
+	upHash   string
 	checked  bool
 }
 
@@ -148,9 +155,14 @@ func (a *app) batchFastForwardBranches(branches []git.Branch, total int) {
 // openBatchDeleteDialog opens the Delete Branches dialog over the selected
 // branches that are not checked out — the current branch can never be
 // deleted, so it is not even listed. Every row captures name, commit and
-// live upstream now, on the UI thread, and starts checked.
+// live upstream now, on the UI thread, and starts checked. A live upstream
+// also captures its remote and branch names and the commit its tracking
+// reference points at, read from the snapshot's remote branches: an upstream
+// the snapshot has no tracking reference for is treated as gone and records
+// nothing.
 func (a *app) openBatchDeleteDialog(branches []git.Branch) {
 	st := &a.refsView
+	snap := a.session.Snapshot()
 	var rows []batchDelRow
 	for _, br := range branches {
 		if br.Current {
@@ -158,7 +170,12 @@ func (a *app) openBatchDeleteDialog(branches []git.Branch) {
 		}
 		row := batchDelRow{name: br.Name, hash: br.Hash, checked: true}
 		if br.Upstream != "" && !br.Gone {
-			row.upstream = br.Upstream
+			if rb := findRemoteBranch(snap.Refs, br.Upstream); rb != nil {
+				row.upstream = br.Upstream
+				row.upRemote = rb.Remote
+				row.upBranch = strings.TrimPrefix(rb.Name, rb.Remote+"/")
+				row.upHash = rb.Hash
+			}
 		}
 		rows = append(rows, row)
 	}
@@ -168,6 +185,18 @@ func (a *app) openBatchDeleteDialog(branches []git.Branch) {
 	st.batchDelRows = rows
 	st.batchDelAlsoRemote = false
 	st.batchDelOpen = true
+}
+
+// findRemoteBranch returns the snapshot's remote-tracking branch whose short
+// name is upstream, such as origin/feature, or nil when the snapshot has
+// none — the tracking reference is then treated as gone.
+func findRemoteBranch(refs git.Refs, upstream string) *git.Branch {
+	for i := range refs.Remote {
+		if refs.Remote[i].Name == upstream {
+			return &refs.Remote[i]
+		}
+	}
+	return nil
 }
 
 // closeBatchDeleteDialog closes the Delete Branches dialog and drops every
@@ -253,20 +282,25 @@ func (a *app) batchBranchDialogs(c *ui.Context) {
 }
 
 // batchDelTarget is one branch the Delete Branches dialog submitted: the
-// name and the commit it pointed at when the dialog opened, and the upstream
-// to delete along when the remote box was ticked — empty otherwise, so an
-// unticked box never touches a server.
+// name and the commit it pointed at when the dialog opened, and — when the
+// remote box was ticked — the upstream to delete along, with the remote and
+// branch names the deletion sends and the commit its tracking reference
+// pointed at. An unticked box leaves every upstream field empty, so it never
+// touches a server.
 type batchDelTarget struct {
 	name     string
 	hash     string
 	upstream string
+	upRemote string
+	upBranch string
+	upHash   string
 }
 
 // submitBatchDeleteBranches closes the dialog first — an askpass modal of a
 // remote deletion must never stack on it — and deletes the checked branches
-// through the sync lifecycle. The dialog's rows carry the commits they
-// pointed at when the dialog opened; the worker re-verifies all of them
-// before touching a single ref.
+// through the sync lifecycle. The dialog's rows carry the commits they and
+// their upstreams' tracking references pointed at when the dialog opened;
+// the worker re-verifies all of them before touching a single ref.
 func (a *app) submitBatchDeleteBranches() {
 	st := &a.refsView
 	var targets []batchDelTarget
@@ -275,11 +309,14 @@ func (a *app) submitBatchDeleteBranches() {
 		if !r.checked {
 			continue
 		}
-		up := ""
+		t := batchDelTarget{name: r.name, hash: r.hash}
 		if alsoRemote {
-			up = r.upstream
+			t.upstream = r.upstream
+			t.upRemote = r.upRemote
+			t.upBranch = r.upBranch
+			t.upHash = r.upHash
 		}
-		targets = append(targets, batchDelTarget{name: r.name, hash: r.hash, upstream: up})
+		targets = append(targets, t)
 	}
 	a.closeBatchDeleteDialog()
 	if len(targets) == 0 {
@@ -298,10 +335,16 @@ func (a *app) submitBatchDeleteBranches() {
 
 // batchDeleteWithGuard re-validates the repository against what the Delete
 // Branches dialog captured before it deletes: no Git operation may be in
-// progress, and every checked branch must still exist, still point at the
-// commit the dialog saw, and still not be the checked-out branch. Any check
-// failing refuses the whole batch without touching a single ref — deleting
-// some of the branches would lose commits the user never saw listed.
+// progress, every checked branch must still exist, still point at the commit
+// the dialog saw, and still not be the checked-out branch, and every
+// upstream the remote box covers must still have its tracking reference
+// pointing at the commit the dialog saw. Any check failing refuses the
+// whole batch without touching a single ref — deleting some of the branches
+// would lose commits the user never saw listed. Only then does the deletion
+// run: the local branches first, then each upstream on its server through
+// the same lease-protected delete the remote branches' own dialogs use,
+// every step tried and the errors joined — exactly the order the deletion
+// had before, so a failing local branch never stops the rest of the batch.
 func batchDeleteWithGuard(repo *git.Repo, targets []batchDelTarget) error {
 	if len(targets) == 0 {
 		return fmt.Errorf("cannot delete branches: no branch is checked")
@@ -328,7 +371,29 @@ func batchDeleteWithGuard(repo *git.Repo, targets []batchDelTarget) error {
 		case cur.Current:
 			return fmt.Errorf("cannot delete branches: %s changed after the dialog opened; review the repository and try again", t.name)
 		}
-		list = append(list, git.RemoveBranchOptions{Name: t.name, Upstream: t.upstream})
+		list = append(list, git.RemoveBranchOptions{Name: t.name})
 	}
-	return repo.RemoveBranches(list)
+	for _, t := range targets {
+		if t.upstream == "" {
+			continue
+		}
+		gotOID, err := repo.PathHash("refs/remotes/" + t.upstream + "^{commit}")
+		if err != nil || gotOID != t.upHash {
+			return fmt.Errorf("cannot delete branches: the remote branch %s changed after the dialog opened; review the repository and try again", t.upstream)
+		}
+	}
+	errs := []error{repo.RemoveBranches(list)}
+	// Two local branches can share one upstream: the server deletion goes
+	// out once, or the second push would fail the lease the first consumed.
+	deleted := map[string]bool{}
+	for _, t := range targets {
+		if t.upstream == "" || deleted[t.upstream] {
+			continue
+		}
+		deleted[t.upstream] = true
+		if err := deleteRemoteBranchWithGuard(repo, t.upRemote, t.upBranch, t.upHash); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }

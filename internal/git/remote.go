@@ -266,27 +266,6 @@ func (r *Repo) RemoteRemove(name string) error {
 	return err
 }
 
-// DeleteRemoteTag deletes one tag from a remote. The local tag stays.
-func (r *Repo) DeleteRemoteTag(remote, name string) error {
-	remote, name = strings.TrimSpace(remote), strings.TrimSpace(name)
-	if remote == "" || name == "" {
-		return fmt.Errorf("deleting a remote tag needs a remote and a tag")
-	}
-	_, err := r.run(slow, withDashdash([]string{"push", "--delete"}, remote, "refs/tags/"+name)...)
-	return err
-}
-
-// DeleteRemoteBranch deletes a branch, such as origin/feature, from its
-// remote.
-func (r *Repo) DeleteRemoteBranch(remoteBranch string) error {
-	remote, branch, ok := strings.Cut(remoteBranch, "/")
-	if !ok {
-		return fmt.Errorf("%s is not a remote branch", remoteBranch)
-	}
-	_, err := r.run(slow, withDashdash([]string{"push", "--delete"}, remote, branch)...)
-	return err
-}
-
 // PushRef pushes one reference, such as a tag, to remote.
 func (r *Repo) PushRef(remote, ref string) error {
 	_, err := r.run(slow, withDashdash([]string{"push"}, remote, ref)...)
@@ -350,32 +329,6 @@ func (r *Repo) PushBranches(remote string, specs []PushSpec, setUpstream, force 
 	args = withDashdash(args, positional...)
 	_, err := r.run(slow, args...)
 	return err
-}
-
-// DeleteTagFromRemotes deletes a tag from each remote that has it. A
-// remote without the tag is skipped.
-func (r *Repo) DeleteTagFromRemotes(remotes []string, name string) error {
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return fmt.Errorf("deleting a remote tag needs a tag")
-	}
-	var failed []string
-	for _, remote := range remotes {
-		remote = strings.TrimSpace(remote)
-		if remote == "" {
-			continue
-		}
-		if err := r.DeleteRemoteTag(remote, name); err != nil {
-			if strings.Contains(err.Error(), "remote ref does not exist") {
-				continue
-			}
-			failed = append(failed, remote+": "+err.Error())
-		}
-	}
-	if len(failed) > 0 {
-		return fmt.Errorf("%s", strings.Join(failed, "\n"))
-	}
-	return nil
 }
 
 // EditRemote sets the URL of the remote old and renames it to name.

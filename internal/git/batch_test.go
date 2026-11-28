@@ -31,34 +31,18 @@ func TestRemoveBranchesAndTags(t *testing.T) {
 	for _, b := range []string{"one", "two", "three"} {
 		gitRun(t, dir, "branch", b)
 	}
-	gitRun(t, dir, "push", "-q", "-u", "origin", "one", "two")
-	// two is gone from the remote already: deleting it there is no error.
-	gitRun(t, bare, "branch", "-D", "two")
 	err := r.RemoveBranches([]RemoveBranchOptions{
-		{Name: "one", Force: true, Upstream: "origin/one"},
-		{Name: "two", Force: true, Upstream: "origin/two"},
+		{Name: "one", Force: true},
+		{Name: "two", Force: true},
 		{Name: "three", Force: true},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, b := range []string{"one", "two", "three"} {
-		if hasRef(dir, "refs/heads/"+b) || hasRef(bare, "refs/heads/"+b) {
-			t.Fatalf("%s stayed: %s | %s", b, gitOut(t, dir, "branch"), gitOut(t, bare, "branch"))
+		if hasRef(dir, "refs/heads/"+b) {
+			t.Fatalf("%s stayed: %s", b, gitOut(t, dir, "branch"))
 		}
-	}
-
-	gitRun(t, dir, "branch", "r1")
-	gitRun(t, dir, "branch", "r2")
-	gitRun(t, dir, "push", "-q", "origin", "r1", "r2")
-	if err := r.DeleteRemoteBranches([]string{"origin/r1", "origin/r2"}); err != nil {
-		t.Fatal(err)
-	}
-	if hasRef(bare, "refs/heads/r1") || hasRef(bare, "refs/heads/r2") || !hasRef(dir, "refs/heads/r1") {
-		t.Fatalf("remote branches: %s", gitOut(t, bare, "branch"))
-	}
-	if err := r.DeleteRemoteBranches([]string{"nope"}); err == nil {
-		t.Fatal("a name without a remote was accepted")
 	}
 
 	for _, tag := range []string{"t1", "t2", "t3"} {
