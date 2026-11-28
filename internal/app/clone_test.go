@@ -1300,3 +1300,214 @@ func TestCloneHTTPSAskPassCancelFails(t *testing.T) {
 	h.ui.Key(0, ui.KeyEscape)
 	h.ui.Frame()
 }
+
+// gitCloneInvocations counts the wrapper log lines whose arguments name a
+// clone: the shim joins the invocation's arguments with spaces, so a clone
+// is the line holding "clone" as a word of its own.
+func gitCloneInvocations(t *testing.T, log string) int {
+	t.Helper()
+	count := 0
+	for _, line := range readLogLines(t, log) {
+		for _, word := range strings.Fields(line) {
+			if word == "clone" {
+				count++
+			}
+		}
+	}
+	return count
+}
+
+// A parent folder ending in a space is refused in the dialog before
+// anything starts: the error names the field, the dialog stays open and
+// idle, neither spelling of the target is created and git never clones.
+// Removing the space and clicking Clone again clones as usual.
+func TestCloneRejectsEdgeSpacesParentFolder(t *testing.T) {
+	root := t.TempDir()
+	bare := filepath.Join(root, "up.git")
+	wantHead := newBareCloneSource(t, "up", bare)
+	parent := filepath.Join(root, "code")
+	if err := os.Mkdir(parent, 0o755); err != nil {
+		t.Fatalf("mkdir parent: %v", err)
+	}
+
+	// git runs through a logging wrapper: the refusal must never reach git,
+	// and the successful retry proves the wrapper is wired.
+	probeDir := t.TempDir()
+	gitLog := filepath.Join(probeDir, "git-log.txt")
+	if err := os.WriteFile(gitLog, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatalf("git on PATH: %v", err)
+	}
+
+	h := newTestApp(t)
+	closeSync(t, h)
+	useFakeGitPath(t, h, loggingShim(t, probeDir, "wrapped git", realGit, gitLog))
+
+	openCloneDialog(t, h)
+	cloningInto(t, h, bare, parent+" ")
+
+	st := h.app.cloneUI()
+	if !st.open {
+		t.Fatal("dialog closed on a parent folder ending in a space")
+	}
+	if st.busy {
+		t.Fatal("dialog stayed busy after the validation error")
+	}
+	if got, want := st.err, "Parent Folder cannot begin or end with a space."; got != want {
+		t.Fatalf("error = %q, want %q", got, want)
+	}
+	if h.ui.HasText("Cloning…") {
+		t.Fatal("busy indicator showing after the refused clone")
+	}
+	trimmed := filepath.Join(parent, "up")
+	for _, dir := range []string{parent + " ", trimmed, filepath.Join(parent+" ", "up")} {
+		if _, err := os.Stat(dir); err == nil {
+			t.Fatalf("%q exists after the refused clone", dir)
+		}
+	}
+	if got := gitCloneInvocations(t, gitLog); got != 0 {
+		t.Fatalf("%d git clone invocations after the refused clone, want 0", got)
+	}
+	if len(h.store.Repos()) != 0 {
+		t.Fatalf("store gained an entry: %+v", h.store.Repos())
+	}
+
+	// Removing the trailing space and clicking Clone again clones as usual:
+	// the validation is of the click's values, not a latch.
+	replaceField(t, h, "Parent Folder", parent)
+	if err := h.ui.Click("Clone"); err != nil {
+		t.Fatalf("click Clone after fixing the parent: %v", err)
+	}
+	h.ui.Frame()
+	h.drain()
+
+	st = h.app.cloneUI()
+	if st.open || st.err != "" {
+		t.Fatalf("retry clone failed or dialog stayed open: err %q", st.err)
+	}
+	if got := strings.TrimSpace(runGitCommand(t, trimmed, "rev-parse", "HEAD")); got != wantHead {
+		t.Fatalf("clone HEAD = %q, want %q", got, wantHead)
+	}
+	if got := gitCloneInvocations(t, gitLog); got == 0 {
+		t.Fatal("the retry clone never reached the wrapped git — the refusal proof of this test is unwired")
+	}
+	if len(h.store.Repos()) != 1 {
+		t.Fatalf("store repos = %+v, want one entry", h.store.Repos())
+	}
+	h.ui.Key(0, ui.KeyEscape)
+	h.ui.Frame()
+}
+
+// A folder name ending in a space is refused the same way: the error names
+// the Folder Name field and neither spelling of the target is created.
+func TestCloneRejectsEdgeSpacesName(t *testing.T) {
+	root := t.TempDir()
+	bare := filepath.Join(root, "up.git")
+	newBareCloneSource(t, "up", bare)
+	parent := filepath.Join(root, "code")
+	if err := os.Mkdir(parent, 0o755); err != nil {
+		t.Fatalf("mkdir parent: %v", err)
+	}
+
+	probeDir := t.TempDir()
+	gitLog := filepath.Join(probeDir, "git-log.txt")
+	if err := os.WriteFile(gitLog, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatalf("git on PATH: %v", err)
+	}
+
+	h := newTestApp(t)
+	closeSync(t, h)
+	useFakeGitPath(t, h, loggingShim(t, probeDir, "wrapped git", realGit, gitLog))
+
+	openCloneDialog(t, h)
+	h.ui.Type(bare)
+	h.ui.Frame()
+	replaceField(t, h, "Parent Folder", parent)
+	replaceField(t, h, "Folder Name", "up ")
+	if err := h.ui.Click("Clone"); err != nil {
+		t.Fatalf("click Clone: %v", err)
+	}
+	h.ui.Frame()
+	h.drain()
+
+	st := h.app.cloneUI()
+	if !st.open {
+		t.Fatal("dialog closed on a folder name ending in a space")
+	}
+	if st.busy {
+		t.Fatal("dialog stayed busy after the validation error")
+	}
+	if got, want := st.err, "Folder Name cannot begin or end with a space."; got != want {
+		t.Fatalf("error = %q, want %q", got, want)
+	}
+	if h.ui.HasText("Cloning…") {
+		t.Fatal("busy indicator showing after the refused clone")
+	}
+	for _, dir := range []string{filepath.Join(parent, "up"), filepath.Join(parent, "up ")} {
+		if _, err := os.Stat(dir); err == nil {
+			t.Fatalf("%q exists after the refused clone", dir)
+		}
+	}
+	if got := gitCloneInvocations(t, gitLog); got != 0 {
+		t.Fatalf("%d git clone invocations after the refused clone, want 0", got)
+	}
+	if len(h.store.Repos()) != 0 {
+		t.Fatalf("store gained an entry: %+v", h.store.Repos())
+	}
+	if h.app.session.HasRepo() {
+		t.Fatal("a repository opened when the clone was refused")
+	}
+	h.ui.Key(0, ui.KeyEscape)
+	h.ui.Frame()
+}
+
+// A server folder ending in a space is refused before the dialog even reads
+// the address: the error names the Server Folder field and ssh never runs,
+// which the recording ssh shim on PATH proves by staying silent.
+func TestCloneRejectsEdgeSpacesServerFolder(t *testing.T) {
+	probeDir := t.TempDir()
+	sshLog := filepath.Join(probeDir, "ssh-log.txt")
+	recordingSSHShim(t, filepath.Join(probeDir, "bin"), sshLog)
+	t.Setenv("PATH", filepath.Join(probeDir, "bin")+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	h := newTestApp(t)
+	closeSync(t, h)
+	openCloneDialogAtSSH(t, h)
+	cloneSSHInto(t, h, "https://example.com/owner/app.git", "tester@127.0.0.1:/srv/repos ", "", "app")
+
+	st := h.app.cloneUI()
+	if !st.open {
+		t.Fatal("dialog closed on a server folder ending in a space")
+	}
+	if st.busy {
+		t.Fatal("dialog stayed busy after the validation error")
+	}
+	if got, want := st.err, "Server Folder cannot begin or end with a space."; got != want {
+		t.Fatalf("error = %q, want %q", got, want)
+	}
+	if h.ui.HasText("Cloning…") {
+		t.Fatal("busy indicator showing after the refused clone")
+	}
+	data, err := os.ReadFile(sshLog)
+	if err != nil {
+		t.Fatalf("read ssh shim log: %v", err)
+	}
+	if strings.TrimSpace(string(data)) != "" {
+		t.Fatalf("ssh ran despite the refused server folder; log:\n%s", data)
+	}
+	if len(h.store.Repos()) != 0 {
+		t.Fatalf("store gained an entry: %+v", h.store.Repos())
+	}
+	if h.app.session.HasRepo() {
+		t.Fatal("a repository opened when the clone was refused")
+	}
+	h.ui.Key(0, ui.KeyEscape)
+	h.ui.Frame()
+}
