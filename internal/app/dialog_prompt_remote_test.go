@@ -227,10 +227,54 @@ func TestDialogPromptRemotePasswordCancelEscapeLoopbackSSH(t *testing.T) {
 	})
 }
 
+// Clicking outside the password dialog on its dimmed backdrop answers the
+// background worker with cancel exactly once.
+func TestDialogPromptRemotePasswordCancelBackdropLoopbackSSH(t *testing.T) {
+	testDialogPromptRemoteCancelLoopbackSSH(t, func(t *testing.T, h *testHarness) {
+		h.ui.ClickAt(20, 20)
+	})
+}
+
+// Switching to another repository while a password dialog is open cancels the
+// pending question exactly once so the old repository's worker wakes without
+// hanging and never receives a duplicate reply.
+func TestDialogPromptRemotePasswordCancelRepoSwitchLoopbackSSH(t *testing.T) {
+	other := newGitRepo(t, "dpr-switch-other")
+	other.CommitFile("other.txt", "other\n", "initial commit")
+
+	_, h, _ := openPasswordGatedRepo(t, "hunter2t0ps3cret")
+
+	clickFetch(t, h)
+	h.ui.Frame()
+	waitAskPass(t, h)
+	replies, forward := passAnswerProbe(t, h)
+
+	// Switching repositories updates session generation; the next frame sees
+	// the new generation in syncStateFor and cancels the pending question once.
+	h.openRepo(other.StoreRepo())
+
+	got := drainPassReplies(replies)
+	if len(got) != 1 {
+		t.Fatalf("answers delivered on repository switch = %d (%+v), want exactly 1", len(got), got)
+	}
+	if got[0].ok || got[0].answer != "" {
+		t.Fatalf("delivered answer on repository switch = %+v, want a cancel (\"\", false)", got[0])
+	}
+	forward(got[0])
+	h.drain()
+
+	if h.app.session.Busy() {
+		t.Fatal("session stayed busy after switching repository under a password question")
+	}
+	if h.ui.HasText("The remote host requires password") {
+		t.Fatal("password dialog stayed visible after switching repository")
+	}
+}
+
 // The host confirmation is destructive: its Connect button paints in the
-// danger color, and Enter — landing on the focused cancel — never answers
-// yes. Only clicking Connect delivers yes exactly once and connects; Escape
-// answers cancel exactly once.
+// danger color, Cancel holds the initial focus, and Enter — landing on the
+// focused cancel — never answers yes. Only clicking Connect delivers yes
+// exactly once and connects; Escape answers cancel exactly once.
 func TestDialogPromptRemoteHostConfirmLoopbackSSH(t *testing.T) {
 	_, h, _ := openHostKeyGatedRepo(t)
 
@@ -243,6 +287,12 @@ func TestDialogPromptRemoteHostConfirmLoopbackSSH(t *testing.T) {
 	}
 	if fill := buttonFillSample(t, h.ui, "Connect"); !fillWithin(fill, h.app.pal.danger, 12) {
 		t.Fatalf("Connect resting fill = %v, want within 12 of the danger color %v", fill, h.app.pal.danger)
+	}
+	if btn, ok := h.ui.AccessByRole(ui.RoleButton, "Connect"); !ok || btn.Focused {
+		t.Fatalf("Connect button at open = %+v (found=%v), want present and unfocused", btn, ok)
+	}
+	if btn, ok := h.ui.AccessByRole(ui.RoleButton, "Cancel"); !ok || !btn.Focused {
+		t.Fatalf("Cancel button at open = %+v (found=%v), want present and focused", btn, ok)
 	}
 	replies, forward := passAnswerProbe(t, h)
 

@@ -609,3 +609,91 @@ func TestStashSelectedLoopbackSSH(t *testing.T) {
 		t.Fatalf("server status of sb.txt = %q, want clean — neither staged nor modified", out)
 	}
 }
+
+// On a configured Linux SSH container (sshlab), the Selected files scope
+// stashes the checked modified file, staged deletion and staged rename while
+// leaving unchecked tracked and untracked files untouched, and applying the
+// stash restores the deletion as unstaged and the rename with intact content.
+func TestConfiguredLinuxStashSelected(t *testing.T) {
+	repo, srv := configuredLinuxRepo(t)
+	dir := repo.Path
+
+	for _, f := range []string{"sa.txt", "sb.txt", "sdel.txt", "sold.txt"} {
+		srv.WriteFile(t, dir, f, []byte("base "+f+"\n"))
+		srv.RunGit(t, dir, "add", f)
+	}
+	srv.RunGit(t, dir, "commit", "-q", "-m", "seed files")
+	srv.WriteFile(t, dir, "sa.txt", []byte("base sa.txt\nkeep unstaged\n"))
+	srv.WriteFile(t, dir, "sb.txt", []byte("base sb.txt\nstaged edit\n"))
+	srv.RunGit(t, dir, "add", "sb.txt")
+	srv.RunGit(t, dir, "rm", "-q", "sdel.txt")
+	srv.RunGit(t, dir, "mv", "sold.txt", "sren.txt")
+	srv.WriteFile(t, dir, "snew.txt", []byte("brand new\n"))
+
+	h := newTestApp(t)
+	openSSHRepoThroughSwitcher(t, h, repo)
+	if err := h.app.session.LoadErr(); err != nil {
+		t.Fatalf("SSH snapshot load failed: %v", err)
+	}
+
+	openSaveStashDialog(t, h)
+	switchSaveStashToSelected(t, h)
+	for _, f := range []string{"sa.txt", "snew.txt"} {
+		if err := h.ui.Click("Stash " + f); err != nil {
+			t.Fatalf("uncheck %q: %v\ntexts=%q", f, err, h.ui.Texts())
+		}
+		h.ui.Frame()
+	}
+	writeSaveStashMessage(t, h, "linux selected work")
+	confirmSaveStash(t, h)
+
+	if err := h.app.session.ActionErr(); err != nil {
+		t.Fatalf("unexpected Linux SSH save error: %v", err)
+	}
+	if n := len(sshStashLines(t, srv, dir)); n != 1 {
+		t.Fatalf("server stash count = %d, want 1", n)
+	}
+	if content := string(srv.ReadFile(t, dir, "sa.txt")); content != "base sa.txt\nkeep unstaged\n" {
+		t.Fatalf("server sa.txt = %q, want unchecked edit kept", content)
+	}
+	if !remotePathExists(t, srv, dir, "snew.txt") {
+		t.Fatal("snew.txt vanished from the server though it was unchecked")
+	}
+	if content := string(srv.ReadFile(t, dir, "sdel.txt")); content != "base sdel.txt\n" {
+		t.Fatalf("server sdel.txt after stash = %q, want committed content restored", content)
+	}
+	if content := string(srv.ReadFile(t, dir, "sold.txt")); content != "base sold.txt\n" {
+		t.Fatalf("server sold.txt after stash = %q, want committed content restored", content)
+	}
+	if remotePathExists(t, srv, dir, "sren.txt") {
+		t.Fatal("sren.txt survived the stash on the server")
+	}
+	for _, p := range []string{"sb.txt", "sdel.txt", "sold.txt", "sren.txt"} {
+		if out := srv.RunGit(t, dir, "--literal-pathspecs", "status", "--porcelain", "--", p); strings.TrimSpace(out) != "" {
+			t.Fatalf("server status of %s after stash = %q, want clean", p, out)
+		}
+	}
+
+	// Applying the stash back restores the changes: deletions return as
+	// unstaged deletions (because staged deletions are unstaged before the
+	// partial push) and the renamed file keeps its exact content.
+	srv.RunGit(t, dir, "stash", "apply", "--index", "stash@{0}")
+	if remotePathExists(t, srv, dir, "sdel.txt") {
+		t.Fatal("sdel.txt still exists on the server after stash apply")
+	}
+	if got := srv.RunGit(t, dir, "status", "--porcelain", "--", "sdel.txt"); got != " D sdel.txt" {
+		t.Fatalf("status of sdel.txt after apply = %q, want unstaged deletion", got)
+	}
+	if remotePathExists(t, srv, dir, "sold.txt") {
+		t.Fatal("sold.txt still exists on the server after stash apply")
+	}
+	if got := srv.RunGit(t, dir, "status", "--porcelain", "--", "sold.txt"); got != " D sold.txt" {
+		t.Fatalf("status of sold.txt after apply = %q, want unstaged deletion", got)
+	}
+	if content := string(srv.ReadFile(t, dir, "sren.txt")); content != "base sold.txt\n" {
+		t.Fatalf("server sren.txt after apply = %q, want renamed content restored", content)
+	}
+	if content := string(srv.ReadFile(t, dir, "sb.txt")); content != "base sb.txt\nstaged edit\n" {
+		t.Fatalf("server sb.txt after apply = %q, want staged edit restored", content)
+	}
+}

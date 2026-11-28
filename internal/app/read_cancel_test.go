@@ -39,8 +39,26 @@ type readProbeCall struct {
 type readProbeExecutor struct {
 	delegate git.Executor
 
-	mu     sync.Mutex
-	probes []*readProbeCall
+	mu        sync.Mutex
+	probes    []*readProbeCall
+	closed    chan struct{}
+	closeOnce sync.Once
+}
+
+func newReadProbeExecutor(delegate git.Executor) *readProbeExecutor {
+	return &readProbeExecutor{
+		delegate: delegate,
+		closed:   make(chan struct{}),
+	}
+}
+
+// close releases every blocked probe so test teardown drains promptly even
+// after an assertion fails mid-flight.
+func (e *readProbeExecutor) close() {
+	if e == nil || e.closed == nil {
+		return
+	}
+	e.closeOnce.Do(func() { close(e.closed) })
 }
 
 func (e *readProbeExecutor) Describe() string { return e.delegate.Describe() }
@@ -73,6 +91,8 @@ func (e *readProbeExecutor) Run(ctx context.Context, stdin []byte, args ...strin
 		return nil, ctx.Err()
 	case <-c.release:
 		return nil, nil
+	case <-e.closed:
+		return nil, context.Canceled
 	}
 }
 
@@ -130,7 +150,7 @@ func newReadCancelFixture(t *testing.T, name string) (*gitRepoFixture, *readProb
 	t.Helper()
 	repo := newGitRepo(t, name)
 	repo.CommitFile("base.txt", "base\n", "initial commit")
-	ex := &readProbeExecutor{delegate: &git.LocalExecutor{Dir: repo.Path()}}
+	ex := newReadProbeExecutor(&git.LocalExecutor{Dir: repo.Path()})
 	return repo, ex
 }
 
@@ -141,6 +161,13 @@ func newReadCancelSession(t *testing.T, factory func(store.Repo) *git.Repo) (*re
 	q := newUIQueue()
 	t.Cleanup(q.releaseAllAndWait)
 	s := newRepoSession(q.post, q.spawn, factory)
+	t.Cleanup(func() {
+		if s.repo != nil {
+			if ex, ok := s.repo.Exec.(*readProbeExecutor); ok {
+				ex.close()
+			}
+		}
+	})
 	return s, q
 }
 
@@ -384,9 +411,10 @@ func TestReadCancelFileInspector(t *testing.T) {
 	repo := newGitRepo(t, "rc-inspector")
 	repo.CommitFile("readcancelprobe-blame.txt", "one\n", "initial commit")
 	repo.CommitFile("readcancelprobe-hist.txt", "one\ntwo\n", "second commit")
-	ex := &readProbeExecutor{delegate: &git.LocalExecutor{Dir: repo.Path()}}
+	ex := newReadProbeExecutor(&git.LocalExecutor{Dir: repo.Path()})
 
 	h := newTestApp(t)
+	t.Cleanup(ex.close)
 	h.app.openRepoFn = func(store.Repo) *git.Repo { return git.New(ex) }
 	h.openRepo(repo.StoreRepo())
 	h.drain()
@@ -835,4 +863,128 @@ func writeLocalFakeGit(t *testing.T) string {
 		t.Fatalf("write local fake git: %v", err)
 	}
 	return fake
+}
+
+// linuxScanProcesses returns pid, pgid and command line of every process on
+// the configured Linux SSH container via /proc, compatible with GNU and BusyBox.
+func linuxScanProcesses(t *testing.T, srv *sshtest.Target) [][3]string {
+	t.Helper()
+	const script = `for p in /proc/[0-9]*; do
+  stat=$(cat "$p/stat" 2>/dev/null) || continue
+  cmd=$(tr '\0' ' ' < "$p/cmdline" 2>/dev/null) || continue
+  [ -n "$cmd" ] || continue
+  pg=$(printf '%s\n' "$stat" | awk '{sub(/.*\) /,"",$0); print $3}')
+  printf '%s %s %s\n' "${p#/proc/}" "$pg" "$cmd"
+done`
+	out := srv.RunShell(t, script)
+	var entries [][3]string
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 3 {
+			entries = append(entries, [3]string{fields[0], fields[1], strings.Join(fields[2:], " ")})
+		}
+	}
+	return entries
+}
+
+func linuxGroupLeader(entries [][3]string, token string) int {
+	for _, e := range entries {
+		if e[0] == e[1] && strings.Contains(e[2], token) {
+			if pg, err := strconv.Atoi(e[1]); err == nil && pg > 0 {
+				return pg
+			}
+		}
+	}
+	return 0
+}
+
+func linuxGroupAlive(entries [][3]string, pg int) bool {
+	want := strconv.Itoa(pg)
+	for _, e := range entries {
+		if e[1] == want {
+			return true
+		}
+	}
+	return false
+}
+
+// On a configured Linux SSH container (sshlab), superseding an in-flight
+// sessionRead stops the remote git process group on the server within ten
+// seconds, and canceling the superseding read stops its process group too.
+func TestConfiguredLinuxReadCancel(t *testing.T) {
+	repo, srv := configuredLinuxRepo(t)
+	startedDir := srv.TempDir(t, "rc-started")
+
+	s, q := newReadCancelSession(t, defaultOpenGitRepo)
+	s.Open(repo)
+	q.Drain(t)
+	if err := s.LoadErr(); err != nil {
+		t.Fatalf("SSH snapshot load failed: %v", err)
+	}
+
+	startLinuxProbe := func(token string, delivered *int) {
+		t.Helper()
+		aliasCmd := fmt.Sprintf("alias.rcprobe=!sh -c 'touch %s; sleep 30 & wait'", git.ShellQuote(startedDir+"/"+token))
+		ok := sessionRead(s, "scope-x", func(r *git.Repo) (string, error) {
+			err := r.Run("-c", aliasCmd, "rcprobe", readProbeToken+token)
+			return token, err
+		}, func(string, error) {
+			*delivered++
+		})
+		if !ok {
+			t.Fatalf("sessionRead of %q did not start", token)
+		}
+	}
+
+	waitLinuxProbe := func(token string) int {
+		t.Helper()
+		marker := startedDir + "/" + token
+		deadline := time.Now().Add(10 * time.Second)
+		for {
+			if strings.TrimSpace(srv.RunShell(t, "if [ -f "+git.ShellQuote(marker)+" ]; then echo yes; fi")) == "yes" {
+				if pg := linuxGroupLeader(linuxScanProcesses(t, srv), readProbeToken+token); pg > 0 {
+					return pg
+				}
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("linux probe %q never started with a visible session leader", token)
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
+
+	waitLinuxGroupGone := func(pg int, label string) {
+		t.Helper()
+		deadline := time.Now().Add(10 * time.Second)
+		for {
+			if !linuxGroupAlive(linuxScanProcesses(t, srv), pg) {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("%s: remote process group %d still alive past deadline", label, pg)
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
+
+	var done int
+	startLinuxProbe("linuxa", &done)
+	pgA := waitLinuxProbe("linuxa")
+
+	startLinuxProbe("linuxb", &done)
+	waitLinuxGroupGone(pgA, "superseded read on linux server")
+
+	pgB := waitLinuxProbe("linuxb")
+	s.cancelRead("scope-x")
+	waitLinuxGroupGone(pgB, "canceled read on linux server")
+
+	q.Drain(t)
+	if done != 0 {
+		t.Fatalf("superseded/canceled reads delivered %d results, want 0", done)
+	}
+	for _, e := range linuxScanProcesses(t, srv) {
+		if strings.Contains(e[2], readProbeToken+"linux") {
+			t.Fatalf("lingering remote probe process after cancel: %v", e)
+		}
+	}
 }

@@ -68,8 +68,13 @@ func (r *Repo) StashSave(message string) (bool, error) {
 // stash cleans partial stashes by adding the paths, and git add refuses a
 // path missing from both the index and the working tree, so the cleanup
 // dies after the entry was already created and the deletion stays behind.
-// Resetting it beforehand converts it into the unstaged deletion the
-// cleanup can pick up, and the stash records the same removal either way.
+// Resetting it beforehand converts it into an unstaged deletion that the
+// cleanup can pick up. Two consequences follow: applying the stash back
+// (even with --index) restores the deletion as unstaged rather than staged
+// (for a staged rename, the added new path returns staged while the old
+// path's deletion returns unstaged), and the reset + push is not atomic —
+// if git stash push fails afterwards, the deletions remain unstaged with
+// no file contents lost, and the returned error states this.
 func (r *Repo) StashPaths(message string, paths []string) error {
 	var chosen []string
 	for _, path := range paths {
@@ -81,7 +86,8 @@ func (r *Repo) StashPaths(message string, paths []string) error {
 	if len(chosen) == 0 {
 		return fmt.Errorf("a partial stash needs a file")
 	}
-	if err := r.unstageStashDeletions(chosen); err != nil {
+	unstaged, err := r.unstageStashDeletions(chosen)
+	if err != nil {
 		return err
 	}
 	args := []string{"--literal-pathspecs", "stash", "push", "--include-untracked"}
@@ -90,22 +96,29 @@ func (r *Repo) StashPaths(message string, paths []string) error {
 	}
 	args = append(args, "--")
 	args = append(args, chosen...)
-	_, err := r.run(quick, args...)
-	return err
+	if _, err := r.run(quick, args...); err != nil {
+		if len(unstaged) > 0 {
+			return fmt.Errorf("%w (staged deletions were unstaged; no file contents were lost)", err)
+		}
+		return err
+	}
+	return nil
 }
 
 // unstageStashDeletions resets the index entries of the chosen paths whose
-// staged state is a deletion, so a partial stash of them does not die in
-// its cleanup. Rename detection is off for the look, because a deletion
-// paired into a rename would hide behind its R. A path staged as deleted
+// staged state is a deletion, returning the paths that were unstaged, so a
+// partial stash of them does not die in its cleanup. Rename detection is off
+// for the look, because a deletion paired into a rename would hide behind
+// its R. Because the deletion enters the stash unstaged, applying the stash
+// later restores it unstaged rather than staged. A path staged as deleted
 // yet present in the working tree with new content reads as a modification
 // after the reset, and stashing it keeps exactly that content, the same
 // end state the stash of the staged deletion alone would reach.
-func (r *Repo) unstageStashDeletions(paths []string) error {
+func (r *Repo) unstageStashDeletions(paths []string) ([]string, error) {
 	args := append([]string{"--literal-pathspecs", "diff", "--cached", "--no-renames", "--diff-filter=D", "--name-only", "-z", "--"}, paths...)
 	out, err := r.run(quick, args...)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	var deleted []string
 	for _, path := range strings.Split(string(out), "\x00") {
@@ -114,11 +127,13 @@ func (r *Repo) unstageStashDeletions(paths []string) error {
 		}
 	}
 	if len(deleted) == 0 {
-		return nil
+		return nil, nil
 	}
 	reset := append([]string{"--literal-pathspecs", "reset", "-q", "--"}, deleted...)
-	_, err = r.run(quick, reset...)
-	return err
+	if _, err := r.run(quick, reset...); err != nil {
+		return nil, err
+	}
+	return deleted, nil
 }
 
 func (r *Repo) StashPushWith(o StashOptions) error {
