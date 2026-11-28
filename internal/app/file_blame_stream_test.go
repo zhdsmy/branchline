@@ -17,7 +17,7 @@ import (
 )
 
 // The tests of this file drive the streaming blame through the real UI of a
-// real repository. Two test hooks of the inspector state make the stream
+// real repository. Two package-level test hooks make the stream
 // deterministic without any sleep: a fake clock the batching reads, so a
 // test decides exactly when a batch window elapses, and a decorator around
 // the hunk delivery, so a test holds the stream at chosen hunks, reorders or
@@ -29,8 +29,8 @@ import (
 // h.queue.RunNext one at a time, in order, and drains only once nothing is
 // held back anymore.
 
-// blameFakeClock is the manually advanced clock a test installs as the
-// inspector's blameNow. It starts at the zero time; advancing moves it in
+// blameFakeClock is the manually advanced clock a test installs as
+// fileBlameNow. It starts at the zero time; advancing moves it in
 // one step. The worker goroutine reads it while the test writes it, so both
 // go through the mutex.
 type blameFakeClock struct {
@@ -51,26 +51,30 @@ func (c *blameFakeClock) advance(d time.Duration) {
 }
 
 // blameTurnstile holds every delivery of a blame stream until the test
-// permits it, one token per hunk, and acknowledges every completed delivery
-// on acks. Acknowledgments are cumulative: the n-th received acknowledgment
-// means n deliveries completed since the stream started, however they
-// batched. permit never blocks and open releases everything, so a test that
-// fails midway cannot strand the worker goroutine.
+// permits it, one token per hunk, signals entered before blocking on tokens,
+// and acknowledges every completed delivery on acks. Both entered and acks
+// are cumulative: the n-th received signal means n deliveries entered or
+// completed since the stream started, however they batched. permit never
+// blocks and open releases everything, so a test that fails midway cannot
+// strand the worker goroutine.
 type blameTurnstile struct {
 	tokens   chan struct{}
+	entered  chan struct{}
 	acks     chan struct{}
 	openOnce sync.Once
-	// consumed counts the acknowledgments the test goroutine received so
-	// far, so awaitAcks can wait for a cumulative total. Only the test
-	// goroutine reads and writes it.
-	consumed int
+	// enteredCount and consumed count the signals the test goroutine
+	// received so far, so awaitEntered and awaitAcks can wait for a
+	// cumulative total. Only the test goroutine reads and writes them.
+	enteredCount int
+	consumed     int
 }
 
 func newBlameTurnstile(t *testing.T) *blameTurnstile {
 	t.Helper()
 	ts := &blameTurnstile{
-		tokens: make(chan struct{}, 512),
-		acks:   make(chan struct{}, 512),
+		tokens:  make(chan struct{}, 512),
+		entered: make(chan struct{}, 512),
+		acks:    make(chan struct{}, 512),
 	}
 	t.Cleanup(ts.open)
 	return ts
@@ -84,6 +88,23 @@ func (ts *blameTurnstile) permit(n int) {
 
 func (ts *blameTurnstile) open() {
 	ts.openOnce.Do(func() { close(ts.tokens) })
+}
+
+// awaitEntered waits until n hunk deliveries in total have reached the gate,
+// so a test can cancel a stream while the worker is deterministically inside
+// a callback rather than racing ahead of the cancellation check.
+func (ts *blameTurnstile) awaitEntered(t *testing.T, n int) {
+	t.Helper()
+	deadline := time.NewTimer(queueTimeout)
+	defer deadline.Stop()
+	for ts.enteredCount < n {
+		select {
+		case <-ts.entered:
+			ts.enteredCount++
+		case <-deadline.C:
+			t.Fatalf("timed out waiting for hunk delivery entry %d of %d", ts.enteredCount+1, n)
+		}
+	}
 }
 
 // awaitAcks waits until n delivery acknowledgments in total have been
@@ -103,11 +124,11 @@ func (ts *blameTurnstile) awaitAcks(t *testing.T, n int) {
 	}
 }
 
-// wrap returns the hunk decorator the inspector's blameWrapHunk hook
-// receives: every delivery waits for one token and acknowledges its
-// completion.
+// wrap returns the hunk decorator fileBlameWrapHunk receives: every delivery
+// signals entry, waits for one token, and acknowledges its completion.
 func (ts *blameTurnstile) wrap(deliver func(git.BlameHunk)) func(git.BlameHunk) {
 	return func(h git.BlameHunk) {
+		ts.entered <- struct{}{}
 		<-ts.tokens
 		deliver(h)
 		ts.acks <- struct{}{}
@@ -854,8 +875,10 @@ func TestFileBlameStreamCancelDiscardsLateBatches(t *testing.T) {
 		t.Fatalf("covered before the close = %d, want 1", st.blameCovered)
 	}
 
-	// The first stream stands inside the delivery of its second hunk.
-	// Closing the inspector cancels the read.
+	// Wait until the first stream actually enters its second hunk callback
+	// before closing, so canceling happens mid-callback rather than racing
+	// ahead of the incremental parser's cancellation check.
+	ts1.awaitEntered(t, 2)
 	if err := h.ui.Click("Close File Inspector"); err != nil {
 		t.Fatalf("close inspector: %v", err)
 	}
@@ -1051,5 +1074,297 @@ func TestFileBlameStreamLoopbackSSH(t *testing.T) {
 	}
 	if len(want) != 4 {
 		t.Fatalf("fixture: blame lines = %d, want 4", len(want))
+	}
+}
+
+// Canceling an in-flight blame mid-callback — by closing the inspector,
+// switching to another file, or switching to another repository — never
+// surfaces a "Blame stopped: context canceled" error and never leaves
+// blameLoading stuck true.
+func TestFileBlameStreamCancelPathsNeverShowError(t *testing.T) {
+	t.Run("close inspector", func(t *testing.T) {
+		repo := blameStreamFixture(t, "fbs-cancel-close")
+		h := newTestApp(t)
+		clock := &blameFakeClock{}
+		ts := newBlameTurnstile(t)
+		installBlameStreamHooks(t, clock, ts.wrap)
+		h.openRepo(repo.StoreRepo())
+		h.drain()
+
+		chooseFileMenuItem(t, h, "Unstaged code.txt", "Blame…")
+		st := h.app.fileInspectorUI()
+		h.queue.RunNext(t) // content
+		ts.permit(1)
+		h.queue.RunNext(t) // first hunk batch
+		h.ui.Frame()
+		ts.awaitAcks(t, 1)
+		ts.awaitEntered(t, 2)
+
+		if err := h.ui.Click("Close File Inspector"); err != nil {
+			t.Fatalf("close inspector: %v", err)
+		}
+		h.ui.Frame()
+		ts.open()
+		h.drain()
+		h.ui.Frame()
+
+		if st.open {
+			t.Fatal("inspector remained open after Close")
+		}
+		if st.blameLoading {
+			t.Fatal("blameLoading stuck true after canceled read drained")
+		}
+		if st.blameErr != nil {
+			t.Fatalf("canceled read recorded error: %v", st.blameErr)
+		}
+		if h.ui.HasText("Blame stopped") || h.ui.HasText("context canceled") {
+			t.Fatalf("canceled read leaked error text into UI; texts=%q", h.ui.Texts())
+		}
+	})
+
+	t.Run("switch file", func(t *testing.T) {
+		repo := blameStreamFixture(t, "fbs-cancel-file")
+		repo.CommitFile("other.txt", "other one\nother two\n", "add other file")
+		otherCommit := strings.TrimSpace(repo.Git("rev-parse", "HEAD"))
+
+		h := newTestApp(t)
+		clock := &blameFakeClock{}
+		ts1 := newBlameTurnstile(t)
+		ts2 := newBlameTurnstile(t)
+		var reads atomic.Int32
+		installBlameStreamHooks(t, clock, func(deliver func(git.BlameHunk)) func(git.BlameHunk) {
+			if reads.Add(1) == 1 {
+				return ts1.wrap(deliver)
+			}
+			return ts2.wrap(deliver)
+		})
+		h.openRepo(repo.StoreRepo())
+		h.drain()
+
+		// Open Blame on code.txt from Local Changes and hold mid-stream.
+		chooseFileMenuItem(t, h, "Unstaged code.txt", "Blame…")
+		st := h.app.fileInspectorUI()
+		h.queue.RunNext(t) // code.txt content
+		ts1.permit(1)
+		h.queue.RunNext(t) // code.txt first hunk
+		h.ui.Frame()
+		ts1.awaitAcks(t, 1)
+		ts1.awaitEntered(t, 2)
+
+		// Navigate to History and open Blame on other.txt, canceling code.txt.
+		if err := h.ui.Click("History"); err != nil {
+			t.Fatalf("click History: %v", err)
+		}
+		h.ui.Frame()
+		clickCommitRow(t, h, otherCommit, "add other file")
+		h.queue.RunNext(t) // commit detail
+		h.queue.RunNext(t) // selected file diff
+		h.ui.Frame()
+		chooseFileMenuItem(t, h, "File other.txt", "Blame…")
+		h.queue.RunNext(t) // other.txt content
+		h.ui.Frame()
+
+		// Release the canceled code.txt stream first so its late flush and
+		// context.Canceled completion land ahead of other.txt's hunks.
+		ts1.open()
+		h.queue.RunNext(t) // canceled code.txt flush
+		h.queue.RunNext(t) // canceled code.txt done(context.Canceled)
+		h.ui.Frame()
+		if st.blameErr != nil {
+			t.Fatalf("canceled file read set blameErr on new file: %v", st.blameErr)
+		}
+		if !st.blameLoading {
+			t.Fatal("new file blame stopped loading when canceled read finished")
+		}
+		if h.ui.HasText("Blame stopped") || h.ui.HasText("context canceled") {
+			t.Fatalf("canceled file read showed error on new file; texts=%q", h.ui.Texts())
+		}
+
+		ts2.open()
+		h.drain()
+		h.ui.Frame()
+		if st.blameLoading {
+			t.Fatal("blameLoading stuck true after second file finished")
+		}
+		if st.blameErr != nil {
+			t.Fatalf("second file blame errored: %v", st.blameErr)
+		}
+		if st.path != "other.txt" {
+			t.Fatalf("inspector path = %q, want other.txt", st.path)
+		}
+		assertBlameLinesMatchPorcelain(t, st.blameLines,
+			repo.Git("blame", "--porcelain", "-w", otherCommit, "--", "other.txt"))
+	})
+
+	t.Run("switch repository", func(t *testing.T) {
+		repoA := blameStreamFixture(t, "fbs-cancel-repo-a")
+		repoB := newGitRepo(t, "fbs-cancel-repo-b")
+		repoB.CommitFile("second.txt", "repo b one\nrepo b two\n", "repo b base")
+		repoB.WriteFile("second.txt", "repo b one\nrepo b two\nrepo b dirty\n")
+
+		metaA := repoA.StoreRepo()
+		metaB := repoB.StoreRepo()
+		h := newTestApp(t, metaA, metaB)
+		clock := &blameFakeClock{}
+		ts1 := newBlameTurnstile(t)
+		ts2 := newBlameTurnstile(t)
+		var reads atomic.Int32
+		installBlameStreamHooks(t, clock, func(deliver func(git.BlameHunk)) func(git.BlameHunk) {
+			if reads.Add(1) == 1 {
+				return ts1.wrap(deliver)
+			}
+			return ts2.wrap(deliver)
+		})
+		h.openRepo(metaA)
+		h.drain()
+
+		chooseFileMenuItem(t, h, "Unstaged code.txt", "Blame…")
+		st := h.app.fileInspectorUI()
+		h.queue.RunNext(t) // repoA content
+		ts1.permit(1)
+		h.queue.RunNext(t) // repoA first hunk
+		h.ui.Frame()
+		ts1.awaitAcks(t, 1)
+		ts1.awaitEntered(t, 2)
+
+		// Switch to repoB through the Repository Switcher while repoA's blame
+		// stands inside its callback.
+		if err := h.ui.Click("Repository Switcher"); err != nil {
+			t.Fatalf("open Repository Switcher: %v", err)
+		}
+		h.ui.Frame()
+		if err := h.ui.Click(metaB.Name); err != nil {
+			t.Fatalf("select %q in Repository Switcher: %v", metaB.Name, err)
+		}
+		h.ui.Frame()
+
+		ts1.open()
+		h.drain()
+		h.ui.Frame()
+
+		if st.open {
+			t.Fatal("inspector stayed open across repository switch")
+		}
+		if st.blameLoading {
+			t.Fatal("blameLoading stuck true after repository switch")
+		}
+		if st.blameErr != nil {
+			t.Fatalf("canceled repoA blame left error after switch: %v", st.blameErr)
+		}
+		if h.ui.HasText("Blame stopped") || h.ui.HasText("context canceled") {
+			t.Fatalf("canceled repoA blame leaked error text; texts=%q", h.ui.Texts())
+		}
+
+		// Opening Blame in repoB runs cleanly.
+		ts2.open()
+		chooseFileMenuItem(t, h, "Unstaged second.txt", "Blame…")
+		h.drain()
+		if st.blameErr != nil {
+			t.Fatalf("repoB blame errored: %v", st.blameErr)
+		}
+		if st.blameLoading {
+			t.Fatal("repoB blameLoading stuck true")
+		}
+		assertBlameLinesMatchPorcelain(t, st.blameLines,
+			repoB.Git("blame", "--porcelain", "-w", "HEAD", "--", "second.txt"))
+	})
+}
+
+// Over a real loopback SSH connection, opening Blame from the UI displays the
+// file content before attribution arrives, fills attribution progressively as
+// remote hunks stream in, and finishes matching a local BlameLines read field
+// by field.
+func TestFileBlameStreamLoopbackSSHProgressive(t *testing.T) {
+	repo, srv := loopbackSSHRepo(t)
+	sshHistoryFixture(t, srv, repo.Path)
+
+	h := newTestApp(t, repo)
+	clock := &blameFakeClock{}
+	ts := newBlameTurnstile(t)
+	installBlameStreamHooks(t, clock, ts.wrap)
+	openSSHRepoInApp(t, h, repo)
+
+	chooseFileMenuItem(t, h, "Unstaged history.txt", "Blame…")
+	st := h.app.fileInspectorUI()
+
+	// Step 1: content arrives over SSH before any hunk is permitted.
+	h.queue.RunNext(t) // remote BlobContent batch
+	h.ui.Frame()
+	if !st.blameLoading {
+		t.Fatal("SSH blame finished before any hunk was permitted")
+	}
+	if len(st.blameLines) != 4 || st.blameCovered != 0 {
+		t.Fatalf("SSH after content: lines=%d covered=%d, want 4 and 0", len(st.blameLines), st.blameCovered)
+	}
+	for _, text := range []string{"one changed", "two", "three", "four"} {
+		if !h.ui.HasText(text) {
+			t.Fatalf("SSH line text %q missing before attribution; texts=%q", text, h.ui.Texts())
+		}
+	}
+	for _, subj := range []string{"change line one", "create history", "add line four"} {
+		if h.ui.HasText(subj) {
+			t.Fatalf("SSH commit subject %q rendered before any hunk arrived; texts=%q", subj, h.ui.Texts())
+		}
+	}
+	if !h.ui.HasText("Loading blame… 0 of 4 lines") {
+		t.Fatalf("SSH missing 0-of-4 progress row; texts=%q", h.ui.Texts())
+	}
+
+	// Step 2: permit the first remote hunk; partial attribution renders while
+	// remaining lines stay unattributed.
+	ts.permit(1)
+	h.queue.RunNext(t) // first SSH hunk batch
+	h.ui.Frame()
+	ts.awaitAcks(t, 1)
+	if !st.blameLoading {
+		t.Fatal("SSH blame stopped loading after only one hunk")
+	}
+	if st.blameCovered <= 0 || st.blameCovered >= 4 {
+		t.Fatalf("SSH covered after first hunk = %d, want between 1 and 3", st.blameCovered)
+	}
+	wantProgress := fmt.Sprintf("Loading blame… %d of 4 lines", st.blameCovered)
+	if !h.ui.HasText(wantProgress) {
+		t.Fatalf("SSH missing partial progress row %q; texts=%q", wantProgress, h.ui.Texts())
+	}
+	var attributed, unattributed int
+	for _, l := range st.blameLines {
+		if l.Hash != "" {
+			attributed++
+		} else {
+			unattributed++
+		}
+	}
+	if attributed != st.blameCovered || unattributed == 0 {
+		t.Fatalf("SSH partial state mismatch: attributed=%d unattributed=%d covered=%d",
+			attributed, unattributed, st.blameCovered)
+	}
+
+	// Step 3: release the rest of the SSH stream; result matches local
+	// BlameLines field by field and the progress row disappears.
+	ts.open()
+	h.drain()
+	h.ui.Frame()
+	if st.blameErr != nil {
+		t.Fatalf("SSH blame errored: %v", st.blameErr)
+	}
+	if st.blameLoading {
+		t.Fatal("SSH blame still loading after drain")
+	}
+	if h.ui.HasText("Loading blame…") {
+		t.Fatalf("SSH progress row remained after completion; texts=%q", h.ui.Texts())
+	}
+
+	local := git.New(&git.LocalExecutor{Dir: repo.Path})
+	want, err := local.BlameLines("history.txt", "HEAD")
+	if err != nil {
+		t.Fatalf("local BlameLines: %v", err)
+	}
+	if len(st.blameLines) != len(want) {
+		t.Fatalf("SSH blame lines = %d, local BlameLines = %d", len(st.blameLines), len(want))
+	}
+	for i := range want {
+		if st.blameLines[i] != want[i] {
+			t.Fatalf("SSH blame line %d = %+v, local BlameLines = %+v", i+1, st.blameLines[i], want[i])
+		}
 	}
 }
