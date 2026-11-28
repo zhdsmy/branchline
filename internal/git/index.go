@@ -81,10 +81,9 @@ func (r *Repo) Discard(files ...FileChange) error {
 			}
 		}
 	}
-	if len(regular) > 0 {
-		if err := r.checkWorktreeObstructions(regular); err != nil {
-			return err
-		}
+	clean := append(append([]string(nil), untracked...), ignored...)
+	if err := r.checkWorktreeObstructionsFor(regular, clean, submodules); err != nil {
+		return err
 	}
 	for _, p := range submodules {
 		if err := r.restoreSubmodule(p, subOIDs[p]); err != nil {

@@ -81,3 +81,60 @@ func TestWorktreeGuardResetFileShowsErrorAndKeepsUntrackedDirectory(t *testing.T
 		t.Fatalf("the untracked content was destroyed: content %q, read ok %v", got, ok)
 	}
 }
+
+func TestWorktreeGuardMergeToolRefusalKeepsMergeResult(t *testing.T) {
+	repo := newGitRepo(t, "wg-ui-mergetool")
+	uuMergeFixture(t, repo)
+
+	h := openConflictedMerge(t, repo)
+	gate := filepath.Join(t.TempDir(), "release-tool")
+	opts := writeResultOpts(t, "resolved-by-tool\n")
+	opts.gate = gate
+	recordDir, _ := setupMergeTool(t, h, opts)
+	h.drain()
+
+	openMergeToolFor(t, h, "f.txt")
+	waitForToolRecord(t, recordDir)
+
+	obstructFileWithDirectory(t, repo, "f.txt")
+	if err := os.WriteFile(gate, []byte("go\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h.drain()
+
+	err := h.app.session.ActionErr()
+	if err == nil || !strings.Contains(err.Error(), "f.txt") {
+		t.Fatalf("merge tool write-back error = %v, want refusal naming f.txt", err)
+	}
+	got, ok := readGuardFileOr(t, repo, filepath.Join("f.txt", "inner.txt"))
+	if !ok || got != "untracked work\n" {
+		t.Fatalf("the untracked content was destroyed: content %q, read ok %v", got, ok)
+	}
+	if out := gitOutTrim(t, repo.Path(), "ls-files", "-u", "--", "f.txt"); out == "" {
+		t.Fatal("f.txt lost its unmerged index entries after write-back refusal")
+	}
+
+	if err := h.ui.RightClick("Conflicted f.txt"); err != nil {
+		t.Fatalf("right-click Conflicted f.txt: %v\ntexts=%q", err, h.ui.Texts())
+	}
+	menu := h.ui.Menu()
+	if len(menu) == 0 || menu[0] != "Save Merge Result" {
+		t.Fatalf("conflict menu after refused write-back = %q, want Save Merge Result kept", menu)
+	}
+
+	if err := os.RemoveAll(filepath.Join(repo.Path(), "f.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.ui.ChooseMenuItem("Save Merge Result"); err != nil {
+		t.Fatalf("choose Save Merge Result: %v", err)
+	}
+	h.drain()
+
+	if err := h.app.session.ActionErr(); err != nil {
+		t.Fatalf("Save Merge Result after clearing obstruction failed: %v", err)
+	}
+	assertFileBytes(t, repo, "f.txt", "resolved-by-tool\n")
+	if out := gitOutTrim(t, repo.Path(), "ls-files", "-u", "--", "f.txt"); out != "" {
+		t.Fatalf("unmerged entries remained after Save Merge Result: %q", out)
+	}
+}

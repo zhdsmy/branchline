@@ -27,7 +27,11 @@ import (
 // is a precondition of the whole batch: one obstructed path means nothing
 // runs at all.
 func (r *Repo) checkWorktreeObstructions(paths []string) error {
-	if len(paths) == 0 {
+	return r.checkWorktreeObstructionsFor(paths, nil, nil)
+}
+
+func (r *Repo) checkWorktreeObstructionsFor(checkoutPaths, cleanPaths, ancestorOnlyPaths []string) error {
+	if len(checkoutPaths) == 0 && len(cleanPaths) == 0 && len(ancestorOnlyPaths) == 0 {
 		return nil
 	}
 	// The scans are split in two because the two questions need different
@@ -43,6 +47,7 @@ func (r *Repo) checkWorktreeObstructions(paths []string) error {
 	// over — with content that cannot block anything.
 	targetSpecs := []string{}
 	ancSpecs := []string{}
+	ancTargets := []string{}
 	specs := map[string]bool{}
 	addAnc := func(s string) {
 		if s != "" && !specs[s] {
@@ -51,19 +56,37 @@ func (r *Repo) checkWorktreeObstructions(paths []string) error {
 		}
 	}
 	targets := []string{}
-	seen := map[string]bool{}
-	for _, p := range paths {
-		if p == "" {
-			continue
-		}
-		if !seen[p] {
-			seen[p] = true
+	seenTarget := map[string]bool{}
+	seenAncTarget := map[string]bool{}
+	addTarget := func(p string) {
+		if p != "" && !seenTarget[p] {
+			seenTarget[p] = true
 			targets = append(targets, p)
 			targetSpecs = append(targetSpecs, p)
 		}
+	}
+	addAncTarget := func(p string) {
+		if p == "" || seenAncTarget[p] {
+			return
+		}
+		seenAncTarget[p] = true
+		ancTargets = append(ancTargets, p)
 		for anc := parentDir(p); anc != ""; anc = parentDir(anc) {
 			addAnc(anc)
 		}
+	}
+	for _, p := range checkoutPaths {
+		addTarget(p)
+		addAncTarget(p)
+	}
+	for _, p := range cleanPaths {
+		if strings.HasSuffix(p, "/") {
+			continue
+		}
+		addTarget(p)
+	}
+	for _, p := range ancestorOnlyPaths {
+		addAncTarget(p)
 	}
 	under, err := r.worktreeOthers(targetSpecs, false)
 	if err != nil {
@@ -90,7 +113,7 @@ func (r *Repo) checkWorktreeObstructions(paths []string) error {
 			}
 		}
 	}
-	for _, p := range targets {
+	for _, p := range ancTargets {
 		if obstructed[p] {
 			// Already reported at its own place.
 			continue
@@ -236,7 +259,7 @@ func (r *Repo) lsFilesStageEntries(paths []string) (map[string][2]string, error)
 // submodule update instead of reset --hard also keeps an obstruction in
 // the submodule's own tree in the user's hands rather than destroying it.
 func (r *Repo) restoreSubmodule(path, oid string) error {
-	if _, err := r.run(slow, "submodule", "update", "--no-fetch", "--", path); err != nil {
+	if _, err := r.run(slow, "submodule", "update", "--no-fetch", "--checkout", "--", path); err != nil {
 		return err
 	}
 	// submodule update exits 0 without touching anything when the submodule
