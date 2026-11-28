@@ -184,4 +184,3 @@ func TestExecStreamFallbackWriter(t *testing.T) {
 		t.Errorf("wrote %q, want %q", w.writes[0], payload)
 	}
 }
-

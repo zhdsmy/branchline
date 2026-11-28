@@ -329,11 +329,7 @@ func TestBlameIncrementalSplitBytes(t *testing.T) {
 	}
 	// The blame must hold a commit with several entries, or the elision of
 	// its later details goes untested.
-	repeated := false
-	if len(parseBlameIncremental(out, 1<<20)) >= 3 {
-		repeated = true
-	}
-	if !repeated {
+	if len(parseBlameIncremental(out, 1<<20)) < 3 {
 		t.Fatalf("the input blame has fewer than three entries: %q", out)
 	}
 	whole := parseBlameIncremental(out, 1<<20)
