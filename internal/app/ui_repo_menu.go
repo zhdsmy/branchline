@@ -13,7 +13,9 @@ import (
 // repoRowMenuItems builds the context menu of one repository row of the
 // switcher popup: Open switches to it exactly as the row's click does,
 // Show in Finder reveals a local repository's folder and disables on the
-// server paths of SSH repositories, Rename… opens the display-name dialog,
+// server paths of SSH repositories, Open in Terminal opens the repository
+// in the chosen terminal — a local folder directly, a server through an
+// SSH login — for either kind, Rename… opens the display-name dialog,
 // Copy Location copies what the row shows as the repository's address, and
 // Remove from List is the row-end minus button's removal, which never
 // touches a file.
@@ -29,6 +31,9 @@ func (a *app) repoRowMenuItems(m *ui.Menu, r store.Repo, st *reposUIState) {
 	}
 	if m.Item("Show in Finder").Disabled(r.Kind == store.SSH).Chosen() {
 		showInFinder(st, r.Path)
+	}
+	if m.Item("Open in Terminal").Chosen() {
+		a.openInTerminal(r)
 	}
 	if m.Item("Rename…").Chosen() {
 		st.renOpen = true

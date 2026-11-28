@@ -77,6 +77,7 @@ type settingsState struct {
 	appearance, appearanceApplied string
 	dateOrder, dateOrderApplied   bool
 	fetchTags, fetchTagsApplied   bool
+	terminal, terminalApplied     string
 
 	// The automatic refresh controls live with the General choices; the
 	// interval keeps both its saved text and the last text validated, so a
@@ -272,6 +273,8 @@ func (a *app) syncGeneralSettings() {
 	syncSettingsChoice(&s.dateOrder, &s.dateOrderApplied, prefs.DateOrder)
 	syncSettingsChoice(&s.fetchTags, &s.fetchTagsApplied, prefs.FetchTags)
 	syncSettingsChoice(&s.refreshAuto, &s.refreshAutoApplied, !prefs.DisableStatusUpdate)
+	terminalLive, _ := terminalChoice(prefs.Terminal)
+	syncSettingsChoice(&s.terminal, &s.terminalApplied, terminalLive)
 	if s.refreshInterval == s.refreshIntervalApplied {
 		live := refreshIntervalText(prefs)
 		s.refreshInterval = live
@@ -334,6 +337,11 @@ func (a *app) settingsGeneralPage(c *ui.Context, p palette) {
 		a.redraw()
 		return nil
 	})
+	saveSettingsChoice(s, "terminal", &s.terminal, &s.terminalApplied, func(choice string) error {
+		cur := a.store.Settings()
+		cur.Terminal = choice
+		return a.store.SetSettings(cur)
+	})
 	if s.refreshInterval != s.refreshIntervalChecked {
 		s.refreshIntervalChecked = s.refreshInterval
 		n, err := parseSettingsInt(s.refreshInterval)
@@ -387,6 +395,9 @@ func (a *app) settingsGeneralPage(c *ui.Context, p palette) {
 		ui.Field(c, "Refresh Interval", func() {
 			ui.TextInput(c.Key("refresh-interval"), &s.refreshInterval).Width(72).Label("Refresh interval (seconds)").Disabled(!s.refreshAuto)
 		}).Error(s.errs["refreshInterval"])
+		ui.Field(c, "Terminal", func() {
+			ui.Select(c.Key("terminal"), &s.terminal, terminalOptionValues()).Label("Terminal")
+		}).Error(s.errs["terminal"])
 	})
 }
 
