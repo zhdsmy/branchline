@@ -2,6 +2,8 @@ package app
 
 import (
 	"github.com/egoist/mygo"
+
+	"github.com/zhdsmy/branchline/internal/store"
 )
 
 // Menu item IDs of the application menu bar. The dynamic enabled state is
@@ -21,10 +23,13 @@ const (
 	menuIDQuickPull          = "menu.repository.quick-pull"
 	menuIDPush               = "menu.repository.push"
 	menuIDQuickPush          = "menu.repository.quick-push"
+	menuIDSaveStash          = "menu.repository.save-stash"
+	menuIDQuickStash         = "menu.repository.quick-stash"
 	menuIDNewBranch          = "menu.repository.new-branch"
 	menuIDNewTag             = "menu.repository.new-tag"
 	menuIDShowInFinder       = "menu.repository.show-in-finder"
 	menuIDOpenInTerminal     = "menu.repository.open-in-terminal"
+	menuIDOpenInEditor       = "menu.repository.open-in-editor"
 )
 
 // appMenuBar builds the whole application menu bar: the application menu with
@@ -133,6 +138,15 @@ func appMenuBar(getApp func() *app) *mygo.Menu {
 				}
 			})},
 			mygo.Separator(),
+			{ID: menuIDSaveStash, Label: "Save Stash…", Accelerator: "Shift+CmdOrCtrl+H", Click: click(func(a *app) {
+				if a.session.HasRepo() {
+					a.openSaveStashDialog()
+				}
+			})},
+			{ID: menuIDQuickStash, Label: "Quick Stash", Accelerator: "Alt+Shift+CmdOrCtrl+H", Click: click(func(a *app) {
+				a.quickStash()
+			})},
+			mygo.Separator(),
 			{ID: menuIDNewBranch, Label: "New Branch…", Accelerator: "Shift+CmdOrCtrl+B", Click: click(func(a *app) {
 				a.menuOpenBranchCreate()
 			})},
@@ -147,6 +161,11 @@ func appMenuBar(getApp func() *app) *mygo.Menu {
 			})},
 			{ID: menuIDOpenInTerminal, Label: "Open in Terminal", Accelerator: "Ctrl+CmdOrCtrl+T", Click: click(func(a *app) {
 				a.openActiveInTerminal()
+			})},
+			{ID: menuIDOpenInEditor, Label: "Open in Editor", Click: click(func(a *app) {
+				if a.menuOpenInEditorEnabled() {
+					a.openInEditor(a.session.Meta())
+				}
 			})},
 		}},
 		{Role: mygo.RoleWindowMenu},
@@ -192,11 +211,20 @@ func (a *app) menuOpenBranchCreate() {
 	a.openBranchCreateDialog(sourceRef, label, hash)
 }
 
+// menuOpenInEditorEnabled is the enabled condition of the Open in Editor
+// menu item, the menu spelling of the repository row's context menu: a
+// repository on this Mac. A repository on a server has no local folder the
+// editor could open, and without a repository there is nothing to open.
+func (a *app) menuOpenInEditorEnabled() bool {
+	return a.session.HasRepo() && a.session.Meta().Kind != store.SSH
+}
+
 // menuBarEnabledStates computes the enabled state of every menu item whose
 // state follows the repository: the six sync items share the toolbar's
 // condition, New Branch… and New Tag… share the create condition of the
-// reference context menus, and the page, Finder and Terminal items need only
-// an open repository.
+// reference context menus, Quick Stash shares its own working-tree
+// condition, Open in Editor needs a repository on this Mac, and the page,
+// Finder, Terminal and Save Stash… items need only an open repository.
 func (a *app) menuBarEnabledStates() map[string]bool {
 	syncOK := a.syncActionsEnabled()
 	createOK := a.menuCreateEnabled()
@@ -208,12 +236,15 @@ func (a *app) menuBarEnabledStates() map[string]bool {
 		menuIDQuickPull:      syncOK,
 		menuIDPush:           syncOK,
 		menuIDQuickPush:      syncOK,
+		menuIDSaveStash:      hasRepo,
+		menuIDQuickStash:     a.quickStashEnabled(),
 		menuIDNewBranch:      createOK,
 		menuIDNewTag:         createOK,
 		menuIDLocalChanges:   hasRepo,
 		menuIDHistory:        hasRepo,
 		menuIDShowInFinder:   hasRepo,
 		menuIDOpenInTerminal: hasRepo,
+		menuIDOpenInEditor:   a.menuOpenInEditorEnabled(),
 	}
 }
 
