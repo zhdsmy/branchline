@@ -396,7 +396,7 @@ func (a *app) startTagRemoteDeleteProbe(tag, remote string) {
 }
 
 // tagRemoteDeleteDialog is the confirmation deleting one tag from one remote.
-// The confirm button does not exist while the probe runs, when it failed, or
+// The confirm button is disabled while the probe runs, when it failed, or
 // when the remote has no such tag: a remote state that is unknown — or known
 // to hold nothing — never deletes. What the probe answered is pinned into the
 // deletion's lease, so a tag moved on the server since the answer is refused
@@ -408,53 +408,47 @@ func (a *app) tagRemoteDeleteDialog(c *ui.Context) {
 		return
 	}
 	remotes := a.session.Snapshot().Refs.Remotes
-	if ui.Modal(c.Key("tag-remote-del-modal"), &st.rdOpen, func() {
-		ui.Column(c.Key("tag-remote-del-body")).Width(460).Padding(18, 18, 14, 18).Gap(10).Children(func() {
-			ui.Text(c, "Delete Tag from Remote").FontSize(17).FontWeight(650).TextColor(p.text)
-			ui.Field(c, "Tag:", func() {
-				ui.Text(c, st.rdTag).Font("monospace").FontSize(12).TextColor(p.text)
-			})
-			if len(remotes) == 1 {
-				ui.Field(c, "Remote:", func() {
-					ui.Text(c, st.rdRemote).FontSize(12).TextColor(p.text)
-				})
-			} else if len(remotes) > 1 {
-				ui.Field(c, "Remote:", func() {
-					if ui.Select(c, &st.rdRemote, remotes).FillWidth().Label("Delete Remote Tag Remote").Changed() {
-						a.startTagRemoteDeleteProbe(st.rdTag, st.rdRemote)
-					}
-				})
-			}
-			switch {
-			case st.rdChecking:
-				ui.Text(c, "Checking remote tag on "+st.rdRemote+"…").FontSize(12).TextColor(p.muted)
-			case st.rdErr != nil:
-				ui.Text(c, "Cannot verify the remote tag. It will not be deleted.").FontSize(12).TextColor(p.danger)
-				ui.Text(c, git.RedactText(st.rdErr.Error())).FontSize(12).TextColor(p.danger)
-			case !st.rdExists:
-				ui.Text(c, "The remote "+st.rdRemote+" has no tag named "+st.rdTag+".").FontSize(12).TextColor(p.muted)
-			default:
-				ui.Text(c, "The remote tag points at "+shortTagHash(st.rdOID)+".").FontSize(12).TextColor(p.muted)
-				ui.Text(c, "This deletes the tag on the server "+st.rdRemote+". The local tag is kept.").FontSize(12).TextColor(p.danger)
-			}
-			ui.Row(c.Key("tag-remote-del-actions")).Gap(8).Justify(ui.End).Children(func() {
-				if ui.Button(c.Key("tag-remote-del-cancel"), "Cancel").Label("Cancel").Clicked() {
-					a.closeTagRemoteDeleteDialog()
-				}
-				if !st.rdChecking && st.rdErr == nil && st.rdExists {
-					// Rendered only once the probe answered with the tag
-					// present: an unverified or absent remote tag never has
-					// a delete button.
-					if ui.PrimaryButton(c.Key("tag-remote-del-confirm"), "Delete from Remote").
-						Label("Confirm Delete Remote Tag").
-						Disabled(a.session.Busy()).
-						Clicked() {
-						a.submitTagRemoteDelete()
-					}
-				}
-			})
+	dismissed, cancelled, confirmed := dialogFrame(c, p, "tag-remote-del", &st.rdOpen, "Delete Tag from Remote", 460, func() {
+		ui.Field(c, "Tag:", func() {
+			ui.Text(c, st.rdTag).Font("monospace").FontSize(12).TextColor(p.text)
 		})
-	}).Dismissed() {
+		if len(remotes) == 1 {
+			ui.Field(c, "Remote:", func() {
+				ui.Text(c, st.rdRemote).FontSize(12).TextColor(p.text)
+			})
+		} else if len(remotes) > 1 {
+			ui.Field(c, "Remote:", func() {
+				if ui.Select(c, &st.rdRemote, remotes).FillWidth().Label("Delete Remote Tag Remote").Changed() {
+					a.startTagRemoteDeleteProbe(st.rdTag, st.rdRemote)
+				}
+			})
+		}
+		switch {
+		case st.rdChecking:
+			ui.Text(c, "Checking remote tag on "+st.rdRemote+"…").FontSize(12).TextColor(p.muted)
+		case st.rdErr != nil:
+			ui.Text(c, "Cannot verify the remote tag. It will not be deleted.").FontSize(12).TextColor(p.danger)
+			ui.Text(c, git.RedactText(st.rdErr.Error())).FontSize(12).TextColor(p.danger)
+		case !st.rdExists:
+			ui.Text(c, "The remote "+st.rdRemote+" has no tag named "+st.rdTag+".").FontSize(12).TextColor(p.muted)
+		default:
+			ui.Text(c, "The remote tag points at "+shortTagHash(st.rdOID)+".").FontSize(12).TextColor(p.muted)
+			ui.Text(c, "This deletes the tag on the server "+st.rdRemote+". The local tag is kept.").FontSize(12).TextColor(p.danger)
+		}
+	},
+		dialogAction{key: "tag-remote-del-cancel", text: "Cancel", label: "Cancel"},
+		// Deleting a tag on the server discards a release others may build
+		// on: the destructive confirmation — red, never armed by Enter. It is
+		// disabled rather than hidden while the remote state is unknown or
+		// known to hold nothing, as the Push Tag dialog does.
+		dialogAction{key: "tag-remote-del-confirm", text: "Delete from Remote", label: "Confirm Delete Remote Tag", disabled: st.rdChecking || st.rdErr != nil || !st.rdExists || a.session.Busy(), destructive: true})
+	if cancelled {
+		a.closeTagRemoteDeleteDialog()
+	}
+	if confirmed {
+		a.submitTagRemoteDelete()
+	}
+	if dismissed {
 		a.closeTagRemoteDeleteDialog()
 	}
 }
