@@ -86,6 +86,11 @@ type reposUIState struct {
 	// launches.
 	openTerminalAppFn func(openApp, target string) error
 
+	// openEditorAppFn runs open for Open in Editor. nil means the real
+	// open of macOS; tests substitute a recorder so no editor ever
+	// launches.
+	openEditorAppFn func(openApp, target string) error
+
 	reposCache    []store.Repo
 	reposCacheRev uint64
 	repoList      ui.ListState

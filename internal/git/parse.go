@@ -107,9 +107,22 @@ func ParseDetail(out []byte) CommitDetail {
 	}
 }
 
-const refFormat = "%(refname)%1f%(objectname)%1f%(upstream:short)%1f%(upstream:track)%1f%(HEAD)%1f%(*objectname)"
+// Refs scans refs/heads and refs/remotes with refFormatBranches, then
+// refs/tags with refFormatTags. Both print the six fields ParseRefs reads:
+// refname, objectname, upstream short, upstream track, HEAD mark and peeled
+// object. Only the tags scan peels: a field starting with * makes git read
+// the object every reference names to see whether it is a tag object, and
+// only a tag can be one. Branches and remote branches never are, so reading
+// their objects costs time without changing a field — the trailing %1f of
+// refFormatBranches keeps the peeled field empty, as it always was for them.
+// Tags never have an upstream either, so refFormatTags leaves those two
+// fields empty instead of asking for them.
+const refFormatBranches = "%(refname)%1f%(objectname)%1f%(upstream:short)%1f%(upstream:track)%1f%(HEAD)%1f"
+const refFormatTags = "%(refname)%1f%(objectname)%1f%1f%1f%(HEAD)%1f%(*objectname)"
 
-// ParseRefs parses git for-each-ref --format=refFormat.
+// ParseRefs parses git for-each-ref --format output in the six fields of
+// refFormatBranches and refFormatTags: the concatenated output of the branch
+// scan and the tag scan, or of one scan asking for every reference.
 func ParseRefs(out []byte) Refs {
 	var r Refs
 	remotes := map[string]bool{}
