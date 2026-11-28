@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/zhdsmy/branchline/internal/git"
 	"github.com/zhdsmy/branchline/internal/store"
@@ -322,5 +323,140 @@ func TestSessionCommitGraphWriteFailureIsSilent(t *testing.T) {
 	}
 	if got := len(h.app.session.Snapshot().Commits); got == 0 {
 		t.Fatal("repository is unusable after a failed background write: no commits in the snapshot")
+	}
+}
+
+// TestSessionCommitGraphLockContentionIsSilentAndNotRetried checks that when
+// another git operation already holds commit-graph.lock (for example a fetch
+// writing the commit-graph), the background write gives up quietly without
+// disturbing the lock or surfacing an error, and later reloads do not retry it.
+func TestSessionCommitGraphLockContentionIsSilentAndNotRetried(t *testing.T) {
+	lowerCommitGraphThreshold(t, 200)
+	fixture := commitGraphFixture(t, "cg-locked", 600)
+
+	lockFile := filepath.Join(fixture.Path(), ".git", "objects", "info", "commit-graph.lock")
+	if err := os.WriteFile(lockFile, []byte("held\n"), 0o644); err != nil {
+		t.Fatalf("create commit-graph.lock: %v", err)
+	}
+
+	rec := &commandRecorder{}
+	h := newTestApp(t)
+	h.app.openRepoFn = recordingOpenRepoFn(h, rec)
+	h.openRepo(fixture.StoreRepo())
+	h.drain()
+
+	if appCommitGraphExists(fixture.Path()) {
+		t.Fatal("commit-graph exists despite commit-graph.lock being held")
+	}
+	if got, err := os.ReadFile(lockFile); err != nil || string(got) != "held\n" {
+		t.Fatalf("commit-graph.lock = %q err %v, want untouched lock file", got, err)
+	}
+	if err := h.app.session.ActionErr(); err != nil {
+		t.Fatalf("action error after lock contention: %v", err)
+	}
+	if err := h.app.session.LoadErr(); err != nil {
+		t.Fatalf("load error after lock contention: %v", err)
+	}
+	if h.app.session.Busy() {
+		t.Fatal("session stayed busy after lock contention")
+	}
+	if got := rec.countInvocations(isCommitGraphWrite); got != 1 {
+		t.Fatalf("commit-graph write ran %d times on first open, want 1", got)
+	}
+
+	// Releasing the lock and reloading must not retry the background write:
+	// each repository path gets at most one attempt per run.
+	if err := os.Remove(lockFile); err != nil {
+		t.Fatalf("remove commit-graph.lock: %v", err)
+	}
+	h.app.session.Reload()
+	h.drain()
+	h.app.session.Reload()
+	h.drain()
+	if got := rec.countInvocations(isCommitGraphWrite); got != 1 {
+		t.Fatalf("commit-graph write ran %d times after reloads, want 1 (no retry)", got)
+	}
+}
+
+// TestSessionCommitGraphRealWatchDoesNotTriggerRefresh checks that writing
+// .git/objects/info/commit-graph under a live working-tree file watch does
+// not emit spurious refresh hints or trigger a write-refresh-write loop, while
+// a real working-tree edit still reaches the watch.
+func TestSessionCommitGraphRealWatchDoesNotTriggerRefresh(t *testing.T) {
+	lowerCommitGraphThreshold(t, 200)
+	fixture := commitGraphFixture(t, "cg-real-watch", 600)
+
+	rec := &commandRecorder{}
+	h := newTestApp(t)
+	h.app.openRepoFn = recordingOpenRepoFn(h, rec)
+	rig := installAutoRefresh(t, h)
+	rig.state.watchFactory = mygoWatchFactory
+
+	// Hold the background commit-graph worker while the real watch starts on
+	// the open repository, so the write happens under an active watch.
+	h.queue.PauseWorkers()
+	var cgWorker *gatedWorker
+	t.Cleanup(func() {
+		h.queue.ResumeWorkers()
+		h.queue.ReleaseWorker(cgWorker)
+	})
+	h.openRepo(fixture.StoreRepo())
+	loadWorker := h.queue.WaitWorker(t)
+	h.queue.ReleaseWorker(loadWorker)
+	h.queue.RunNext(t) // finishes Reload and spawns considerCommitGraph
+	cgWorker = h.queue.WaitWorker(t)
+	h.queue.ResumeWorkers()
+
+	// Start the real watch and run the baseline refresh check before the
+	// commit-graph is written.
+	autoRefreshTick(h.app)
+	h.queue.RunNext(t)
+	pumpHandoffs(rig.main)
+	if !rig.state.lastSuccess.Equal(rig.clock.now) {
+		t.Fatalf("baseline check did not stamp clock start: %v, want %v", rig.state.lastSuccess, rig.clock.now)
+	}
+	realWatch := rig.state.watch != nil
+
+	// Release the commit-graph write while the watch is running.
+	h.queue.ReleaseWorker(cgWorker)
+	cgWorker = nil
+	h.drain()
+	if !appCommitGraphExists(fixture.Path()) {
+		t.Fatal("commit-graph was not written")
+	}
+
+	// Give the real FSEvents watch time past its debounce window; writes under
+	// .git/objects/info/ must be ignored and never mark the watch dirty.
+	if realWatch {
+		deadline := time.Now().Add(350 * time.Millisecond)
+		for time.Now().Before(deadline) {
+			pumpHandoffs(rig.main)
+			if rig.state.dirty {
+				t.Fatal("commit-graph write under .git/objects/info/ marked the working-tree watch dirty")
+			}
+			time.Sleep(25 * time.Millisecond)
+		}
+	}
+	autoRefreshTick(h.app)
+	h.drain()
+	if got := rec.countInvocations(isCommitGraphWrite); got != 1 {
+		t.Fatalf("commit-graph write ran %d times after watch settled, want 1", got)
+	}
+	if got := rec.countInvocations(isCommitGraphProbe); got != 1 {
+		t.Fatalf("commit-graph probe ran %d times after watch settled, want 1", got)
+	}
+
+	// Confirm the real watch is alive by writing a working-tree file: it must
+	// raise a dirty hint and refresh without re-running the commit-graph write.
+	if realWatch {
+		fixture.WriteFile("watch-probe.txt", "hello\n")
+		awaitHint(t, rig)
+		tickAutoRefresh(t, h)
+		if got := rec.countInvocations(isCommitGraphWrite); got != 1 {
+			t.Fatalf("commit-graph write ran %d times after working-tree refresh, want 1", got)
+		}
+		if got := rec.countInvocations(isCommitGraphProbe); got != 1 {
+			t.Fatalf("commit-graph probe ran %d times after working-tree refresh, want 1", got)
+		}
 	}
 }
