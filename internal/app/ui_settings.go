@@ -78,6 +78,16 @@ type settingsState struct {
 	dateOrder, dateOrderApplied   bool
 	fetchTags, fetchTagsApplied   bool
 	terminal, terminalApplied     string
+	editor, editorApplied         string
+
+	// editorApps caches the editors the background scan of
+	// scanGeneralEditors found, ready once editorsReady is set; the page
+	// hides its Editor control until then. editorScanGen is the generation
+	// of the scan in flight, so a late answer a newer scan superseded is
+	// discarded.
+	editorsReady  bool
+	editorApps    []editorApp
+	editorScanGen int
 
 	// The automatic refresh controls live with the General choices; the
 	// interval keeps both its saved text and the last text validated, so a
@@ -250,7 +260,10 @@ func (a *app) settingsTabRow(c *ui.Context, p palette, pages []settingsPageDef) 
 
 // openGeneralSettings primes the General page when the Settings window opens
 // or returns to the tab, discarding any unsaved interval draft so the field
-// shows the persisted value again.
+// shows the persisted value again, and starts the one background scan for
+// installed editors the page needs: scanning is file system work no frame
+// render may do, so it happens here — once per visit — and its result posts
+// back into the cache the per-frame controls read.
 func (a *app) openGeneralSettings() {
 	s := &a.settings
 	s.refreshInterval = ""
@@ -259,6 +272,7 @@ func (a *app) openGeneralSettings() {
 	if s.errs != nil {
 		delete(s.errs, "refreshInterval")
 	}
+	a.scanGeneralEditors()
 	a.syncGeneralSettings()
 }
 
@@ -275,6 +289,10 @@ func (a *app) syncGeneralSettings() {
 	syncSettingsChoice(&s.refreshAuto, &s.refreshAutoApplied, !prefs.DisableStatusUpdate)
 	terminalLive, _ := terminalChoice(prefs.Terminal)
 	syncSettingsChoice(&s.terminal, &s.terminalApplied, terminalLive)
+	// The editor sync reads only the cached scan; with none finished yet
+	// the choice resolves to empty, which the hidden control never shows.
+	editorLive := editorChoice(prefs.Editor, s.editorApps).name
+	syncSettingsChoice(&s.editor, &s.editorApplied, editorLive)
 	if s.refreshInterval == s.refreshIntervalApplied {
 		live := refreshIntervalText(prefs)
 		s.refreshInterval = live
@@ -342,6 +360,11 @@ func (a *app) settingsGeneralPage(c *ui.Context, p palette) {
 		cur.Terminal = choice
 		return a.store.SetSettings(cur)
 	})
+	saveSettingsChoice(s, "editor", &s.editor, &s.editorApplied, func(choice string) error {
+		cur := a.store.Settings()
+		cur.Editor = choice
+		return a.store.SetSettings(cur)
+	})
 	if s.refreshInterval != s.refreshIntervalChecked {
 		s.refreshIntervalChecked = s.refreshInterval
 		n, err := parseSettingsInt(s.refreshInterval)
@@ -398,6 +421,23 @@ func (a *app) settingsGeneralPage(c *ui.Context, p palette) {
 		ui.Field(c, "Terminal", func() {
 			ui.Select(c.Key("terminal"), &s.terminal, terminalOptionValues()).Label("Terminal")
 		}).Error(s.errs["terminal"])
+		// The Editor pop-up appears once the scan of the visit answered —
+		// until then the page cannot know what it offers — and only when it
+		// found an editor to choose. One pop-up serves every machine: its
+		// options are exactly the editors installed here.
+		if s.editorsReady {
+			ui.Field(c, "Editor", func() {
+				if len(s.editorApps) == 0 {
+					ui.Text(c, "No supported editor found.").FontSize(13).TextColor(p.muted)
+					return
+				}
+				options := make([]string, len(s.editorApps))
+				for i, ed := range s.editorApps {
+					options[i] = ed.name
+				}
+				ui.Select(c.Key("editor"), &s.editor, options).Label("Editor")
+			}).Error(s.errs["editor"])
+		}
 	})
 }
 

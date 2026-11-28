@@ -629,8 +629,11 @@ type Settings struct {
 	TracePack  bool   `json:"tracePack,omitempty"`
 	TracePerf  bool   `json:"tracePerf,omitempty"`
 	Terminal   string `json:"terminal,omitempty"`
-	DiffTool   string `json:"diffTool,omitempty"`
-	MergeTool  string `json:"mergeTool,omitempty"`
+	// Editor is the display name of the editor Open in Editor uses; empty
+	// means none was ever chosen, which reads as the first one installed.
+	Editor    string `json:"editor,omitempty"`
+	DiffTool  string `json:"diffTool,omitempty"`
+	MergeTool string `json:"mergeTool,omitempty"`
 	// CustomDiff and CustomMerge are the programs the Custom choice of the
 	// External Diff Tool and Merge Tool pop-ups runs.
 	CustomDiff   ToolSetup `json:"customDiff,omitempty"`
@@ -732,7 +735,7 @@ func settingsUnset(v Settings) bool {
 		!v.PushAfterCommit && !v.IgnoreSpace && !v.DiffChangesOnly && v.DiffContextLines == 0 && !v.DiffContextSaved && !v.DiffWrap && !v.DateOrder && v.BranchSpace == "" &&
 		!v.RememberCheckout && !v.MarkDirtyTabs && !v.CompactLabels &&
 		v.SubjectLow == 0 && !v.SubjectLowSaved && v.SubjectHigh == 0 && !v.SubjectHighSaved && v.PageGuide == 0 && !v.NoPageGuide && !v.ChangeMarks && !v.SpellCheck &&
-		v.AuthorName == "" && v.AuthorEmail == "" && !v.SignedOffBy && v.GitPath == "" && v.EnvPath == "" && !v.VerboseGit && !v.TraceGit && !v.TraceCurl && !v.TraceSSH && !v.TracePack && !v.TracePerf && v.Terminal == "" &&
+		v.AuthorName == "" && v.AuthorEmail == "" && !v.SignedOffBy && v.GitPath == "" && v.EnvPath == "" && !v.VerboseGit && !v.TraceGit && !v.TraceCurl && !v.TraceSSH && !v.TracePack && !v.TracePerf && v.Terminal == "" && v.Editor == "" &&
 		v.DiffTool == "" && v.MergeTool == "" && v.CustomDiff == (ToolSetup{}) && v.CustomMerge == (ToolSetup{}) && v.DiffFont == "" && v.DiffFontSize == 0 && v.DiffTabWidth == 0 && len(v.SourceFolders) == 0 && len(v.SSHKeys) == 0 && len(v.SSHKeyFiles) == 0 &&
 		!v.GitHubAvatars && !v.HandleGitHub && !v.HandleBitbucket && v.CommitPrompt == "" && v.ReviewPrompt == "" && v.UpdateFeed == "" && v.SupportEmail == "" && v.LastUpdateCheck == "" && len(v.Commands) == 0 &&
 		len(v.MergeTools) == 0 && !v.NoIssueLinks && !v.DisableStatusUpdate && v.StatusUpdateSeconds == 0 && !v.AutoCheckUpdates && !v.AutoDownloadUpdates && v.UpdateInterval == "" && v.UpdateChannel == "" && !v.NoSyntaxHighlight && v.ScanDepth == 0
