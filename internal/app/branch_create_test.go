@@ -778,11 +778,14 @@ func TestBranchInteractiveRebaseFromHistoryPageSingleForm(t *testing.T) {
 	openBranchIRDialog(t, h, "feature")
 	drainIRPlan(t, h)
 
-	// The form renders exactly once: counting the title text proves the
-	// sidebar mount did not duplicate the History page mount.
+	// The form renders exactly once: counting the dialog panels named after
+	// the form's title proves the sidebar mount did not duplicate the
+	// History page mount. The panels, not the title text: the shared frame
+	// names its panel after the title, so the window carries both the text
+	// and the name of the same one form.
 	count := 0
-	for _, text := range h.ui.Texts() {
-		if text == "Interactive Rebase" {
+	for _, a := range h.ui.AccessAll() {
+		if a.Role == ui.RoleDialog && a.Name == "Interactive Rebase" {
 			count++
 		}
 	}
