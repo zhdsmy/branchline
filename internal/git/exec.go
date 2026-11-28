@@ -132,9 +132,23 @@ func (t Trace) Env() []string {
 	return env
 }
 
+// gitEnv is the assignments ahead of git in the command sent to a server.
+// Each value is quoted for the server's shell: one with a space, such as
+// GIT_SSH_COMMAND=ssh -vvv, would otherwise end the assignment at the
+// space and the rest would run as a command. Safe values come through
+// ShellQuote unchanged, and the quotes never reach the variable: the
+// shell takes them off while it reads the assignment.
 func gitEnv(trace Trace) string {
-	env := []string{"GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0", "LC_ALL=C"}
-	return strings.Join(append(env, trace.Env()...), " ")
+	pairs := []string{"GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0", "LC_ALL=C"}
+	pairs = append(pairs, trace.Env()...)
+	env := make([]string, 0, len(pairs))
+	for _, pair := range pairs {
+		if name, value, ok := strings.Cut(pair, "="); ok {
+			pair = name + "=" + ShellQuote(value)
+		}
+		env = append(env, pair)
+	}
+	return strings.Join(env, " ")
 }
 
 // PathMode says which PATH a command on this Mac gets.
