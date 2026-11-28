@@ -174,9 +174,16 @@ func (a *app) syncHistorySelection(snap repository.Snapshot) {
 			hv.commit = cm
 		}
 		if hv.mode != historySingleCommit || prevSel != ordered[0].Hash {
-			a.exitHistoryMode()
-			hv.mode = historySingleCommit
-			a.selectHistoryCommit(ordered[0])
+			// The commit-to-working-tree comparison keeps the detail pane
+			// while the selection still is its own one commit: every other
+			// arrival at a single commit falls back to the commit's detail.
+			if hv.mode == historyCompareLocal && hv.compareLocal.commit.Hash == ordered[0].Hash {
+				a.maybeRefreshHistoryCompareLocal(snap)
+			} else {
+				a.exitHistoryMode()
+				hv.mode = historySingleCommit
+				a.selectHistoryCommit(ordered[0])
+			}
 		}
 	case 2:
 		// The default direction follows the list order, not the order the
@@ -233,6 +240,7 @@ func (a *app) exitHistoryMode() {
 	hv := &a.historyView
 	a.session.cancelRead("history-detail")
 	a.session.cancelRead("history-compare")
+	a.session.cancelRead("history-compare-local")
 	hv.diff.Clear(a.session, "history-diff")
 	hv.detail = git.CommitDetail{}
 	hv.detailErr = nil
@@ -241,6 +249,7 @@ func (a *app) exitHistoryMode() {
 	hv.fileSel = -1
 	hv.fileList = ui.ListState{}
 	hv.compare = historyCompareState{fileSel: -1}
+	hv.compareLocal = historyCompareLocalState{fileSel: -1}
 }
 
 // startHistoryCompareLoad begins the asynchronous read of the files changed

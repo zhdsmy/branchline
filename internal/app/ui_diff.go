@@ -36,6 +36,9 @@ const (
 	// is the newer side of the range (the target of git diff <base> <target>)
 	// and Base the older one.
 	diffRangeFile
+	// diffWorktreeFile compares one file in Commit against the working tree,
+	// as git diff <commit> -- <file>, with untracked files read as new.
+	diffWorktreeFile
 )
 
 // diffRequest describes one file diff to load asynchronously via sessionRead.
@@ -104,12 +107,25 @@ func rangeFileDiffRequest(base, target git.Commit, file git.FileChange) diffRequ
 	}
 }
 
+// worktreeFileDiffRequest asks for the diff of one file between commit and
+// the working tree, as git diff <commit> -- <file>. revision distinguishes
+// the working-tree reads of successive snapshots, so a refresh reloads even
+// when the same file stays selected.
+func worktreeFileDiffRequest(commit git.Commit, file git.FileChange, revision string) diffRequest {
+	return diffRequest{
+		Kind:     diffWorktreeFile,
+		Commit:   commit,
+		File:     file,
+		Revision: revision,
+	}
+}
+
 func (r diffRequest) valid() bool {
 	if r.Kind == diffNone || r.File.Path == "" {
 		return false
 	}
 	switch r.Kind {
-	case diffCommitFile:
+	case diffCommitFile, diffWorktreeFile:
 		if r.Commit.Hash == "" {
 			return false
 		}
@@ -153,6 +169,8 @@ func (r diffRequest) badge() string {
 		return r.Commit.Short()
 	case diffRangeFile:
 		return diffShortHash(r.Base) + "…" + r.Commit.Short()
+	case diffWorktreeFile:
+		return r.Commit.Short() + "…Local"
 	case diffUnstaged:
 		return "Unstaged"
 	case diffStaged:
@@ -249,7 +267,28 @@ func (d *diffPanel) Load(s *repoSession, scope string, req diffRequest) bool {
 	if d.repoGen == gen && d.loadedKey == key {
 		return false
 	}
-	return d.startLoad(s, scope, req, key, gen)
+	return d.startLoad(s, scope, req, key, gen, false)
+}
+
+// Refresh behaves like Load, except when req updates the same file that is
+// already displayed without an error: it keeps the current diff visible
+// while the replacement reads in the background, avoiding a loading flash on
+// working-tree refreshes.
+func (d *diffPanel) Refresh(s *repoSession, scope string, req diffRequest) bool {
+	if s == nil || !s.HasRepo() || !req.valid() {
+		d.Clear(s, scope)
+		return false
+	}
+	req.IgnoreSpace = s.IgnoreSpace()
+	req.EntireFile = s.DiffEntireFile()
+	req.ContextLines = s.DiffContextLines()
+	gen := s.Generation()
+	key := req.key()
+	if d.repoGen == gen && d.loadedKey == key {
+		return false
+	}
+	keep := d.repoGen == gen && d.req.Kind == req.Kind && d.req.File.Path == req.File.Path && !d.loading && d.err == nil
+	return d.startLoad(s, scope, req, key, gen, keep)
 }
 
 // Reload forces a fresh background load of the current request, for example
@@ -263,7 +302,7 @@ func (d *diffPanel) Reload(s *repoSession, scope string) bool {
 	req.IgnoreSpace = s.IgnoreSpace()
 	req.EntireFile = s.DiffEntireFile()
 	req.ContextLines = s.DiffContextLines()
-	return d.startLoad(s, scope, req, req.key(), s.Generation())
+	return d.startLoad(s, scope, req, req.key(), s.Generation(), false)
 }
 
 // Clear resets the displayed diff and invalidates any in-flight request for
@@ -295,16 +334,18 @@ func (d *diffPanel) resetContent() {
 	d.deleted = 0
 }
 
-func (d *diffPanel) startLoad(s *repoSession, scope string, req diffRequest, key string, gen uint64) bool {
+func (d *diffPanel) startLoad(s *repoSession, scope string, req diffRequest, key string, gen uint64, keepExisting bool) bool {
 	captured := req
 	captured.Commit.Parents = slices.Clone(req.Commit.Parents)
 	limit := d.limit()
 
-	d.resetContent()
+	if !keepExisting {
+		d.resetContent()
+		d.loading = true
+	}
 	d.repoGen = gen
 	d.req = captured
 	d.loadedKey = key
-	d.loading = true
 
 	started := sessionRead(s, scope, func(repo *git.Repo) (diffLoadResult, error) {
 		return readDiffPatch(repo, captured, limit)
@@ -313,6 +354,15 @@ func (d *diffPanel) startLoad(s *repoSession, scope string, req diffRequest, key
 			return
 		}
 		d.loading = false
+		d.err = nil
+		d.binary = false
+		d.tooLarge = false
+		d.empty = false
+		d.rawBytes = 0
+		d.patch = editor.FilePatch{}
+		d.state = nil
+		d.added = 0
+		d.deleted = 0
 		if err != nil {
 			d.err = err
 			return
@@ -368,6 +418,8 @@ func readDiffPatch(repo *git.Repo, req diffRequest, limit int) (diffLoadResult, 
 		raw, err = repo.StagedDiffOpts(paths, opts)
 	case diffRangeFile:
 		raw, err = repo.RangeFileDiffOpts(req.Base, req.Commit.Hash, req.File, opts)
+	case diffWorktreeFile:
+		raw, err = repo.WorktreeFileDiffOpts(req.Commit.Hash, req.File, opts)
 	default:
 		return diffLoadResult{}, fmt.Errorf("unsupported diff kind %d", req.Kind)
 	}

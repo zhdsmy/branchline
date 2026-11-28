@@ -563,7 +563,7 @@ func TestCancelMarkerLoginShells(t *testing.T) {
 			}
 			env, home := shellEnv(t)
 			dir := t.TempDir()
-			cmd := exec.Command(shell, "-c", pgidPrefix+"true")
+			cmd := exec.Command(shell, "-c", remoteShellCommand(pgidPrefix+"true"))
 			cmd.Dir = dir
 			cmd.Env = env
 			var out, downstream bytes.Buffer
