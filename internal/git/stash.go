@@ -59,7 +59,17 @@ func (r *Repo) StashSave(message string) (bool, error) {
 // StashPushWith stashes the changes described by o. Staged and untracked
 // cannot both be set: a staged stash is the index alone.
 // StashPaths stashes the named paths and leaves every other change
-// in the working tree. Untracked files among paths are included.
+// in the working tree. Untracked files among paths are included. The
+// paths are literal: a star or bracket in a file name is never a wildcard,
+// and a leading ":" never starts pathspec magic.
+//
+// A staged deletion whose path is also stashed — whether plain or the old
+// half of a rename — is first returned to the index matching HEAD: git
+// stash cleans partial stashes by adding the paths, and git add refuses a
+// path missing from both the index and the working tree, so the cleanup
+// dies after the entry was already created and the deletion stays behind.
+// Resetting it beforehand converts it into the unstaged deletion the
+// cleanup can pick up, and the stash records the same removal either way.
 func (r *Repo) StashPaths(message string, paths []string) error {
 	var chosen []string
 	for _, path := range paths {
@@ -71,13 +81,43 @@ func (r *Repo) StashPaths(message string, paths []string) error {
 	if len(chosen) == 0 {
 		return fmt.Errorf("a partial stash needs a file")
 	}
-	args := []string{"stash", "push", "--include-untracked"}
+	if err := r.unstageStashDeletions(chosen); err != nil {
+		return err
+	}
+	args := []string{"--literal-pathspecs", "stash", "push", "--include-untracked"}
 	if message = strings.TrimSpace(message); message != "" {
 		args = append(args, "-m", message)
 	}
 	args = append(args, "--")
 	args = append(args, chosen...)
 	_, err := r.run(quick, args...)
+	return err
+}
+
+// unstageStashDeletions resets the index entries of the chosen paths whose
+// staged state is a deletion, so a partial stash of them does not die in
+// its cleanup. Rename detection is off for the look, because a deletion
+// paired into a rename would hide behind its R. A path staged as deleted
+// yet present in the working tree with new content reads as a modification
+// after the reset, and stashing it keeps exactly that content, the same
+// end state the stash of the staged deletion alone would reach.
+func (r *Repo) unstageStashDeletions(paths []string) error {
+	args := append([]string{"--literal-pathspecs", "diff", "--cached", "--no-renames", "--diff-filter=D", "--name-only", "-z", "--"}, paths...)
+	out, err := r.run(quick, args...)
+	if err != nil {
+		return err
+	}
+	var deleted []string
+	for _, path := range strings.Split(string(out), "\x00") {
+		if path != "" {
+			deleted = append(deleted, path)
+		}
+	}
+	if len(deleted) == 0 {
+		return nil
+	}
+	reset := append([]string{"--literal-pathspecs", "reset", "-q", "--"}, deleted...)
+	_, err = r.run(quick, reset...)
 	return err
 }
 
