@@ -102,6 +102,15 @@ type RepoSettings struct {
 	// Diff remembers the diff header's lines of context, the choices of
 	// the Local Changes file lists, and the layout of each diff scope.
 	Diff DiffPrefs `json:"diff,omitempty"`
+
+	// HistoryCurrentBranch limits the history to the commits HEAD reaches
+	// instead of every branch, remote branch and tag; the zero value shows
+	// them all.
+	HistoryCurrentBranch bool `json:"historyCurrentBranch,omitempty"`
+	// HistoryFirstParent follows only the first parent of a merge in the
+	// history, as git log --first-parent does; the zero value walks every
+	// parent. It is independent of HistoryCurrentBranch.
+	HistoryFirstParent bool `json:"historyFirstParent,omitempty"`
 }
 
 // SidebarSections is the expanded state of one repository sidebar.
