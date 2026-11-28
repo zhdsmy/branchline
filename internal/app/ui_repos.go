@@ -57,6 +57,12 @@ type reposUIState struct {
 
 	notGitOpen bool
 	notGitDir  string
+	// The create-in-place of the notice: busy while git init runs in
+	// notGitDir, the error it failed with, and the generation discarding
+	// the completion of a create the notice no longer waits for.
+	notGitBusy bool
+	notGitErr  string
+	notGitGen  int
 
 	removeErr string
 
@@ -79,6 +85,11 @@ type reposUIState struct {
 	// open of macOS; tests substitute a recorder so no terminal ever
 	// launches.
 	openTerminalAppFn func(openApp, target string) error
+
+	// openEditorAppFn runs open for Open in Editor. nil means the real
+	// open of macOS; tests substitute a recorder so no editor ever
+	// launches.
+	openEditorAppFn func(openApp, target string) error
 
 	reposCache    []store.Repo
 	reposCacheRev uint64
@@ -183,6 +194,7 @@ func (a *app) repoSwitcher(c *ui.Context) {
 					})
 			}
 			ui.Box(c).Height(0.5).FillWidth().Background(p.hairline).Margin(4, 2)
+			a.switcherFootButton(c, st, "New Repository…", p)
 			a.switcherFootButton(c, st, "Add Local Repository…", p)
 			a.switcherFootButton(c, st, "Add SSH Repository…", p)
 			a.switcherFootButton(c, st, "Clone Repository…", p)
@@ -193,6 +205,7 @@ func (a *app) repoSwitcher(c *ui.Context) {
 	a.notGitModal(c, st)
 	a.removeErrorModal(c, st)
 	a.cloneModal(c)
+	a.newRepoModal(c)
 	a.repoRenameModal(c, st)
 }
 
@@ -292,6 +305,8 @@ func (a *app) switcherFootButton(c *ui.Context, st *reposUIState, label string, 
 		iconName, fb = "server.rack", fallbackSSH
 	} else if strings.Contains(label, "Clone") {
 		iconName, fb = "tray.and.arrow.down", fallbackCloneIcon
+	} else if strings.Contains(label, "New Repository") {
+		iconName, fb = "plus.rectangle.on.folder", fallbackRepo
 	}
 	b.Children(func() {
 		symbolIcon(c, iconName, fb, 13, p.accent)
@@ -303,6 +318,8 @@ func (a *app) switcherFootButton(c *ui.Context, st *reposUIState, label string, 
 			st.showSSHForm()
 		} else if strings.Contains(label, "Clone") {
 			a.showCloneDialog()
+		} else if strings.Contains(label, "New Repository") {
+			a.showNewRepoDialog()
 		} else {
 			a.addLocalRepo(st)
 		}
@@ -407,7 +424,10 @@ func (a *app) removeErrorModal(c *ui.Context, st *reposUIState) {
 }
 
 // notGitModal tells the user the folder chosen for Add Local Repository is
-// not inside a Git repository.
+// not inside a Git repository, and offers to make it one: Create Repository
+// Here runs git init in the folder itself, which never touches the files
+// already in it. The create runs in the background with the buttons down,
+// and its failure is written back into the notice.
 func (a *app) notGitModal(c *ui.Context, st *reposUIState) {
 	if !st.notGitOpen {
 		return
@@ -417,14 +437,40 @@ func (a *app) notGitModal(c *ui.Context, st *reposUIState) {
 			ui.Text(c, "Not a Git Repository").FontSize(16).FontWeight(600)
 			ui.Text(c, fmt.Sprintf("The '%s' directory is not a Git repository, and neither is any folder above it. Choose a folder inside a Git repository to add it.", st.notGitDir)).
 				FontSize(12.5).TextColor(a.pal.muted)
-			ui.Row(c).FillWidth().Children(func() {
+			if st.notGitBusy {
+				ui.Row(c.Key("not-git-status")).
+					FillWidth().
+					Role(ui.RoleStatus).
+					Label("Create Repository Status").
+					Busy(true).
+					Gap(8).
+					AlignItems(ui.Center).
+					Children(func() {
+						ui.Spinner(c)
+						ui.Text(c, "Creating…").FontSize(12.5).TextColor(a.pal.muted)
+					})
+			} else if st.notGitErr != "" {
+				ui.Text(c, st.notGitErr).FontSize(12.5).TextColor(a.pal.danger)
+			}
+			ui.Row(c).FillWidth().Gap(8).Children(func() {
 				ui.Spacer(c)
-				if ui.Button(c, "Close").Clicked() {
+				if ui.Button(c.Key("not-git-close"), "Close").Disabled(st.notGitBusy).Clicked() {
 					st.notGitOpen = false
+				}
+				if ui.PrimaryButton(c.Key("not-git-create"), "Create Repository Here").Disabled(st.notGitBusy).Clicked() {
+					a.initNewRepoHere(st)
 				}
 			})
 		})
 	})
+	if !st.notGitOpen {
+		// The notice closed — Close, Escape or a click outside: the
+		// completion of a create still in flight must not open anything,
+		// and its error does not greet the next folder the notice names.
+		st.notGitGen++
+		st.notGitBusy = false
+		st.notGitErr = ""
+	}
 }
 
 // sshFormRequest captures one Test Connection or Add click: the form values

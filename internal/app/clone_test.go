@@ -24,9 +24,9 @@ import (
 // the test and restores the production picker afterwards.
 func stubPickCloneFolder(t *testing.T, fn func() (string, error)) {
 	t.Helper()
-	prev := pickCloneFolderFn
-	pickCloneFolderFn = func(_ *mygo.Window) (string, error) { return fn() }
-	t.Cleanup(func() { pickCloneFolderFn = prev })
+	prev := pickParentFolderFn
+	pickParentFolderFn = func(_ *mygo.Window, _ string) (string, error) { return fn() }
+	t.Cleanup(func() { pickParentFolderFn = prev })
 }
 
 // blockCredentialHelpers keeps git's credential machinery away from the

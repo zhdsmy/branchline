@@ -93,6 +93,14 @@ func (a *app) commitContextMenu(m *ui.Menu, cm git.Commit) {
 	}
 	m.Separator()
 	a.commitReplayMenuItems(m, cm)
+	m.Separator()
+	// Comparing against the working tree reads it as it is, which a write in
+	// flight would race; before the first snapshot the selection the mode
+	// starts from does not exist yet either.
+	compareLocalDisabled := a.session.Busy() || !a.session.Loaded()
+	if m.Item("Compare to Local Changes").Disabled(compareLocalDisabled).Chosen() {
+		a.startHistoryCompareLocal(cm)
+	}
 	a.copyCommitMenuItems(m, cm)
 }
 
