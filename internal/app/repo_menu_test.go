@@ -468,7 +468,7 @@ func TestRepoMenuShiftF10OpensMenu(t *testing.T) {
 	// row's open button — the only focusable element below with a context
 	// menu — and the menu key opens its menu.
 	openSwitcherPopup(t, h)
-	want := []string{"Open", "Show in Finder", "Rename…", "Copy Location", "-", "Remove from List"}
+	want := []string{"Open", "Show in Finder", "Open in Terminal", "Rename…", "Copy Location", "-", "Remove from List"}
 	menu := []string(nil)
 	for range 12 {
 		h.ui.Key(0, ui.KeyTab)
