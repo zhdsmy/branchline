@@ -441,6 +441,11 @@ func TestRefSortTagsOrderChoices(t *testing.T) {
 	h.openRepo(repo.StoreRepo())
 	h.drain()
 
+	// The folder rows of the grouped sections push the tag rows below the
+	// first viewport of the virtual list: scrolling brings them in, exactly
+	// as a user scrolls before looking at them.
+	scrollSidebarRowIntoView(t, h, "tag-v2")
+
 	// A fresh store sorts tags alphabetically.
 	assertSidebarOrder(t, h, "nightly", "release/r1", "v1", "v2")
 
@@ -454,8 +459,10 @@ func TestRefSortTagsOrderChoices(t *testing.T) {
 		{"Alphabetically", []string{"nightly", "release/r1", "v1", "v2"}},
 	}
 	for _, step := range steps {
+		scrollSidebarRowIntoView(t, h, "sec-Tags")
 		openSectionMenu(t, h, "Tags")
 		chooseSortOption(t, h, step.label)
+		scrollSidebarRowIntoView(t, h, "tag-v2")
 		assertSidebarOrder(t, h, step.want...)
 	}
 }
@@ -567,7 +574,9 @@ func TestRefSortInvalidStoredValuesReadAsAlphabetical(t *testing.T) {
 
 	assertSidebarOrder(t, h, "alpha", "feature/two", "main", "master", "release/one", "zeta")
 	assertSidebarOrder(t, h, "origin/alpha", "origin/release/x", "origin/zeta")
+	scrollSidebarRowIntoView(t, h, "tag-v2")
 	assertSidebarOrder(t, h, "nightly", "release/r1", "v1", "v2")
+	scrollSidebarRowIntoView(t, h, "sec-Branches")
 
 	openSectionMenu(t, h, "Branches")
 	branchOptions := []string{"Alphabetically", "Alphabetically, master and folders on top", "Alphabetically backward", "Alphabetically backward, master and folders on top"}
@@ -630,7 +639,9 @@ func TestRefSortChoicesPersistAcrossRestart(t *testing.T) {
 	h2.drain()
 
 	assertSidebarOrder(t, h2, "master", "main", "release/one", "feature/two", "zeta", "alpha")
+	scrollSidebarRowIntoView(t, h2, "tag-v2")
 	assertSidebarOrder(t, h2, "release/r1", "v2", "v1", "nightly")
+	scrollSidebarRowIntoView(t, h2, "sec-Branches")
 
 	openSectionMenu(t, h2, "Branches")
 	branchOptions := []string{"Alphabetically", "Alphabetically, master and folders on top", "Alphabetically backward", "Alphabetically backward, master and folders on top"}
