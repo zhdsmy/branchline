@@ -81,6 +81,11 @@ type reposUIState struct {
 	// Finder window ever opens.
 	showInFinderFn func(path string)
 
+	// openTerminalAppFn runs open for Open in Terminal. nil means the real
+	// open of macOS; tests substitute a recorder so no terminal ever
+	// launches.
+	openTerminalAppFn func(openApp, target string) error
+
 	reposCache    []store.Repo
 	reposCacheRev uint64
 	repoList      ui.ListState
