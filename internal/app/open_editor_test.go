@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	"github.com/egoist/mygo/ui"
+
+	"github.com/zhdsmy/branchline/internal/store"
 )
 
 // openEditorRecorder substitutes the run of open for Open in Editor: it
@@ -304,12 +306,16 @@ func TestOpenInEditorSettingsChoicePersists(t *testing.T) {
 	if tt.HasText("No supported editor found.") {
 		t.Fatalf("the no-editor note shows although editors are installed; texts=%q", tt.Texts())
 	}
-	// Nothing was ever chosen: the first installed editor shows.
+	// Nothing was ever chosen: the first installed editor shows, and opening
+	// the page does not persist a choice until the user picks one.
 	if !hasExactText(tt, "Cursor") {
 		t.Fatalf("the pop-up does not start on Cursor; texts=%q", tt.Texts())
 	}
 	if hasExactText(tt, "Visual Studio Code") {
 		t.Fatalf("Visual Studio Code shows before it is chosen; texts=%q", tt.Texts())
+	}
+	if got := h.store.Settings().Editor; got != "" {
+		t.Fatalf("opening General persisted Editor = %q before any choice", got)
 	}
 
 	// The pop-up's options are exactly the installed editors: Visual Studio
@@ -390,5 +396,147 @@ func TestOpenInEditorScanOncePerSettingsOpen(t *testing.T) {
 	tt2.Frame()
 	if got := stub.count(); got != 2 {
 		t.Fatalf("scan count after reopening the window = %d, want 2", got)
+	}
+}
+
+// Adding a candidate to editorCandidates updates the no-editor toast
+// automatically, proving the message is built from editorCandidates rather
+// than a hardcoded duplicate list.
+func TestOpenInEditorNoneInstalledTracksCandidates(t *testing.T) {
+	prev := editorCandidates
+	editorCandidates = append(append([]string(nil), prev...), "Nova")
+	t.Cleanup(func() { editorCandidates = prev })
+
+	empty := t.TempDir()
+	stubEditorScan(t, empty)
+
+	local := newGitRepo(t, "edcandlocal")
+	local.CommitFile("a.txt", "a\n", "commit")
+
+	h := newTestApp(t, local.StoreRepo())
+	rec := &openEditorRecorder{}
+	rec.install(h)
+
+	chooseOpenInEditor(t, h, "edcandlocal")
+	h.drain()
+
+	if calls := rec.recorded(t); len(calls) != 0 {
+		t.Fatalf("open ran with no editor installed: %+v", calls)
+	}
+	want := "No supported editor found. Install Cursor, Visual Studio Code, Zed, Sublime Text, BBEdit, TextMate, Xcode or Nova."
+	if !h.ui.HasText(want) {
+		t.Fatalf("no-editor toast did not track added candidate; want %q, texts=%q", want, h.ui.Texts())
+	}
+}
+
+// A late scan result from an earlier visit to General is discarded by its
+// generation counter so it cannot overwrite the newer visit's cached editors;
+// while a scan is still in flight the Editor control stays hidden.
+func TestOpenInEditorSettingsLateScanDiscarded(t *testing.T) {
+	first, second := t.TempDir(), t.TempDir()
+	cursorPath := makeAppDir(t, first, "Cursor")
+	vscodePath := makeAppDir(t, second, "Visual Studio Code")
+
+	prev := scanInstalledEditors
+	t.Cleanup(func() { scanInstalledEditors = prev })
+
+	h := newTestApp(t)
+	h.queue.PauseWorkers()
+
+	scanInstalledEditors = func() []editorApp {
+		return []editorApp{{name: "Cursor", path: cursorPath}}
+	}
+	tt := openSettingsTester(t, h)
+	w1 := h.queue.WaitWorker(t)
+	// Before the scan answers, neither the Editor pop-up nor the empty note shows.
+	if _, ok := tt.AccessByRole(ui.RolePopUpButton, "Editor"); ok {
+		t.Fatalf("Editor pop-up showed before scan finished; texts=%q", tt.Texts())
+	}
+	if tt.HasText("No supported editor found.") {
+		t.Fatalf("no-editor note showed before scan finished; texts=%q", tt.Texts())
+	}
+
+	// Reopening Settings starts a second scan whose generation supersedes w1.
+	scanInstalledEditors = func() []editorApp {
+		return []editorApp{{name: "Visual Studio Code", path: vscodePath}}
+	}
+	h.app.closeSettingsWindow()
+	h.ui.Key(ui.Cmd, ui.KeyComma)
+	h.ui.Frame()
+	tt2 := newSettingsTester(t, h)
+	w2 := h.queue.WaitWorker(t)
+
+	// Let the newer scan land first and verify its result renders.
+	h.queue.ReleaseWorker(w2)
+	h.queue.RunNext(t)
+	tt2.Frame()
+	if !hasExactText(tt2, "Visual Studio Code") {
+		t.Fatalf("newer scan result did not show Visual Studio Code; texts=%q", tt2.Texts())
+	}
+
+	// Now let the superseded first scan finish: its stale Cursor result must be ignored.
+	h.queue.ReleaseWorker(w1)
+	h.queue.ResumeWorkers()
+	h.queue.Drain(t)
+	tt2.Frame()
+	if !hasExactText(tt2, "Visual Studio Code") {
+		t.Fatalf("stale scan overwrote Visual Studio Code; texts=%q", tt2.Texts())
+	}
+	if hasExactText(tt2, "Cursor") {
+		t.Fatalf("stale scan leaked Cursor into reopened General page; texts=%q", tt2.Texts())
+	}
+}
+
+// A legacy settings file written before Settings.Editor existed loads cleanly
+// with an empty Editor field, and Open in Editor uses the first installed
+// editor without error.
+func TestOpenInEditorLegacySettingsFile(t *testing.T) {
+	first, second := t.TempDir(), t.TempDir()
+	cursorPath := makeAppDir(t, first, "Cursor")
+	makeAppDir(t, second, "Visual Studio Code")
+	stubEditorScan(t, first, second)
+
+	local := newGitRepo(t, "edlegacy")
+	local.CommitFile("a.txt", "a\n", "commit")
+
+	storePath := filepath.Join(t.TempDir(), "repositories.json")
+	legacyJSON := `{"settings":{"terminal":"iTerm2"},"settingsSaved":true,"repos":[]}`
+	if err := os.WriteFile(storePath, []byte(legacyJSON), 0o600); err != nil {
+		t.Fatalf("write legacy settings file: %v", err)
+	}
+	s, err := store.Open(storePath)
+	if err != nil {
+		t.Fatalf("open legacy settings file: %v", err)
+	}
+	if got := s.Settings().Editor; got != "" {
+		t.Fatalf("legacy store Editor = %q, want empty", got)
+	}
+	if _, err := s.Add(local.StoreRepo()); err != nil {
+		t.Fatalf("add repo to legacy store: %v", err)
+	}
+
+	q := newUIQueue()
+	t.Cleanup(q.releaseAllAndWait)
+	a := newApp(s)
+	a.postFn = q.post
+	a.spawnFn = q.spawn
+	h := &testHarness{
+		t:     t,
+		app:   a,
+		store: s,
+		ui:    ui.NewTester(instantView(a.view), 1200, 800),
+		queue: q,
+	}
+	h.ui.Frame()
+
+	rec := &openEditorRecorder{}
+	rec.install(h)
+
+	chooseOpenInEditor(t, h, "edlegacy")
+	h.drain()
+
+	calls := rec.recorded(t)
+	if len(calls) != 1 || calls[0].app != cursorPath || calls[0].target != local.Path() {
+		t.Fatalf("legacy settings open calls = %+v, want first installed editor %q on %q", calls, cursorPath, local.Path())
 	}
 }

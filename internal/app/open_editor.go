@@ -3,6 +3,7 @@ package app
 import (
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/zhdsmy/branchline/internal/store"
 )
@@ -18,6 +19,23 @@ var editorCandidates = []string{
 	"BBEdit",
 	"TextMate",
 	"Xcode",
+}
+
+// noSupportedEditorToast formats the toast Open in Editor shows when none of
+// the candidate editors are installed, building the list from editorCandidates
+// so the message always tracks the candidate table.
+func noSupportedEditorToast() string {
+	switch len(editorCandidates) {
+	case 0:
+		return "No supported editor found."
+	case 1:
+		return "No supported editor found. Install " + editorCandidates[0] + "."
+	default:
+		last := len(editorCandidates) - 1
+		return "No supported editor found. Install " +
+			strings.Join(editorCandidates[:last], ", ") +
+			" or " + editorCandidates[last] + "."
+	}
 }
 
 // editorApp is one installed editor: its display name and the full path of
@@ -91,14 +109,18 @@ func (a *app) scanGeneralEditors() {
 	gen := s.editorScanGen
 	s.editorsReady = false
 	s.editorApps = nil
+	scan := scanInstalledEditors
 	a.spawn(func() {
-		editors := scanInstalledEditors()
+		editors := scan()
 		a.post(func() {
 			if gen != s.editorScanGen {
 				return
 			}
 			s.editorApps = editors
 			s.editorsReady = true
+			if a.settingsWin != nil {
+				a.settingsWin.Invalidate()
+			}
 		})
 	})
 }
@@ -119,11 +141,12 @@ func (a *app) openInEditor(r store.Repo) {
 	if st := a.reposUI(); st.openEditorAppFn != nil {
 		runOpen = st.openEditorAppFn
 	}
+	scan := scanInstalledEditors
 	a.spawn(func() {
-		choice := editorChoice(saved, scanInstalledEditors())
+		choice := editorChoice(saved, scan())
 		if choice.name == "" {
 			a.post(func() {
-				a.toast = "No supported editor found. Install Cursor, Visual Studio Code, Zed, Sublime Text, BBEdit, TextMate or Xcode."
+				a.toast = noSupportedEditorToast()
 			})
 			return
 		}
