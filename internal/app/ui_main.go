@@ -59,6 +59,8 @@ func (a *app) bindShortcuts(c *ui.Context) {
 	c.OnShortcut(ui.Cmd, ui.KeyBracketLeft, a.back)
 	c.OnShortcut(ui.Cmd, ui.KeyBracketRight, a.goForward)
 	c.OnShortcut(ui.Cmd, ui.KeyComma, a.openSettings)
+	c.OnShortcut(ui.Ctrl|ui.Cmd, ui.KeyT, a.openActiveInTerminal)
+	c.OnShortcut(ui.Ctrl|ui.Cmd, ui.KeyO, a.showActiveInFinder)
 }
 
 func (a *app) open(r route) {
