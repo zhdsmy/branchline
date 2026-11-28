@@ -43,7 +43,12 @@ func (r *Repo) UnstageAll() error {
 }
 
 // Discard throws away the working tree's changes to files: untracked
-// files are deleted.
+// files are deleted, and a submodule returns to the commit the index
+// records. Before anything is written, every restored path is checked for
+// an obstruction — a directory of untracked or ignored files at its place,
+// or an untracked or ignored file at a parent directory's place — and one
+// obstructed path refuses the whole batch untouched, because git's
+// checkout would silently destroy that content.
 func (r *Repo) Discard(files ...FileChange) error {
 	var tracked, untracked, ignored []string
 	for _, f := range files {
@@ -56,8 +61,38 @@ func (r *Repo) Discard(files ...FileChange) error {
 			tracked = append(tracked, f.Path)
 		}
 	}
+	// A gitlink is a submodule, never a file checkout could write: plain
+	// checkout -- does nothing for it and reports success. Submodules go
+	// through submodule update instead, and the ordinary files through the
+	// guarded checkout.
+	var regular, submodules []string
+	subOIDs := map[string]string{}
 	if len(tracked) > 0 {
-		if err := r.runPathBatches([]string{"--literal-pathspecs", "checkout", "--"}, tracked); err != nil {
+		entries, err := r.lsFilesStageEntries(tracked)
+		if err != nil {
+			return err
+		}
+		for _, p := range tracked {
+			if entry, ok := entries[p]; ok && entry[0] == "160000" {
+				submodules = append(submodules, p)
+				subOIDs[p] = entry[1]
+			} else {
+				regular = append(regular, p)
+			}
+		}
+	}
+	if len(regular) > 0 {
+		if err := r.checkWorktreeObstructions(regular); err != nil {
+			return err
+		}
+	}
+	for _, p := range submodules {
+		if err := r.restoreSubmodule(p, subOIDs[p]); err != nil {
+			return err
+		}
+	}
+	if len(regular) > 0 {
+		if err := r.runPathBatches([]string{"--literal-pathspecs", "checkout", "--"}, regular); err != nil {
 			return err
 		}
 	}
