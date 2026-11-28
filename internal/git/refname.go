@@ -13,6 +13,8 @@ func RefNameProblem(name string) string {
 		return ""
 	case name == "@":
 		return "Branch or tag name cannot be '@'."
+	case strings.HasPrefix(name, "-"):
+		return "Must not start with '-'."
 	case strings.HasPrefix(name, "/"):
 		return "Must not start with '/'."
 	case strings.HasPrefix(name, "."):

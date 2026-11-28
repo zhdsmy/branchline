@@ -78,11 +78,16 @@ func (r *Repo) DeleteRemoteBranches(remoteBranches []string) error {
 // deleteOnRemote deletes refs from one remote in a single push. A ref the
 // remote no longer has is not an error: it is already gone. git refuses
 // the whole push for one such ref, so the others then go one by one.
+// withDashdash puts the remote and the refs behind "--" when one starts
+// with "-": a server can hand out such branch names, and without the
+// separator git would read them as its own options rather than as the
+// references to delete.
 func (r *Repo) deleteOnRemote(remote string, refs []string) error {
 	if len(refs) == 0 {
 		return nil
 	}
-	_, err := r.run(slow, append([]string{"push", remote, "--delete"}, refs...)...)
+	args := withDashdash([]string{"push", "--delete"}, append([]string{remote}, refs...)...)
+	_, err := r.run(slow, args...)
 	if err == nil || !onlyMissingRefs(err) {
 		return err
 	}
@@ -91,7 +96,7 @@ func (r *Repo) deleteOnRemote(remote string, refs []string) error {
 	}
 	var errs []error
 	for _, ref := range refs {
-		if _, err := r.run(slow, "push", remote, "--delete", ref); err != nil && !onlyMissingRefs(err) {
+		if _, err := r.run(slow, withDashdash([]string{"push", "--delete"}, remote, ref)...); err != nil && !onlyMissingRefs(err) {
 			errs = append(errs, err)
 		}
 	}
@@ -127,7 +132,7 @@ func (r *Repo) DeleteTags(names, remotes []string) error {
 	if len(tags) == 0 {
 		return fmt.Errorf("deleting tags needs their names")
 	}
-	if _, err := r.run(quick, append([]string{"tag", "-d"}, tags...)...); err != nil {
+	if _, err := r.run(quick, withDashdash([]string{"tag", "-d"}, tags...)...); err != nil {
 		return err
 	}
 	var failed []string
@@ -220,7 +225,7 @@ func (r *Repo) replayMany(command string, hashes []string, o ReplayOptions) erro
 
 // parentCount is how many parents the commit h has.
 func (r *Repo) parentCount(h string) (int, error) {
-	out, err := r.run(quick, "rev-list", "--parents", "-n", "1", strings.TrimSpace(h))
+	out, err := r.run(quick, withEndOfOptions([]string{"rev-list", "--parents", "-n", "1"}, strings.TrimSpace(h))...)
 	if err != nil {
 		return 0, err
 	}

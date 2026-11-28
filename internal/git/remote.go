@@ -27,8 +27,12 @@ func (r *Repo) FetchOpts(o FetchOptions) error {
 	if o.Tags {
 		args = append(args, "--tags")
 	}
+	// withDashdash puts the remote name behind "--" when it starts with
+	// "-": it comes from the repository's own configuration and must never
+	// become command-line options. Every other case keeps the arguments
+	// they have always had.
 	if o.Remote != "" && !o.All {
-		args = append(args, o.Remote)
+		args = withDashdash(args, o.Remote)
 	}
 	_, err := r.run(slow, args...)
 	return err
@@ -82,9 +86,20 @@ func (r *Repo) pull(o PullOptions) (string, error) {
 	if o.Tags {
 		args = append(args, "--tags")
 	}
+	// A name starting with "-" is refused instead of separated: git pull
+	// strips the "--" end-of-options marker before handing the positional
+	// arguments to the git fetch it spawns, so the separator cannot protect
+	// them there — a remote or branch shaped like --upload-pack=<program>
+	// would run that program.
 	if remote := strings.TrimSpace(o.Remote); remote != "" {
+		if strings.HasPrefix(remote, "-") {
+			return "", fmt.Errorf("pulling: the remote name %q is not usable", remote)
+		}
 		args = append(args, remote)
 		if branch := strings.TrimSpace(o.Branch); branch != "" {
+			if strings.HasPrefix(branch, "-") {
+				return "", fmt.Errorf("pulling: the branch name %q is not usable", branch)
+			}
 			args = append(args, branch)
 		}
 	}
@@ -124,16 +139,24 @@ func (r *Repo) PushNote(remote, branch, dest string, setUpstream, force, tags bo
 	if tags {
 		args = append(args, "--tags")
 	}
+	var positional []string
 	if remote != "" {
-		args = append(args, remote)
+		positional = append(positional, remote)
 		if branch != "" {
-			args = append(args, "refs/heads/"+branch+":refs/heads/"+dest)
+			positional = append(positional, "refs/heads/"+branch+":refs/heads/"+dest)
 		}
 	}
 	// --porcelain puts a line on standard output for each reference, led by
 	// "=" when the remote had it already, which git otherwise only says
-	// on standard error.
-	args = append(args, "--porcelain")
+	// on standard error. When the remote name starts with "-", "--" must
+	// precede it and --porcelain moves in front of the separator to stay
+	// an option; every other case keeps the arguments they have always had.
+	if leadingDash(positional...) {
+		args = append(append(args, "--porcelain", "--"), positional...)
+	} else {
+		args = append(args, positional...)
+		args = append(args, "--porcelain")
+	}
 	out, err := r.run(slow, args...)
 	if err == nil && allUpToDate(string(out)) {
 		return UpToDatePush, nil
@@ -164,7 +187,7 @@ func (r *Repo) PushRefs(remote string, refs []string) error {
 	if remote == "" || len(refs) == 0 {
 		return fmt.Errorf("pushing references needs a remote and a reference")
 	}
-	args := []string{"push", remote}
+	positional := []string{remote}
 	for _, ref := range refs {
 		ref = strings.TrimSpace(ref)
 		if ref == "" {
@@ -173,11 +196,12 @@ func (r *Repo) PushRefs(remote string, refs []string) error {
 		if !strings.Contains(ref, "/") {
 			ref = "refs/tags/" + ref
 		}
-		args = append(args, ref)
+		positional = append(positional, ref)
 	}
-	if len(args) == 2 {
+	if len(positional) == 1 {
 		return fmt.Errorf("pushing references needs a reference")
 	}
+	args := withDashdash([]string{"push"}, positional...)
 	_, err := r.run(slow, args...)
 	return err
 }
@@ -188,7 +212,7 @@ func (r *Repo) RemoteURL(name string) (string, error) {
 	if name == "" {
 		return "", fmt.Errorf("a remote name is required")
 	}
-	out, err := r.run(quick, "remote", "get-url", name)
+	out, err := r.run(quick, withDashdash([]string{"remote", "get-url"}, name)...)
 	if err != nil {
 		return "", err
 	}
@@ -201,13 +225,13 @@ func (r *Repo) RemoteAdd(name, url string, fetch bool) error {
 	if name == "" || url == "" {
 		return fmt.Errorf("a remote needs a name and a URL")
 	}
-	if _, err := r.run(quick, "remote", "add", name, url); err != nil {
+	if _, err := r.run(quick, withDashdash([]string{"remote", "add"}, name, url)...); err != nil {
 		return err
 	}
 	if !fetch {
 		return nil
 	}
-	_, err := r.run(slow, "fetch", name)
+	_, err := r.run(slow, withDashdash([]string{"fetch"}, name)...)
 	return err
 }
 
@@ -217,7 +241,7 @@ func (r *Repo) RemoteSetURL(name, url string) error {
 	if name == "" || url == "" {
 		return fmt.Errorf("a remote needs a name and a URL")
 	}
-	_, err := r.run(quick, "remote", "set-url", name, url)
+	_, err := r.run(quick, withDashdash([]string{"remote", "set-url"}, name, url)...)
 	return err
 }
 
@@ -227,7 +251,7 @@ func (r *Repo) RemoteRename(old, name string) error {
 	if old == "" || name == "" {
 		return fmt.Errorf("renaming a remote needs both names")
 	}
-	_, err := r.run(quick, "remote", "rename", old, name)
+	_, err := r.run(quick, withDashdash([]string{"remote", "rename"}, old, name)...)
 	return err
 }
 
@@ -238,7 +262,7 @@ func (r *Repo) RemoteRemove(name string) error {
 	if name == "" {
 		return fmt.Errorf("a remote name is required")
 	}
-	_, err := r.run(quick, "remote", "remove", name)
+	_, err := r.run(quick, withDashdash([]string{"remote", "remove"}, name)...)
 	return err
 }
 
@@ -248,7 +272,7 @@ func (r *Repo) DeleteRemoteTag(remote, name string) error {
 	if remote == "" || name == "" {
 		return fmt.Errorf("deleting a remote tag needs a remote and a tag")
 	}
-	_, err := r.run(slow, "push", remote, "--delete", "refs/tags/"+name)
+	_, err := r.run(slow, withDashdash([]string{"push", "--delete"}, remote, "refs/tags/"+name)...)
 	return err
 }
 
@@ -259,13 +283,13 @@ func (r *Repo) DeleteRemoteBranch(remoteBranch string) error {
 	if !ok {
 		return fmt.Errorf("%s is not a remote branch", remoteBranch)
 	}
-	_, err := r.run(slow, "push", remote, "--delete", branch)
+	_, err := r.run(slow, withDashdash([]string{"push", "--delete"}, remote, branch)...)
 	return err
 }
 
 // PushRef pushes one reference, such as a tag, to remote.
 func (r *Repo) PushRef(remote, ref string) error {
-	_, err := r.run(slow, "push", remote, ref)
+	_, err := r.run(slow, withDashdash([]string{"push"}, remote, ref)...)
 	return err
 }
 
@@ -308,8 +332,7 @@ func (r *Repo) PushBranches(remote string, specs []PushSpec, setUpstream, force 
 	if force {
 		args = append(args, "--force-with-lease")
 	}
-	args = append(args, remote)
-	n := len(args)
+	positional := []string{remote}
 	for _, s := range specs {
 		local := strings.TrimSpace(s.Local)
 		if local == "" {
@@ -319,11 +342,12 @@ func (r *Repo) PushBranches(remote string, specs []PushSpec, setUpstream, force 
 		if dest == "" {
 			dest = local
 		}
-		args = append(args, "refs/heads/"+local+":refs/heads/"+dest)
+		positional = append(positional, "refs/heads/"+local+":refs/heads/"+dest)
 	}
-	if len(args) == n {
+	if len(positional) == 1 {
 		return fmt.Errorf("choose a branch to push")
 	}
+	args = withDashdash(args, positional...)
 	_, err := r.run(slow, args...)
 	return err
 }
