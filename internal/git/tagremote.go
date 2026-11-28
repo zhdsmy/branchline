@@ -64,6 +64,56 @@ func (r *Repo) RemoteTagOID(remote, name string) (oid string, exists bool, err e
 	return "", false, nil
 }
 
+// RemoteTagOIDs reads the object ids the tag names point at on remote
+// through a single ls-remote, returning a map of the tags the remote
+// actually has: a name missing from the map is a tag the remote does not
+// carry, never an error. The values are the exact-ref matches — the exact
+// patterns asked for never even print the peeled ^{} lines — because they
+// are what a force-with-lease push compares against: for an annotated tag
+// the tag object, for a lightweight one the object it names.
+//
+// A failed read is always an error, never an absence: a remote that cannot
+// answer — unreachable, an authentication failure, a dropped connection —
+// must not look like a remote without the tags, because callers decide
+// whether overwriting is safe from the answer. Only a successful listing
+// means the missing tags are really absent. Unlike RemoteTagOID the remote
+// name is never rejected for a leading "-": the separator keeps it the
+// repository it is, as the batch deletion of a dash-named remote requires.
+func (r *Repo) RemoteTagOIDs(remote string, names []string) (map[string]string, error) {
+	if strings.TrimSpace(remote) == "" {
+		return nil, fmt.Errorf("checking the remote tags: a remote is required")
+	}
+	positional := []string{"ls-remote", "--tags", "--", remote}
+	want := map[string]bool{}
+	for _, name := range names {
+		if name = strings.TrimSpace(name); name == "" {
+			continue
+		}
+		positional = append(positional, "refs/tags/"+name)
+		want["refs/tags/"+name] = true
+	}
+	out, err := r.run(slow, positional...)
+	if err != nil {
+		return nil, err
+	}
+	oids := map[string]string{}
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 || !want[fields[1]] {
+			continue
+		}
+		if !validOID(fields[0]) {
+			return nil, fmt.Errorf("the remote printed no object id for %s", fields[1])
+		}
+		oids[strings.TrimPrefix(fields[1], "refs/tags/")] = fields[0]
+	}
+	return oids, nil
+}
+
 // verifyLocalTagExists proves refs/tags/<name> exists locally before it is
 // pushed. A read failure is an error instead of permission: pushing what the
 // repository cannot even confirm would push nothing, or worse, surprise.

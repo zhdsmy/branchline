@@ -55,8 +55,9 @@ func refBatchRows(refs []git.Branch) []refBatchRow {
 }
 
 // refBatchTagRows captures the dialog rows of tags in the order given: the
-// name and the commit the tag peels to now, which is what the push and
-// delete workers re-verify.
+// name and the object the tag peels to now — the commit of a commit tag,
+// however deeply nested, or the blob or tree a non-commit tag names — which
+// is what the push and delete workers re-verify.
 func refBatchTagRows(tags []git.Tag) []refBatchRow {
 	rows := make([]refBatchRow, 0, len(tags))
 	for _, tag := range tags {
@@ -351,18 +352,23 @@ func (a *app) submitTagBatchDelete() {
 	})
 }
 
-// batchVerifyTagCommits re-reads the commit every checked tag peels to and
+// batchVerifyTagCommits re-reads the object every checked tag peels to and
 // refuses the whole batch — without pushing or deleting anything — when one
-// no longer matches what the dialog captured. The comparison is the peeled
-// commit, matching the capture: a tag recreated onto the very same commit
-// still names it, while one moved anywhere else is a tag the user never saw
-// listed. prefix is the operation's refusal lead, such as cannot push tags.
+// no longer matches what the dialog captured. Despite the name the
+// comparison is not the peeled commit but the fully peeled object, exactly
+// what the snapshot's Tag.Hash captures (%(*objectname), or %(objectname)
+// for a tag that peels no further): the commit for a tag of a commit — at
+// any depth of tag-of-tag nesting — and the blob or tree itself for a tag
+// of one. A commit-only comparison could never match those, refusing every
+// batch that holds them; the object comparison carries them and still
+// refuses a tag moved anywhere else. prefix is the operation's refusal
+// lead, such as cannot push tags.
 func batchVerifyTagCommits(repo *git.Repo, prefix string, rows []refBatchRow) error {
 	if len(rows) == 0 {
 		return fmt.Errorf("%s: no tag is checked", prefix)
 	}
 	for _, r := range rows {
-		gotOID, err := repo.PathHash("refs/tags/" + r.name + "^{commit}")
+		gotOID, err := repo.PathHash("refs/tags/" + r.name + "^{}")
 		if err != nil || gotOID != r.hash {
 			return fmt.Errorf("%s: %s changed after the dialog opened; review the repository and try again", prefix, r.name)
 		}
