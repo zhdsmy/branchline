@@ -183,18 +183,18 @@ func (r *Repo) StashApplyWith(name string, o StashApplyOptions) error {
 		verb = "pop"
 	}
 	if o.Index {
-		_, err := r.run(quick, "stash", verb, "--index", name)
+		_, err := r.run(quick, withDashdash([]string{"stash", verb, "--index"}, name)...)
 		if err == nil || !strings.Contains(err.Error(), "Try without --index") {
 			return err
 		}
 	}
-	_, err := r.run(quick, "stash", verb, name)
+	_, err := r.run(quick, withDashdash([]string{"stash", verb}, name)...)
 	return err
 }
 
 // StashDrop deletes a stash entry.
 func (r *Repo) StashDrop(name string) error {
-	_, err := r.run(quick, "stash", "drop", name)
+	_, err := r.run(quick, withDashdash([]string{"stash", "drop"}, name)...)
 	return err
 }
 

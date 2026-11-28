@@ -94,7 +94,14 @@ func (r *Repo) Search(o SearchOptions) ([]Commit, error) {
 	if o.Skip > 0 {
 		args = append(args, "--skip", strconv.Itoa(o.Skip))
 	}
-	args = append(args, searchRevs(o.Revs)...)
+	// Pseudo-options of the default revision set (--branches and such) are
+	// options of git log itself, so only caller-chosen revisions go through
+	// withEndOfOptions: one starting with "-" stays a revision, not an option.
+	if len(o.Revs) > 0 {
+		args = withEndOfOptions(args, o.Revs...)
+	} else {
+		args = append(args, searchRevs(nil)...)
+	}
 	args = append(args, "--")
 	queryPaths := paths
 	paths = cleanPaths(o.Paths)
@@ -145,7 +152,12 @@ func (r *Repo) searchHash(prefix string, revs, paths []string, skip, limit int) 
 	if !isHex(prefix) {
 		return nil, nil
 	}
-	args := append([]string{"log", "--topo-order", "--format=%H"}, searchRevs(revs)...)
+	args := []string{"log", "--topo-order", "--format=%H"}
+	if len(revs) > 0 {
+		args = withEndOfOptions(args, revs...)
+	} else {
+		args = append(args, searchRevs(nil)...)
+	}
 	args = append(append(args, "--"), cleanPaths(paths)...)
 	out, err := r.run(slow, args...)
 	if err != nil {

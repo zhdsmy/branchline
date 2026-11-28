@@ -22,8 +22,9 @@ func (r *Repo) ResetFiles(rev string, paths ...string) error {
 	if strings.TrimSpace(rev) == "" || len(paths) == 0 {
 		return fmt.Errorf("missing revision or paths")
 	}
-	args := append([]string{"--literal-pathspecs", "ls-tree", "-r", "--name-only", "-z", rev, "--"}, paths...)
-	out, err := r.run(quick, args...)
+	args := append([]string{"--literal-pathspecs"}, withEndOfOptions([]string{"ls-tree", "-r", "--name-only", "-z"}, rev)...)
+	args = append(args, "--")
+	out, err := r.run(quick, append(args, paths...)...)
 	if err != nil {
 		return err
 	}
@@ -47,7 +48,8 @@ func (r *Repo) ResetFiles(rev string, paths ...string) error {
 		}
 	}
 	if len(keep) > 0 {
-		if _, err := r.run(quick, append([]string{"--literal-pathspecs", "checkout", rev, "--"}, keep...)...); err != nil {
+		co := append([]string{"--literal-pathspecs"}, withEndOfOptions([]string{"checkout"}, rev)...)
+		if _, err := r.run(quick, append(append(co, "--"), keep...)...); err != nil {
 			return err
 		}
 	}
@@ -65,7 +67,8 @@ func (r *Repo) FormatPatchFiles(hash string, paths ...string) (string, error) {
 	if strings.TrimSpace(hash) == "" || len(paths) == 0 {
 		return "", fmt.Errorf("missing commit or paths")
 	}
-	args := append([]string{"--literal-pathspecs", "show", "--format=email", "--first-parent", hash, "--"}, paths...)
-	out, err := r.run(quick, args...)
+	args := append([]string{"--literal-pathspecs"}, withEndOfOptions([]string{"show", "--format=email", "--first-parent"}, hash)...)
+	args = append(args, "--")
+	out, err := r.run(quick, append(args, paths...)...)
 	return string(out), err
 }

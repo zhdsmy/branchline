@@ -28,6 +28,12 @@ func (r *Repo) LFSTrack(pattern string) error {
 func (r *Repo) LFSFetch(remote string) error {
 	args := []string{"lfs", "fetch", "--all"}
 	if remote = strings.TrimSpace(remote); remote != "" {
+		if strings.HasPrefix(remote, "-") {
+			// git-lfs is its own program: how it forwards the remote to the
+			// git commands it runs is out of reach of a separator here, so a
+			// name that would read as options is refused instead.
+			return fmt.Errorf("fetching Git LFS objects: the remote name %q is not usable", remote)
+		}
 		args = append(args, remote)
 	}
 	_, err := r.run(slow, args...)
@@ -39,6 +45,9 @@ func (r *Repo) LFSFetch(remote string) error {
 func (r *Repo) LFSPull(remote string) error {
 	args := []string{"lfs", "pull"}
 	if remote = strings.TrimSpace(remote); remote != "" {
+		if strings.HasPrefix(remote, "-") {
+			return fmt.Errorf("pulling Git LFS objects: the remote name %q is not usable", remote)
+		}
 		args = append(args, remote)
 	}
 	_, err := r.run(slow, args...)

@@ -12,7 +12,7 @@ func (r *Repo) UnsetUpstream(local string) error {
 	if local == "" {
 		return fmt.Errorf("a local branch is needed")
 	}
-	_, err := r.run(quick, "branch", "--unset-upstream", local)
+	_, err := r.run(quick, withDashdash([]string{"branch", "--unset-upstream"}, local)...)
 	return err
 }
 
@@ -43,7 +43,7 @@ func (r *Repo) FastForwardToUpstreams(branches []Branch) (moved []string, err er
 				return moved, err
 			}
 		} else {
-			if _, err := r.run(quick, "fetch", ".", b.Upstream+":refs/heads/"+b.Name); err != nil {
+			if _, err := r.run(quick, withDashdash([]string{"fetch"}, ".", b.Upstream+":refs/heads/"+b.Name)...); err != nil {
 				return moved, err
 			}
 		}
@@ -60,7 +60,7 @@ func (r *Repo) BranchDiff(base, head string) (string, error) {
 	if base == "" || head == "" {
 		return "", fmt.Errorf("a branch to compare is needed")
 	}
-	out, err := r.run(quick, "diff", base+"..."+head, "--")
+	out, err := r.run(quick, append(withEndOfOptions([]string{"diff", "--no-ext-diff"}, base+"..."+head), "--")...)
 	return string(out), err
 }
 
@@ -71,10 +71,10 @@ func (r *Repo) StashPatch(name string) (string, error) {
 	if name == "" {
 		return "", fmt.Errorf("a stash is needed")
 	}
-	out, err := r.run(quick, "stash", "show", "-p", "--include-untracked", name)
+	out, err := r.run(quick, withEndOfOptions([]string{"stash", "show", "-p", "--no-ext-diff", "--no-textconv", "--include-untracked"}, name)...)
 	if err != nil {
 		// Git before 2.32 does not know --include-untracked here.
-		out, err = r.run(quick, "stash", "show", "-p", name)
+		out, err = r.run(quick, withEndOfOptions([]string{"stash", "show", "-p", "--no-ext-diff", "--no-textconv"}, name)...)
 	}
 	return string(out), err
 }
