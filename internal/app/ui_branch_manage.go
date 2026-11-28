@@ -150,35 +150,35 @@ func (a *app) renameBranchDialog(c *ui.Context) {
 		return
 	}
 
-	ui.Modal(c.Key("branch-rename-modal"), &st.renOpen, func() {
-		ui.Column(c.Key("branch-rename-modal-body")).Width(460).Padding(18, 18, 14, 18).Gap(10).Children(func() {
-			ui.Text(c, "Rename Branch").FontSize(17).FontWeight(650).TextColor(p.text)
-			ui.Field(c, "Branch:", func() {
-				ui.Text(c, st.renOld).Font("monospace").FontSize(12).TextColor(p.text)
-			})
-			ui.Field(c, "New name:", func() {
-				in := ui.TextInput(c.Key("branch-rename-input"), &st.renName).FillWidth().AutoFocus().Label("New Branch Name")
-				if in.Changed() {
-					st.renNameChanged = true
-				}
-				if in.Submitted() && a.renameBranchCanSubmit() {
-					a.submitRenameBranch()
-				}
-			})
-			if problem := a.renameBranchProblem(st.renOld, st.renName); problem != "" && st.renNameChanged {
-				ui.Text(c, problem).FontSize(12).TextColor(p.danger)
-			}
-			ui.Row(c.Key("branch-rename-modal-actions")).Gap(8).Justify(ui.End).Children(func() {
-				if ui.Button(c.Key("branch-rename-cancel"), "Cancel").Label("Cancel").Clicked() {
-					a.closeRenameBranchDialog()
-				}
-				if ui.PrimaryButton(c.Key("branch-rename-confirm"), "Rename").Label("Confirm Rename Branch").Disabled(!a.renameBranchCanSubmit()).Clicked() {
-					a.submitRenameBranch()
-				}
-			})
+	dismissed, cancelled, confirmed := dialogFrame(c, p, "branch-rename", &st.renOpen, "Rename Branch", 460, func() {
+		ui.Field(c, "Branch:", func() {
+			ui.Text(c, st.renOld).Font("monospace").FontSize(12).TextColor(p.text)
 		})
-	})
-	if !st.renOpen {
+		ui.Field(c, "New name:", func() {
+			in := ui.TextInput(c.Key("branch-rename-input"), &st.renName).FillWidth().AutoFocus().Label("New Branch Name")
+			if in.Changed() {
+				st.renNameChanged = true
+			}
+			// Enter in the input submits here, never twice: a focused
+			// single-line input takes the key before every window shortcut,
+			// so the frame's Enter cannot fire for the same press.
+			if in.Submitted() && a.renameBranchCanSubmit() {
+				a.submitRenameBranch()
+			}
+		})
+		if problem := a.renameBranchProblem(st.renOld, st.renName); problem != "" && st.renNameChanged {
+			ui.Text(c, problem).FontSize(12).TextColor(p.danger)
+		}
+	},
+		dialogAction{key: "branch-rename-cancel", text: "Cancel", label: "Cancel"},
+		dialogAction{key: "branch-rename-confirm", text: "Rename", label: "Confirm Rename Branch", disabled: !a.renameBranchCanSubmit()})
+	if cancelled {
+		a.closeRenameBranchDialog()
+	}
+	if confirmed {
+		a.submitRenameBranch()
+	}
+	if dismissed {
 		a.closeRenameBranchDialog()
 	}
 }

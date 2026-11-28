@@ -85,47 +85,34 @@ func (a *app) closeFetchDialog() {
 }
 
 // fetchDialog is the modal of the toolbar Fetch: the remote to fetch from
-// and the three fetch options. Enter submits like the confirm button —
-// except while the repository is busy, when the button is disabled — and
-// Cancel, Escape, the backdrop and a repository switch close without
-// fetching or remembering anything.
+// and the three fetch options. The shared frame makes Enter submit like the
+// confirm button — except while the repository is busy, when the button is
+// disabled — and Cancel, Escape, the backdrop and a repository switch close
+// without fetching or remembering anything.
 func (a *app) fetchDialog(c *ui.Context) {
 	p := a.pal
 	st := &syncStateFor(a).fetchDlg
 	if !st.open {
 		return
 	}
-	if ui.Modal(c.Key("fetch-dialog-modal"), &st.open, func() {
-		ui.Column(c.Key("fetch-dialog-body")).Width(460).Padding(18, 18, 14, 18).Gap(10).Children(func() {
-			ui.Text(c, "Fetch").FontSize(17).FontWeight(650).TextColor(p.text)
-			ui.Text(c, "Fetch the latest changes from a remote.").FontSize(12).TextColor(p.muted).Wrap()
-			ui.Field(c, "Remote:", func() {
-				ui.Select(c, &st.remote, st.remotes).FillWidth().Label("Fetch Remote").Disabled(st.all)
-			})
-			ui.Checkbox(c.Key("fetch-dialog-all"), &st.all, "Fetch all remotes").Label("Fetch all remotes").Tooltip("--all")
-			ui.Checkbox(c.Key("fetch-dialog-prune"), &st.prune, "Prune remote-tracking branches").Label("Prune remote-tracking branches").Tooltip("--prune")
-			ui.Checkbox(c.Key("fetch-dialog-tags"), &st.tags, "Fetch tags").Label("Fetch tags").Tooltip("--tags")
-			ui.Row(c.Key("fetch-dialog-actions")).Gap(8).Justify(ui.End).Children(func() {
-				if ui.Button(c.Key("fetch-dialog-cancel"), "Cancel").Label("Cancel").Clicked() {
-					a.closeFetchDialog()
-				}
-				if ui.PrimaryButton(c.Key("fetch-dialog-confirm"), "Fetch").
-					Label("Confirm Fetch").
-					Disabled(a.session.Busy()).
-					AutoFocus().
-					Clicked() {
-					a.submitFetchDialog()
-				}
-			})
-			// Enter is the confirm button, as in every dialog: a focused
-			// control that takes the key — an open remote choice, a focused
-			// button — consumes it first, so this fires only for the Enter
-			// nothing else claimed.
-			if c.Shortcut(0, ui.KeyEnter) && !a.session.Busy() {
-				a.submitFetchDialog()
-			}
+	dismissed, cancelled, confirmed := dialogFrame(c, p, "fetch-dialog", &st.open, "Fetch", 460, func() {
+		ui.Text(c, "Fetch the latest changes from a remote.").FontSize(12).TextColor(p.muted).Wrap()
+		ui.Field(c, "Remote:", func() {
+			ui.Select(c, &st.remote, st.remotes).FillWidth().Label("Fetch Remote").Disabled(st.all)
 		})
-	}).Dismissed() {
+		ui.Checkbox(c.Key("fetch-dialog-all"), &st.all, "Fetch all remotes").Label("Fetch all remotes").Tooltip("--all")
+		ui.Checkbox(c.Key("fetch-dialog-prune"), &st.prune, "Prune remote-tracking branches").Label("Prune remote-tracking branches").Tooltip("--prune")
+		ui.Checkbox(c.Key("fetch-dialog-tags"), &st.tags, "Fetch tags").Label("Fetch tags").Tooltip("--tags")
+	},
+		dialogAction{key: "fetch-dialog-cancel", text: "Cancel", label: "Cancel"},
+		dialogAction{key: "fetch-dialog-confirm", text: "Fetch", label: "Confirm Fetch", disabled: a.session.Busy(), autoFocus: true})
+	if cancelled {
+		a.closeFetchDialog()
+	}
+	if confirmed {
+		a.submitFetchDialog()
+	}
+	if dismissed {
 		a.closeFetchDialog()
 	}
 }

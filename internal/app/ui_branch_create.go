@@ -123,38 +123,36 @@ func (a *app) branchCreateDialog(c *ui.Context) {
 	if !st.open {
 		return
 	}
-	if ui.Modal(c.Key("branch-create-modal"), &st.open, func() {
-		ui.Column(c.Key("branch-create-body")).Width(440).Padding(18, 18, 14, 18).Gap(10).Children(func() {
-			ui.Text(c, "New Branch").FontSize(17).FontWeight(650).TextColor(p.text)
-			ui.Field(c, "Start point:", func() {
-				ui.Text(c, st.startPoint).Font("monospace").FontSize(12).TextColor(p.text)
-			})
-			ui.Field(c, "Name:", func() {
-				in := ui.TextInput(c, &st.name).FillWidth().AutoFocus().Placeholder("Branch name").Label("New Branch From Name")
-				if in.Changed() {
-					st.nameChanged = true
-				}
-				if in.Submitted() && a.branchCreateCanSubmit() {
-					a.submitBranchCreate()
-				}
-			})
-			if problem := a.newBranchProblem(st.name); problem != "" && (st.nameChanged || strings.TrimSpace(st.name) != "") {
-				ui.Text(c, problem).FontSize(12).TextColor(p.danger)
-			}
-			ui.Checkbox(c.Key("branch-create-checkout"), &st.checkout, "Checkout after create")
-			ui.Row(c.Key("branch-create-actions")).Gap(8).Justify(ui.End).Children(func() {
-				if ui.Button(c.Key("branch-create-cancel"), "Cancel").Label("Cancel").Clicked() {
-					a.closeBranchCreateDialog()
-				}
-				if ui.PrimaryButton(c.Key("branch-create-confirm"), "Create Branch").Label("Confirm New Branch From").Disabled(!a.branchCreateCanSubmit()).Clicked() {
-					a.submitBranchCreate()
-				}
-			})
+	dismissed, cancelled, confirmed := dialogFrame(c, p, "branch-create", &st.open, "New Branch", 440, func() {
+		ui.Field(c, "Start point:", func() {
+			ui.Text(c, st.startPoint).Font("monospace").FontSize(12).TextColor(p.text)
 		})
-	}).Dismissed() {
+		ui.Field(c, "Name:", func() {
+			in := ui.TextInput(c, &st.name).FillWidth().AutoFocus().Placeholder("Branch name").Label("New Branch From Name")
+			if in.Changed() {
+				st.nameChanged = true
+			}
+			// Enter in the input submits here, never twice: a focused
+			// single-line input takes the key before every window shortcut,
+			// so the frame's Enter cannot fire for the same press.
+			if in.Submitted() && a.branchCreateCanSubmit() {
+				a.submitBranchCreate()
+			}
+		})
+		if problem := a.newBranchProblem(st.name); problem != "" && (st.nameChanged || strings.TrimSpace(st.name) != "") {
+			ui.Text(c, problem).FontSize(12).TextColor(p.danger)
+		}
+		ui.Checkbox(c.Key("branch-create-checkout"), &st.checkout, "Checkout after create")
+	},
+		dialogAction{key: "branch-create-cancel", text: "Cancel", label: "Cancel"},
+		dialogAction{key: "branch-create-confirm", text: "Create Branch", label: "Confirm New Branch From", disabled: !a.branchCreateCanSubmit()})
+	if cancelled {
 		a.closeBranchCreateDialog()
 	}
-	if !st.open {
+	if confirmed {
+		a.submitBranchCreate()
+	}
+	if dismissed {
 		a.closeBranchCreateDialog()
 	}
 }
