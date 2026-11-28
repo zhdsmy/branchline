@@ -36,6 +36,9 @@ const (
 	// is the newer side of the range (the target of git diff <base> <target>)
 	// and Base the older one.
 	diffRangeFile
+	// diffWorktreeFile compares one file in Commit against the working tree,
+	// as git diff <commit> -- <file>, with untracked files read as new.
+	diffWorktreeFile
 )
 
 // diffRequest describes one file diff to load asynchronously via sessionRead.
@@ -104,12 +107,25 @@ func rangeFileDiffRequest(base, target git.Commit, file git.FileChange) diffRequ
 	}
 }
 
+// worktreeFileDiffRequest asks for the diff of one file between commit and
+// the working tree, as git diff <commit> -- <file>. revision distinguishes
+// the working-tree reads of successive snapshots, so a refresh reloads even
+// when the same file stays selected.
+func worktreeFileDiffRequest(commit git.Commit, file git.FileChange, revision string) diffRequest {
+	return diffRequest{
+		Kind:     diffWorktreeFile,
+		Commit:   commit,
+		File:     file,
+		Revision: revision,
+	}
+}
+
 func (r diffRequest) valid() bool {
 	if r.Kind == diffNone || r.File.Path == "" {
 		return false
 	}
 	switch r.Kind {
-	case diffCommitFile:
+	case diffCommitFile, diffWorktreeFile:
 		if r.Commit.Hash == "" {
 			return false
 		}
@@ -153,6 +169,8 @@ func (r diffRequest) badge() string {
 		return r.Commit.Short()
 	case diffRangeFile:
 		return diffShortHash(r.Base) + "…" + r.Commit.Short()
+	case diffWorktreeFile:
+		return r.Commit.Short() + "…Local"
 	case diffUnstaged:
 		return "Unstaged"
 	case diffStaged:
@@ -368,6 +386,8 @@ func readDiffPatch(repo *git.Repo, req diffRequest, limit int) (diffLoadResult, 
 		raw, err = repo.StagedDiffOpts(paths, opts)
 	case diffRangeFile:
 		raw, err = repo.RangeFileDiffOpts(req.Base, req.Commit.Hash, req.File, opts)
+	case diffWorktreeFile:
+		raw, err = repo.WorktreeFileDiffOpts(req.Commit.Hash, req.File, opts)
 	default:
 		return diffLoadResult{}, fmt.Errorf("unsupported diff kind %d", req.Kind)
 	}

@@ -40,8 +40,9 @@ type historyDetailResult struct {
 }
 
 // historyPaneMode is what the detail pane shows for the current selection:
-// nothing, one commit's details, a two-commit comparison, or a placeholder
-// for three or more selected commits.
+// nothing, one commit's details, a two-commit comparison, a comparison of
+// one commit against the working tree, or a placeholder for three or more
+// selected commits.
 type historyPaneMode uint8
 
 const (
@@ -49,11 +50,13 @@ const (
 	historySingleCommit
 	historyCompare
 	historyMultiSelect
+	historyCompareLocal
 )
 
 // historyState holds the History page state on app. All fields are
 // owned by the UI thread; background reads publish through sessionRead with
-// the fixed scopes "history-detail", "history-compare" and "history-diff".
+// the fixed scopes "history-detail", "history-compare",
+// "history-compare-local" and "history-diff".
 type historyState struct {
 	// repoGen is the repository generation the state below belongs to. When
 	// session.Generation() moves past it the page resets itself.
@@ -87,10 +90,13 @@ type historyState struct {
 
 	// mode is the detail pane's current mode; selection holds every chosen
 	// commit hash, as the list's multi-selection does. compare is the
-	// two-commit comparison state, meaningful only in historyCompare mode.
-	mode      historyPaneMode
-	selection ui.Selection[string]
-	compare   historyCompareState
+	// two-commit comparison state, meaningful only in historyCompare mode,
+	// and compareLocal the commit-to-working-tree comparison state,
+	// meaningful only in historyCompareLocal mode.
+	mode         historyPaneMode
+	selection    ui.Selection[string]
+	compare      historyCompareState
+	compareLocal historyCompareLocalState
 
 	// selCache is the one-entry cache syncHistorySelection derives the
 	// detail pane from: the chosen commits in list order, and the
@@ -446,6 +452,10 @@ func (a *app) historyDetailPane(c *ui.Context, p palette) {
 				a.historyCompareInfo(c, p)
 				ui.Box(c).Height(1).FillWidth().Background(p.hairline).Shrink(0)
 				a.historyCompareFileList(c, p)
+			case historyCompareLocal:
+				a.historyCompareLocalInfo(c, p)
+				ui.Box(c).Height(1).FillWidth().Background(p.hairline).Shrink(0)
+				a.historyCompareLocalFileList(c, p)
 			case historyMultiSelect:
 				a.historyMultiSelectInfo(c, p)
 			default:
