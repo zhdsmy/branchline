@@ -545,7 +545,7 @@ func TestHistoryCompareLocalDisabledWhileBusy(t *testing.T) {
 
 // The new menu item sits between the replay items and the copy tail: the
 // menu still opens with Checkout Commit and still ends with a separator and
-// the two copy items.
+// the three copy items.
 func TestHistoryCompareLocalMenuStructure(t *testing.T) {
 	repo := newGitRepo(t, "cl-menu")
 	c1 := repo.CommitFile("base.txt", "base\n", "base commit")
@@ -558,18 +558,18 @@ func TestHistoryCompareLocalMenuStructure(t *testing.T) {
 		t.Fatalf("right-click commit row: %v", err)
 	}
 	menu := h.ui.Menu()
-	if len(menu) < 5 || menu[0] != "Checkout Commit…" {
+	if len(menu) < 6 || menu[0] != "Checkout Commit…" {
 		t.Fatalf("menu %q does not start with Checkout Commit…", menu)
 	}
-	tail := menu[len(menu)-3:]
-	if tail[0] != "-" || tail[1] != "Copy Commit SHA" || tail[2] != "Copy Commit Info" {
-		t.Fatalf("menu %q does not end with separator + the two copy items", menu)
+	tail := menu[len(menu)-4:]
+	if tail[0] != "-" || tail[1] != "Copy Commit SHA" || tail[2] != "Copy Commit Subject" || tail[3] != "Copy Commit Info" {
+		t.Fatalf("menu %q does not end with separator + the three copy items", menu)
 	}
 	idx := slices.Index(menu, "Compare to Local Changes")
 	if idx < 0 {
 		t.Fatalf("menu %q misses Compare to Local Changes", menu)
 	}
-	if idx >= len(menu)-3 {
+	if idx >= len(menu)-4 {
 		t.Fatalf("Compare to Local Changes sits in the copy tail of menu %q", menu)
 	}
 	h.ui.CloseMenu()
