@@ -168,8 +168,8 @@ func (a *app) submitCheckout() {
 	expectedHead := st.checkoutExpectedHead
 	expectedBranch := st.checkoutBranch
 	a.closeCheckoutModal()
-	a.session.do("Checking out commit", func(repo *git.Repo) error {
-		return checkoutWithGuard(repo, expectedHead, expectedBranch, target)
+	a.checkoutOfferingStash("Checking out commit", shortTagHash(target), func(repo *git.Repo, force bool) error {
+		return checkoutWithGuard(repo, expectedHead, expectedBranch, target, force)
 	})
 }
 
@@ -178,9 +178,12 @@ func (a *app) submitCheckout() {
 // be readable, no merge, rebase, cherry-pick or revert may be in progress,
 // HEAD and the branch must still be exactly where the confirmation saw them,
 // and the target commit must still exist. Only then does the checkout run —
-// never forced, so Git itself refuses when local changes would be
-// overwritten, without touching the working tree, the index or HEAD.
-func checkoutWithGuard(repo *git.Repo, expectedHead, expectedBranch, targetHash string) error {
+// plain, so Git itself refuses when local changes would be overwritten,
+// without touching the working tree, the index or HEAD. The checks run on
+// every attempt, including the retry a blocked checkout offers: force is the
+// retry's choice alone and decides whether git may discard what is in the
+// way.
+func checkoutWithGuard(repo *git.Repo, expectedHead, expectedBranch, targetHash string, force bool) error {
 	if targetHash == "" {
 		return fmt.Errorf("cannot check out: no target commit")
 	}
@@ -196,6 +199,9 @@ func checkoutWithGuard(repo *git.Repo, expectedHead, expectedBranch, targetHash 
 	}
 	if _, err := repo.PathHash(targetHash + "^{commit}"); err != nil {
 		return fmt.Errorf("cannot check out: the target commit %s no longer exists: %w", targetHash, err)
+	}
+	if force {
+		return repo.CheckoutForce(targetHash)
 	}
 	return repo.Checkout(targetHash)
 }

@@ -105,28 +105,25 @@ func (a *app) remoteBranchPullDialog(c *ui.Context) {
 	if !st.pullOpen {
 		return
 	}
-	ui.Modal(c.Key("rb-pull-modal"), &st.pullOpen, func() {
-		ui.Column(c.Key("rb-pull-body")).Width(460).Padding(18, 18, 14, 18).Gap(10).Children(func() {
-			ui.Text(c, "Pull").FontSize(17).FontWeight(650).TextColor(p.text)
-			ui.Field(c, "From:", func() {
-				ui.Text(c, st.pullRemoteBranch).Font("monospace").FontSize(12).TextColor(p.text).SingleLine().Ellipsis("…")
-			})
-			ui.Field(c, "Into:", func() {
-				ui.Text(c, st.pullInto).Font("monospace").FontSize(12).TextColor(p.text)
-			})
-			ui.Checkbox(c.Key("rb-pull-rebase"), &st.pullRebase, "Rebase instead of merge").Label("Rebase instead of merge")
-			ui.Checkbox(c.Key("rb-pull-stash"), &st.pullStash, "Stash and reapply local changes").Label("Stash and reapply local changes")
-			ui.Row(c.Key("rb-pull-actions")).Gap(8).Justify(ui.End).Children(func() {
-				if ui.Button(c.Key("rb-pull-cancel"), "Cancel").Label("Cancel").Clicked() {
-					a.closeRemoteBranchPull()
-				}
-				if ui.PrimaryButton(c.Key("rb-pull-confirm"), "Pull").Label("Confirm Pull Remote Branch").Disabled(a.session.Busy() || a.session.Snapshot().Status.State != "").Clicked() {
-					a.submitRemoteBranchPull()
-				}
-			})
+	dismissed, cancelled, confirmed := dialogFrame(c, p, "rb-pull", &st.pullOpen, "Pull", 460, func() {
+		ui.Field(c, "From:", func() {
+			ui.Text(c, st.pullRemoteBranch).Font("monospace").FontSize(12).TextColor(p.text).SingleLine().Ellipsis("…")
 		})
-	})
-	if !st.pullOpen {
+		ui.Field(c, "Into:", func() {
+			ui.Text(c, st.pullInto).Font("monospace").FontSize(12).TextColor(p.text)
+		})
+		ui.Checkbox(c.Key("rb-pull-rebase"), &st.pullRebase, "Rebase instead of merge").Label("Rebase instead of merge")
+		ui.Checkbox(c.Key("rb-pull-stash"), &st.pullStash, "Stash and reapply local changes").Label("Stash and reapply local changes")
+	},
+		dialogAction{key: "rb-pull-cancel", text: "Cancel", label: "Cancel"},
+		dialogAction{key: "rb-pull-confirm", text: "Pull", label: "Confirm Pull Remote Branch", disabled: a.session.Busy() || a.session.Snapshot().Status.State != "", autoFocus: true})
+	if cancelled {
+		a.closeRemoteBranchPull()
+	}
+	if confirmed {
+		a.submitRemoteBranchPull()
+	}
+	if dismissed {
 		a.closeRemoteBranchPull()
 	}
 }

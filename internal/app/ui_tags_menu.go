@@ -179,8 +179,8 @@ func (a *app) submitTagCheckout() {
 	if tag == "" || expectedCommit == "" {
 		return
 	}
-	a.session.do("Checking out tag "+tag, func(repo *git.Repo) error {
-		return checkoutTagWithGuard(repo, tag, expectedCommit, expectedHead, expectedBranch)
+	a.checkoutOfferingStash("Checking out tag "+tag, tag, func(repo *git.Repo, force bool) error {
+		return checkoutTagWithGuard(repo, tag, expectedCommit, expectedHead, expectedBranch, force)
 	})
 }
 
@@ -194,10 +194,12 @@ func (a *app) submitTagCheckout() {
 //     revert may be in progress, and HEAD and the branch must still be
 //     exactly where the confirmation saw them.
 //
-// Only then does the checkout run — never forced, so Git itself refuses when
-// local changes would be overwritten, without touching the working tree, the
-// index or HEAD.
-func checkoutTagWithGuard(repo *git.Repo, tagName, expectedCommitOID, expectedHead, expectedBranch string) error {
+// Only then does the checkout run — plain, so Git itself refuses when local
+// changes would be overwritten, without touching the working tree, the index
+// or HEAD. The checks run on every attempt, including the retry a blocked
+// checkout offers: force is the retry's choice alone and decides whether git
+// may discard what is in the way.
+func checkoutTagWithGuard(repo *git.Repo, tagName, expectedCommitOID, expectedHead, expectedBranch string, force bool) error {
 	info, err := repo.TagRefInfo(tagName)
 	if err != nil {
 		return fmt.Errorf("cannot check out: verifying tag %s failed: %w", tagName, err)
@@ -214,6 +216,9 @@ func checkoutTagWithGuard(repo *git.Repo, tagName, expectedCommitOID, expectedHe
 	}
 	if st.Head != expectedHead || st.Branch != expectedBranch {
 		return fmt.Errorf("cannot check out: HEAD or the current branch changed after the dialog opened; review the repository and try again")
+	}
+	if force {
+		return repo.CheckoutForce(info.CommitOID)
 	}
 	return repo.Checkout(info.CommitOID)
 }
