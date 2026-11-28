@@ -209,7 +209,11 @@ func (a *app) historyPage(c *ui.Context) {
 		case a.session.Loading() && !a.session.Loaded():
 			placeholderCard(c, "Loading commit history…", a.session.Meta().Location(), "", p)
 		case len(a.session.Snapshot().Commits) == 0:
-			placeholderCard(c, "No commits yet", "This repository has no commits in its history.", a.session.Meta().Location(), p)
+			if a.session.HistoryCurrentBranch() {
+				a.historyEmptyFilteredPlaceholder(c, p)
+			} else {
+				placeholderCard(c, "No commits yet", "This repository has no commits in its history.", a.session.Meta().Location(), p)
+			}
 		default:
 			if a.fileInspectorActive(pageHistory) {
 				a.fileInspectorView(c, p)
@@ -225,6 +229,82 @@ func (a *app) historyPage(c *ui.Context) {
 		}
 		a.commitActionModals(c)
 	})
+}
+
+// historyFilterControls renders the two history filters at the right end of
+// the History list header, ahead of the Search button: the branch scope
+// drop-down and the first-parent check box, independent of one another. Both
+// report their change into chooseHistoryFilters, which applies it for this
+// opening and writes it to the repository's settings. Their values are
+// derived fresh from the session on every frame, as the interactive rebase
+// action selects derive theirs; a change reloads the history, and the answer
+// shows the choice the session then holds.
+func (a *app) historyFilterControls(c *ui.Context, p palette) {
+	choice := "All Branches"
+	if a.session.HistoryCurrentBranch() {
+		choice = "Current Branch"
+	}
+	if ui.Select(c.Key("history-branch-filter"), &choice, []string{"All Branches", "Current Branch"}).
+		Height(22).FontSize(11.5).
+		Label("History Branches").
+		Tooltip("Which branches the history shows").
+		Changed() {
+		a.chooseHistoryFilters(choice == "Current Branch", a.session.HistoryFirstParent())
+	}
+	firstParent := a.session.HistoryFirstParent()
+	if ui.Checkbox(c.Key("history-first-parent"), &firstParent, "First Parent").
+		Height(22).FontSize(11.5).
+		Label("First Parent Only").
+		Tooltip("Follow only the first parent of a merge").
+		Changed() {
+		a.chooseHistoryFilters(a.session.HistoryCurrentBranch(), firstParent)
+	}
+}
+
+// chooseHistoryFilters applies the two history filter choices for this
+// opening — the session reloads the history with them — and writes them to
+// the repository's settings, preserving every other setting, as
+// toggleChangesTree does for its file list. A failed write surfaces as the
+// settings toast while the opening keeps the user's choice.
+func (a *app) chooseHistoryFilters(currentBranch, firstParent bool) {
+	a.session.SetHistoryFilters(currentBranch, firstParent)
+	if a.store == nil {
+		return
+	}
+	id := a.session.Meta().ID
+	if id == "" {
+		return
+	}
+	meta, ok := a.store.Get(id)
+	if !ok {
+		return
+	}
+	local := meta.Local
+	local.HistoryCurrentBranch = currentBranch
+	local.HistoryFirstParent = firstParent
+	if err := a.store.UpdateLocal(id, local); err != nil {
+		a.toast = "Cannot save settings: " + err.Error()
+	}
+}
+
+// historyEmptyFilteredPlaceholder is the empty state of the history filtered
+// to the current branch when HEAD reaches no commits — an empty repository
+// or a not yet committed orphan branch. The header and its branch drop-down
+// are not drawn without a commit list, so the placeholder carries the way
+// back to the unfiltered history itself.
+func (a *app) historyEmptyFilteredPlaceholder(c *ui.Context, p palette) {
+	ui.Column(c).
+		Grow(1).
+		Center().
+		Padding(24).
+		Gap(10).
+		Children(func() {
+			ui.Text(c, "No commits on the current branch").FontSize(18).FontWeight(600).TextColor(p.text).TextAlign(ui.Center)
+			ui.Text(c, "HEAD points at a branch without commits yet; the other branches' history is filtered out.").FontSize(13).TextColor(p.muted).TextAlign(ui.Center).MaxWidth(480)
+			if ui.Button(c.Key("history-show-all-branches"), "Show All Branches").Label("Show All Branches").Clicked() {
+				a.chooseHistoryFilters(false, a.session.HistoryFirstParent())
+			}
+		})
 }
 
 // historyCommitList renders the virtualized list of commits: graph lane,
@@ -259,6 +339,8 @@ func (a *app) historyCommitList(c *ui.Context, p palette) {
 		ui.Row(c.Key("history-list-header")).Height(30).FillWidth().PaddingX(14).Gap(10).AlignItems(ui.Center).Children(func() {
 			ui.Text(c, "History").FontSize(15).FontWeight(700).TextColor(p.text).SingleLine()
 			ui.Text(c, fmt.Sprintf("%d commits", len(snap.Commits))).FontSize(11.5).TextColor(p.faint).SingleLine()
+			ui.Spacer(c)
+			a.historyFilterControls(c, p)
 			a.historySearchHeaderButton(c, p)
 		})
 		ui.Box(c).Height(1).FillWidth().Background(p.hairline)

@@ -77,6 +77,10 @@ func (a *app) copyCommitMenuItems(m *ui.Menu, cm git.Commit) {
 		st.pendingClipboard = cm.Hash
 		st.hasPendingClipboard = true
 	}
+	if m.Item("Copy Commit Subject").Chosen() {
+		st.pendingClipboard = cm.Subject
+		st.hasPendingClipboard = true
+	}
 	if m.Item("Copy Commit Info").Chosen() {
 		st.pendingClipboard = commitInfo(cm)
 		st.hasPendingClipboard = true

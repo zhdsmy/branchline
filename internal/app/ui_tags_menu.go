@@ -285,55 +285,50 @@ func (a *app) tagDetailsDialog(c *ui.Context) {
 	if !st.detOpen {
 		return
 	}
-	if ui.Modal(c.Key("tag-details-modal"), &st.detOpen, func() {
-		ui.Column(c.Key("tag-details-body")).Width(460).Padding(18, 18, 14, 18).Gap(10).Children(func() {
-			ui.Text(c, "Tag Details").FontSize(17).FontWeight(650).TextColor(p.text)
-			ui.Field(c, "Tag:", func() {
-				ui.Text(c, st.detTag).Font("monospace").FontSize(12).TextColor(p.text)
+	dismissed, cancelled, _ := dialogFrame(c, p, "tag-details-modal", &st.detOpen, "Tag Details", 460, func() {
+		ui.Field(c, "Tag:", func() {
+			ui.Text(c, st.detTag).Font("monospace").FontSize(12).TextColor(p.text)
+		})
+		switch {
+		case st.detChecking:
+			ui.Text(c, "Loading tag details…").FontSize(12).TextColor(p.muted)
+		case st.detErr != nil:
+			ui.Text(c, st.detErr.Error()).FontSize(12).TextColor(p.danger)
+		default:
+			info := st.detInfo
+			kind := "Lightweight tag"
+			if info.Annotated {
+				kind = "Annotated tag"
+			}
+			ui.Field(c, "Type:", func() {
+				ui.Text(c, kind).FontSize(12).TextColor(p.text)
 			})
-			switch {
-			case st.detChecking:
-				ui.Text(c, "Loading tag details…").FontSize(12).TextColor(p.muted)
-			case st.detErr != nil:
-				ui.Text(c, st.detErr.Error()).FontSize(12).TextColor(p.danger)
-			default:
-				info := st.detInfo
-				kind := "Lightweight tag"
-				if info.Annotated {
-					kind = "Annotated tag"
-				}
-				ui.Field(c, "Type:", func() {
-					ui.Text(c, kind).FontSize(12).TextColor(p.text)
+			commitLine := shortTagHash(info.CommitOID)
+			if st.detSubject != "" {
+				commitLine += " " + st.detSubject
+			}
+			ui.Field(c, "Commit:", func() {
+				ui.Text(c, commitLine).FontSize(12).TextColor(p.text).SingleLine().Ellipsis("…")
+			})
+			ui.Text(c, info.CommitOID).Font("monospace").FontSize(11).TextColor(p.faint).SingleLine()
+			if info.Annotated {
+				ui.Field(c, "Tagger:", func() {
+					ui.Text(c, info.Tagger).FontSize(12).TextColor(p.text)
 				})
-				commitLine := shortTagHash(info.CommitOID)
-				if st.detSubject != "" {
-					commitLine += " " + st.detSubject
-				}
-				ui.Field(c, "Commit:", func() {
-					ui.Text(c, commitLine).FontSize(12).TextColor(p.text).SingleLine().Ellipsis("…")
+				ui.Field(c, "Date:", func() {
+					ui.Text(c, info.Date).FontSize(12).TextColor(p.text)
 				})
-				ui.Text(c, info.CommitOID).Font("monospace").FontSize(11).TextColor(p.faint).SingleLine()
-				if info.Annotated {
-					ui.Field(c, "Tagger:", func() {
-						ui.Text(c, info.Tagger).FontSize(12).TextColor(p.text)
+				if strings.TrimSpace(info.Message) != "" {
+					ui.Field(c, "Message:", func() {
+						ui.Text(c, info.Message).FontSize(12).TextColor(p.text)
 					})
-					ui.Field(c, "Date:", func() {
-						ui.Text(c, info.Date).FontSize(12).TextColor(p.text)
-					})
-					if strings.TrimSpace(info.Message) != "" {
-						ui.Field(c, "Message:", func() {
-							ui.Text(c, info.Message).FontSize(12).TextColor(p.text)
-						})
-					}
 				}
 			}
-			ui.Row(c.Key("tag-details-actions")).Gap(8).Justify(ui.End).Children(func() {
-				if ui.Button(c.Key("tag-details-close"), "Close").Label("Close Tag Details").Clicked() {
-					a.closeTagDetailsDialog()
-				}
-			})
-		})
-	}).Dismissed() {
+		}
+	},
+		dialogAction{key: "tag-details-close", text: "Close", label: "Close Tag Details"},
+		dialogAction{})
+	if dismissed || cancelled {
 		a.closeTagDetailsDialog()
 	}
 }

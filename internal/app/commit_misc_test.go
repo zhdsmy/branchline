@@ -85,9 +85,9 @@ func TestCommitCheckoutThroughContextMenu(t *testing.T) {
 	if len(menu) < 4 || menu[0] != "Checkout Commit…" {
 		t.Fatalf("menu %q does not start with Checkout Commit…", menu)
 	}
-	tail := menu[len(menu)-3:]
-	if tail[0] != "-" || tail[1] != "Copy Commit SHA" || tail[2] != "Copy Commit Info" {
-		t.Fatalf("menu %q does not end with separator + the two copy items", menu)
+	tail := menu[len(menu)-4:]
+	if tail[0] != "-" || tail[1] != "Copy Commit SHA" || tail[2] != "Copy Commit Subject" || tail[3] != "Copy Commit Info" {
+		t.Fatalf("menu %q does not end with separator + the three copy items", menu)
 	}
 	if err := h.ui.ChooseMenuItem("Checkout Commit…"); err != nil {
 		t.Fatalf("choose Checkout Commit…: %v", err)
