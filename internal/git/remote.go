@@ -111,21 +111,34 @@ func (r *Repo) pull(o PullOptions) (string, error) {
 }
 
 // Push pushes branch to remote, setting it as the upstream when it has
-// none, and forcing with lease when force is set.
+// none, and forcing with lease when force is set. Both names are required:
+// an empty remote or branch is an error instead of a bare git push, because
+// the refs such a push would move depend on the repository's push.default
+// and pushRemote configuration rather than on the caller's choice.
 func (r *Repo) Push(remote, branch string, setUpstream, force, tags bool) error {
 	return r.PushTo(remote, branch, "", setUpstream, force, tags)
 }
 
 // PushTo is Push with the remote branch named dest. An empty dest is the
-// branch's own name.
+// branch's own name. Like Push it requires remote and branch, so the push
+// always names exactly the reference it updates.
 func (r *Repo) PushTo(remote, branch, dest string, setUpstream, force, tags bool) error {
 	_, err := r.PushNote(remote, branch, dest, setUpstream, force, tags)
 	return err
 }
 
 // PushNote is PushTo that also says UpToDatePush when there was nothing
-// to send.
+// to send. A remote or branch that is empty or all whitespace is an error
+// before git runs: pushing without both names would hand the choice of
+// references to the user's push.default or pushRemote configuration — with
+// push.default=matching a bare push would update every same-named branch
+// on the remote, publishing work the caller never chose to send.
 func (r *Repo) PushNote(remote, branch, dest string, setUpstream, force, tags bool) (string, error) {
+	remote = strings.TrimSpace(remote)
+	branch = strings.TrimSpace(branch)
+	if remote == "" || branch == "" {
+		return "", fmt.Errorf("pushing needs a remote and a branch")
+	}
 	if dest = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(dest), "refs/heads/")); dest == "" {
 		dest = branch
 	}
@@ -139,13 +152,7 @@ func (r *Repo) PushNote(remote, branch, dest string, setUpstream, force, tags bo
 	if tags {
 		args = append(args, "--tags")
 	}
-	var positional []string
-	if remote != "" {
-		positional = append(positional, remote)
-		if branch != "" {
-			positional = append(positional, "refs/heads/"+branch+":refs/heads/"+dest)
-		}
-	}
+	positional := []string{remote, "refs/heads/" + branch + ":refs/heads/" + dest}
 	// --porcelain puts a line on standard output for each reference, led by
 	// "=" when the remote had it already, which git otherwise only says
 	// on standard error. When the remote name starts with "-", "--" must

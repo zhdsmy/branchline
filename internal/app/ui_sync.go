@@ -405,10 +405,14 @@ func (a *app) syncPull() {
 }
 
 // pushTarget is the branch and remote a Push click sends. The worker resolves
-// it from live refs so the decision never depends on a stale snapshot.
+// it from live refs so the decision never depends on a stale snapshot. Every
+// target names its remote, its local branch and the branch it lands on, so
+// the push the user configured through push.default, remote.pushDefault or
+// branch.<name>.pushRemote can never redirect it.
 type pushTarget struct {
 	branch      string
 	remote      string
+	dest        string
 	setUpstream bool
 }
 
@@ -469,12 +473,18 @@ func snapshotHeadKind(refs git.Refs, status git.Status) (git.HEADKind, bool) {
 	return 0, false
 }
 
-// resolvePushTarget applies the v1 push decision to refs and the HEAD state:
-// the source side is validated before the destination side, so an unborn
-// branch reports before a missing remote exactly like a detached HEAD does. A
-// branch with a live upstream pushes to it, a branch without one publishes to
-// the default remote with upstream tracking, and an unborn branch, a detached
-// HEAD, or a remoteless repository is a pre-flight validation error.
+// resolvePushTarget applies the push decision to refs and the HEAD state,
+// sharing the Push dialog's defaults: the source side is validated before the
+// destination side, so an unborn branch reports before a missing remote
+// exactly like a detached HEAD does. A branch with a live upstream pushes to
+// the upstream's remote and the branch it tracks there; a branch without one
+// publishes to the default remote under its own name with upstream tracking —
+// the upstream that cannot be split against the configured remotes, because
+// its remote was deleted since the tracking was set up, counts as none. An
+// unborn branch, a detached HEAD, or a remoteless repository is a pre-flight
+// validation error. The resolved target always names its remote and branches
+// explicitly: the push never falls back to a bare git push, so neither
+// push.default nor the pushRemote configuration can redirect or widen it.
 func resolvePushTarget(refs git.Refs, headKind git.HEADKind) (pushTarget, error) {
 	switch headKind {
 	case git.HEADUnborn:
@@ -486,14 +496,14 @@ func resolvePushTarget(refs git.Refs, headKind git.HEADKind) (pushTarget, error)
 	if b == nil {
 		return pushTarget{}, errors.New(errMsgPushNoBranch)
 	}
-	if b.Upstream != "" && !b.Gone {
-		return pushTarget{branch: b.Name}, nil
+	if upRemote, upBranch, ok := liveUpstreamOf(*b, refs.Remotes); ok {
+		return pushTarget{branch: b.Name, remote: upRemote, dest: upBranch}, nil
 	}
 	remote := defaultRemoteOf(refs)
 	if remote == "" {
 		return pushTarget{}, errors.New(errMsgPushNoRemote)
 	}
-	return pushTarget{branch: b.Name, remote: remote, setUpstream: true}, nil
+	return pushTarget{branch: b.Name, remote: remote, dest: b.Name, setUpstream: true}, nil
 }
 
 func (a *app) syncPush() {
@@ -561,12 +571,10 @@ func (a *app) syncPush() {
 		if err != nil {
 			return err
 		}
-		var note string
-		if target.setUpstream {
-			note, err = repo.PushNote(target.remote, target.branch, "", true, false, false)
-		} else {
-			note, err = repo.PushNote("", "", "", false, false, false)
-		}
+		// Every resolved target carries an explicit remote, source branch and
+		// destination branch, so the push never delegates its choice of refs
+		// to the user's push.default or pushRemote configuration.
+		note, err := repo.PushNote(target.remote, target.branch, target.dest, target.setUpstream, false, false)
 		return noted(note, err)
 	}, func(err error) {
 		if dropIfStale(a, gen) {
