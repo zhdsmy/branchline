@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/egoist/mygo"
+	"github.com/egoist/mygo/ui"
 
 	"github.com/zhdsmy/branchline/internal/git"
 )
@@ -637,9 +638,16 @@ func TestMenuBarNewTagTarget(t *testing.T) {
 	}
 
 	// A commit selected on the History page becomes the target, with its
-	// short hash in the hint.
+	// short hash in the hint. The dialog of the first click closes the way
+	// a user closes it first: Escape and a frame. The menu is gated while a
+	// dialog is open, so reopening for a new target must wait for the close.
 	h.app.open(route{page: pageHistory})
 	h.ui.Frame()
+	h.ui.Key(0, ui.KeyEscape)
+	h.ui.Frame()
+	if st.newOpen {
+		t.Fatal("Escape did not close the New Tag dialog")
+	}
 	h.app.historyView.sel = first
 	h.app.historyView.commit = git.Commit{Hash: first, Subject: "initial commit"}
 	clickMenuItem(t, rig, menuIDNewTag)
@@ -654,6 +662,11 @@ func TestMenuBarNewTagTarget(t *testing.T) {
 	// again, even though the second commit is the tip.
 	h.app.open(route{page: pageChanges})
 	h.ui.Frame()
+	h.ui.Key(0, ui.KeyEscape)
+	h.ui.Frame()
+	if st.newOpen {
+		t.Fatal("Escape did not close the New Tag dialog")
+	}
 	h.app.historyView.sel = ""
 	clickMenuItem(t, rig, menuIDNewTag)
 	if st.newTarget != "HEAD" {
