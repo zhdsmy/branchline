@@ -97,6 +97,15 @@ type repoSession struct {
 	// git log --date-order does; SetDateOrder reloads when the choice changes.
 	dateOrder bool
 
+	// historyCurrentBranch and historyFirstParent are the repository's two
+	// history filters: only the commits HEAD reaches instead of every
+	// branch, remote branch and tag, and only the first parent of a merge,
+	// as git log --first-parent does. Both are read from the repository's
+	// settings when it opens and persist there; they are independent, and
+	// either changing reloads the history.
+	historyCurrentBranch bool
+	historyFirstParent   bool
+
 	snapshot repository.Snapshot
 	loaded   bool
 	loading  bool
@@ -203,6 +212,8 @@ func (s *repoSession) Open(meta store.Repo) {
 	} else {
 		s.logLimit = defaultLocalLogLimit
 	}
+	s.historyCurrentBranch = meta.Local.HistoryCurrentBranch
+	s.historyFirstParent = meta.Local.HistoryFirstParent
 	s.Reload()
 }
 
@@ -380,7 +391,11 @@ func (s *repoSession) loadMorePage(step int) {
 			merged = make([]git.Commit, 0, n+len(page)-1)
 			merged = append(merged, base...)
 			merged = append(merged, page[1:]...)
-			graph = git.Graph(merged)
+			if logOpts.FirstParent {
+				graph = git.FirstParentGraph(merged)
+			} else {
+				graph = git.Graph(merged)
+			}
 			// A full page means the walk was cut off by the limit, so older
 			// commits remain; a short page reached the end of the history.
 			more = len(page) == step+1
@@ -550,12 +565,22 @@ func (s *repoSession) loadOptions() repository.Options {
 	if limit <= 0 {
 		limit = defaultLocalLogLimit
 	}
+	log := git.LogOptions{
+		Limit:       limit,
+		DateOrder:   s.dateOrder,
+		FirstParent: s.historyFirstParent,
+	}
+	if s.historyCurrentBranch {
+		// The current branch is what HEAD reaches, detached or not; an
+		// unborn HEAD answers no commits rather than failing the load. The
+		// first-parent filter does not scope the revisions: it is git log
+		// --first-parent of whatever the branch scope walks, so with every
+		// branch in view each branch's tip starts its own first-parent chain.
+		log.Revs = []string{"HEAD"}
+	}
 	return repository.Options{
 		ShowIgnored: s.showIgnored,
-		Log: git.LogOptions{
-			Limit:     limit,
-			DateOrder: s.dateOrder,
-		},
+		Log:         log,
 		// Once this repository generation has a verified answer or a
 		// detection failure, ordinary reloads, pagination, and post-write
 		// refreshes never run git --version again; only an explicit retry
@@ -584,6 +609,30 @@ func (s *repoSession) SetDateOrder(on bool) {
 		return
 	}
 	s.dateOrder = on
+	s.Reload()
+}
+
+// HistoryCurrentBranch reports whether the history shows only the commits
+// HEAD reaches instead of every branch, remote branch and tag.
+func (s *repoSession) HistoryCurrentBranch() bool { return s.historyCurrentBranch }
+
+// HistoryFirstParent reports whether the history follows only the first
+// parent of a merge, as git log --first-parent does.
+func (s *repoSession) HistoryFirstParent() bool { return s.historyFirstParent }
+
+// SetHistoryFilters records the two history filters and reloads the snapshot
+// when either changes, so the log is walked again with the new choice; a call
+// changing nothing is a no-op. The session's own meta copy mirrors the choice
+// because the settings a view reads from it must never contradict what the
+// session shows, even before or instead of the store write the caller makes.
+func (s *repoSession) SetHistoryFilters(currentBranch, firstParent bool) {
+	if s.historyCurrentBranch == currentBranch && s.historyFirstParent == firstParent {
+		return
+	}
+	s.historyCurrentBranch = currentBranch
+	s.historyFirstParent = firstParent
+	s.meta.Local.HistoryCurrentBranch = currentBranch
+	s.meta.Local.HistoryFirstParent = firstParent
 	s.Reload()
 }
 

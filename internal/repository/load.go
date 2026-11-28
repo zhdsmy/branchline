@@ -133,7 +133,11 @@ func Load(r Reader, o Options) (Snapshot, error) {
 		return Snapshot{}, err
 	}
 	git.FixRefKinds(s.Commits, s.Refs)
-	s.Graph = git.Graph(s.Commits)
+	if o.Log.FirstParent {
+		s.Graph = git.FirstParentGraph(s.Commits)
+	} else {
+		s.Graph = git.Graph(s.Commits)
+	}
 	s.More = len(s.Commits) >= o.Log.Limit
 	return s, nil
 }
