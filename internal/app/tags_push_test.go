@@ -239,7 +239,7 @@ func TestTagsPushNeverOverwritesDivergedRemoteTag(t *testing.T) {
 }
 
 // While the remote probe is held in flight the dialog says it is checking and
-// has no force-push button at all. Once it answers, the existing remote tag
+// its force-push button is disabled. Once it answers, the existing remote tag
 // needs the explicit overwrite agreement before the button enables.
 func TestTagsPushForceCheckingAndAgreementGate(t *testing.T) {
 	repo, bare, first, _ := tagsPushSidebarRepo(t, "tags-push-force-gate")
@@ -259,11 +259,18 @@ func TestTagsPushForceCheckingAndAgreementGate(t *testing.T) {
 	if !h.ui.HasText("Checking remote tag on origin") {
 		t.Fatalf("checking note missing; texts=%q", h.ui.Texts())
 	}
-	if btn, ok := h.ui.AccessByRole(ui.RoleButton, "Confirm Force Push Tag"); ok {
-		t.Fatalf("Confirm Force Push Tag present while checking: %+v", btn)
+	if btn, ok := h.ui.AccessByRole(ui.RoleButton, "Confirm Force Push Tag"); !ok || !btn.Disabled {
+		t.Fatalf("Confirm Force Push Tag while checking = %+v (found=%v), want disabled", btn, ok)
 	}
-	if err := h.ui.Click("Confirm Force Push Tag"); err == nil {
-		t.Fatal("Confirm Force Push Tag was clickable while checking")
+	// The Tester clicks the disabled button's coordinates without an error
+	// — only the click's effect proves anything: the toolkit reports no
+	// click of a disabled element, so the dialog must survive untouched.
+	if err := h.ui.Click("Confirm Force Push Tag"); err != nil {
+		t.Fatalf("click Confirm Force Push Tag: %v", err)
+	}
+	h.ui.Frame()
+	if !h.ui.HasText("Checking remote tag on origin") {
+		t.Fatalf("clicking the disabled button disturbed the checking state; texts=%q", h.ui.Texts())
 	}
 
 	h.queue.ReleaseWorker(probe)
@@ -339,8 +346,9 @@ func TestTagsPushForceOverwriteAndStaleLeaseProtects(t *testing.T) {
 	}
 }
 
-// When the probe cannot read the remote it shows the real error and renders no
-// force-push button. Nothing is pushed or overwritten in that state.
+// When the probe cannot read the remote it shows the real error and its
+// force-push button stays disabled. Nothing is pushed or overwritten in that
+// state.
 func TestTagsPushForceCheckFailureProtects(t *testing.T) {
 	repo, bare, first, _ := tagsPushSidebarRepo(t, "tags-push-force-checkfail")
 	repo.Git("push", "origin", "refs/tags/lw")
@@ -360,11 +368,18 @@ func TestTagsPushForceCheckFailureProtects(t *testing.T) {
 	if !h.ui.HasText("does not appear to be a git repository") {
 		t.Fatalf("probe failure error text missing; texts=%q", h.ui.Texts())
 	}
-	if btn, ok := h.ui.AccessByRole(ui.RoleButton, "Confirm Force Push Tag"); ok {
-		t.Fatalf("Confirm Force Push Tag present after failed probe: %+v", btn)
+	if btn, ok := h.ui.AccessByRole(ui.RoleButton, "Confirm Force Push Tag"); !ok || !btn.Disabled {
+		t.Fatalf("Confirm Force Push Tag after failed probe = %+v (found=%v), want disabled", btn, ok)
 	}
-	if err := h.ui.Click("Confirm Force Push Tag"); err == nil {
-		t.Fatal("Confirm Force Push Tag was clickable after the probe failed")
+	// The Tester clicks the disabled button's coordinates without an error
+	// — only the click's effect proves anything: the toolkit reports no
+	// click of a disabled element, so the dialog must survive untouched.
+	if err := h.ui.Click("Confirm Force Push Tag"); err != nil {
+		t.Fatalf("click Confirm Force Push Tag: %v", err)
+	}
+	h.ui.Frame()
+	if !h.ui.HasText("Cannot verify the remote tag") {
+		t.Fatalf("clicking the disabled button disturbed the probe failure state; texts=%q", h.ui.Texts())
 	}
 	if got := bareTagOID(t, bare, "lw"); got != first {
 		t.Fatalf("remote lw = %q, want %q untouched", got, first)
