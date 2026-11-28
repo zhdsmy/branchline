@@ -2,7 +2,9 @@ package app
 
 import (
 	"errors"
+	"maps"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/zhdsmy/branchline/internal/git"
@@ -292,9 +294,12 @@ func (s *repoSession) Reload() {
 	})
 }
 
-// LoadMore grows the history log limit and schedules a fresh snapshot load.
-// While a write operation is busy, the updated logLimit is recorded and the
-// read is deferred until the write finishes and triggers Reload.
+// LoadMore grows the history log limit and loads the next page of commits.
+// With a settled snapshot in place — no write busy, no read in flight — only
+// the new page is fetched and appended, instead of reloading the whole
+// snapshot. While a write operation is busy or a read is already running,
+// the updated logLimit is recorded and the read is deferred to a full
+// reload, exactly as before.
 func (s *repoSession) LoadMore(step int) {
 	if !s.hasRepo || s.repo == nil {
 		return
@@ -302,8 +307,110 @@ func (s *repoSession) LoadMore(step int) {
 	if step <= 0 {
 		step = defaultLoadMoreStep
 	}
+	if s.busy || s.loading || !s.loaded || len(s.snapshot.Commits) == 0 {
+		s.logLimit += step
+		s.Reload()
+		return
+	}
 	s.logLimit += step
-	s.Reload()
+	s.loadMorePage(step)
+}
+
+// loadMorePage fetches only the next page of the history off the UI thread
+// and appends it to the loaded commits, keeping the rest of the snapshot
+// untouched. Appending is only sound while the loaded commits still read as
+// they did when they were captured, so two checks verify that. The reference
+// tips are re-read and compared with the captured ones: a branch rewritten
+// anywhere inside the loaded prefix — an amend or rebase of commits the
+// pages already hold — moves its tip without touching the seam, and the
+// comparison is the only check that sees it. The fetch also starts one
+// commit before the loaded tail, and the overlap verifies the walk itself:
+// a detached HEAD moving without a ref, or any shift of the seam region,
+// breaks it. A failed check or a failed read falls back to a full reload.
+// A reload, write or repository switch in the meantime invalidates the
+// completion through the generation pair, and it is discarded.
+func (s *repoSession) loadMorePage(step int) {
+	repo := s.repo
+	repoGen := s.repoGen
+	s.loadGen++
+	loadGen := s.loadGen
+	// Everything the worker needs is captured on the UI thread. The base
+	// slice is never mutated in place anywhere, so the worker can read it
+	// while the UI thread goes on; the merged commits are a fresh slice.
+	base := s.snapshot.Commits
+	n := len(base)
+	lastHash := base[n-1].Hash
+	logOpts := s.loadOptions().Log
+	logOpts.Revs = slices.Clone(logOpts.Revs)
+	logOpts.Limit = step + 1
+	logOpts.Skip = n - 1
+	refs := s.snapshot.Refs
+	wantTips := refTips(refs)
+
+	s.loading = true
+	s.loadErr = nil
+
+	s.spawn(func() {
+		page, logErr := repo.Log(logOpts)
+		// Refs are re-read after the walk: a tip moving between the two
+		// reads is caught, and a tip moving after them lands in the window
+		// no snapshot read could close either.
+		freshRefs, refsErr := repo.Refs()
+		tipsIntact := refsErr == nil && maps.Equal(refTips(freshRefs), wantTips)
+		// The history is unchanged when the tips stand where the capture
+		// left them and the walk still reaches the commit the capture ended
+		// on; an empty or shifted walk cannot be joined either.
+		continuous := logErr == nil && len(page) > 0 && page[0].Hash == lastHash && tipsIntact
+		var merged []git.Commit
+		var graph []git.GraphRow
+		more := false
+		if continuous {
+			git.FixRefKinds(page, freshRefs)
+			merged = make([]git.Commit, 0, n+len(page)-1)
+			merged = append(merged, base...)
+			merged = append(merged, page[1:]...)
+			graph = git.Graph(merged)
+			// A full page means the walk was cut off by the limit, so older
+			// commits remain; a short page reached the end of the history.
+			more = len(page) == step+1
+		}
+		s.post(func() {
+			if s.repoGen != repoGen || s.loadGen != loadGen {
+				return
+			}
+			if !continuous {
+				// The history moved underneath the pagination, or the page
+				// could not be read at all: only a complete reload yields a
+				// consistent snapshot. The log limit was already grown.
+				s.loading = false
+				s.Reload()
+				return
+			}
+			s.loading = false
+			s.loadErr = nil
+			s.snapshot.Commits = merged
+			s.snapshot.Graph = graph
+			s.snapshot.More = more
+		})
+	})
+}
+
+// refTips maps every branch, remote branch and tag of refs to the commit it
+// points at. The tips are what a mutation of the history always moves —
+// even one rewriting commits already loaded — while the rest of the refs
+// record (upstream tracking, checkout state) does not affect the walk.
+func refTips(refs git.Refs) map[string]string {
+	tips := make(map[string]string, len(refs.Branches)+len(refs.Remote)+len(refs.Tags))
+	for _, b := range refs.Branches {
+		tips[b.FullName] = b.Hash
+	}
+	for _, b := range refs.Remote {
+		tips[b.FullName] = b.Hash
+	}
+	for _, t := range refs.Tags {
+		tips["refs/tags/"+t.Name] = t.Hash
+	}
+	return tips
 }
 
 // do executes a mutating Git operation off the UI thread. It sets the busy

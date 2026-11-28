@@ -437,7 +437,7 @@ type sshFormRequest struct {
 }
 
 func (r *sshFormRequest) matches(st *reposUIState) bool {
-	return r.address == strings.TrimSpace(st.sshAddress) &&
+	return r.address == st.sshAddress &&
 		r.identity == strings.TrimSpace(st.sshIdentity) &&
 		r.name == strings.TrimSpace(st.sshName)
 }
@@ -571,6 +571,14 @@ func (a *app) checkSSHForm(st *reposUIState, add bool) {
 	if st.sshBusy {
 		return
 	}
+	// An address whose edge is whitespace is refused before it is read:
+	// trimming it away would open a different path than the one typed, so
+	// the form reports the error without connecting.
+	if msg := edgeSpaceError(st.sshAddress, "Address"); msg != "" {
+		st.sshRequest, st.sshHostKey = nil, sshHostKeyNone
+		st.sshResult, st.sshFailed = msg, true
+		return
+	}
 	r, err := store.ParseAddress(st.sshAddress)
 	if err != nil {
 		st.sshRequest, st.sshHostKey = nil, sshHostKeyNone
@@ -582,7 +590,7 @@ func (a *app) checkSSHForm(st *reposUIState, add bool) {
 	st.sshGen++
 	request := &sshFormRequest{
 		repo:     r,
-		address:  strings.TrimSpace(st.sshAddress),
+		address:  st.sshAddress,
 		identity: r.Identity,
 		name:     r.Name,
 		add:      add,
