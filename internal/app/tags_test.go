@@ -547,10 +547,11 @@ func TestTagsDeleteViaContextMenu(t *testing.T) {
 	}
 }
 
-// While the verification is still running the dialog reports it and offers
-// no confirm button at all: a tag whose state is not yet known is never
-// deleted. The worker is held back with PauseWorkers so the in-progress state
-// is deterministic, then released so the flow completes.
+// While the verification is still running the dialog reports it and its
+// confirm button stays disabled: a tag whose state is not yet known is never
+// deleted, and clicking the disabled button changes nothing. The worker is
+// held back with PauseWorkers so the in-progress state is deterministic,
+// then released so the flow completes.
 func TestTagsDeleteCheckingInProgressHasNoConfirm(t *testing.T) {
 	repo, _, _ := tagsSidebarRepo(t, "tags-delete-checking")
 
@@ -569,11 +570,20 @@ func TestTagsDeleteCheckingInProgressHasNoConfirm(t *testing.T) {
 	if !h.ui.HasText("Checking tag details") {
 		t.Fatalf("checking-in-progress note not shown; texts=%q", h.ui.Texts())
 	}
-	if err := h.ui.Click("Confirm Delete Tag"); err == nil {
-		t.Fatal("Confirm Delete Tag was clickable while the verification was still running")
+	if btn, ok := h.ui.AccessByRole(ui.RoleButton, "Confirm Delete Tag"); !ok || !btn.Disabled {
+		t.Fatalf("Confirm Delete Tag during the check = %+v (found=%v), want present and disabled", btn, ok)
 	}
-	if btn, ok := h.ui.AccessByRole(ui.RoleButton, "Confirm Delete Tag"); ok {
-		t.Fatalf("Confirm Delete Tag present during the check: %+v", btn)
+	// A click on the disabled button is a no-op: the tag survives and the
+	// dialog keeps waiting for the verification.
+	if err := h.ui.Click("Confirm Delete Tag"); err != nil {
+		t.Fatalf("click disabled Confirm Delete Tag: %v", err)
+	}
+	h.ui.Frame()
+	if !tagRefExists(t, repo, "lw") {
+		t.Fatal("lw was deleted while the verification was still running")
+	}
+	if _, ok := h.ui.AccessByRole(ui.RoleDialog, "Delete Tag"); !ok {
+		t.Fatalf("the dialog is gone after clicking the disabled confirm; texts=%q", h.ui.Texts())
 	}
 
 	// Releasing the worker lets the verification answer and the flow complete.
@@ -593,13 +603,13 @@ func TestTagsDeleteCheckingInProgressHasNoConfirm(t *testing.T) {
 	}
 }
 
-// When the verification itself fails the tag is never deleted: no confirm
-// button appears, the error shows verbatim in the dialog, and canceling is
-// the only way out. The failure is real: the repository's object store is
-// moved away after the sidebar loaded, so git cannot even discover the
-// repository anymore — while deleting the loose ref file would still be a
-// file operation needing no objects, which is exactly why the check must
-// gate the delete.
+// When the verification itself fails the tag is never deleted: the confirm
+// button shows but stays disabled, clicking it changes nothing, the error
+// shows verbatim in the dialog, and canceling is the only way out. The
+// failure is real: the repository's object store is moved away after the
+// sidebar loaded, so git cannot even discover the repository anymore — while
+// deleting the loose ref file would still be a file operation needing no
+// objects, which is exactly why the check must gate the delete.
 func TestTagsDeleteCheckFailureProtects(t *testing.T) {
 	repo, _, _ := tagsSidebarRepo(t, "tags-delete-checkfail")
 
@@ -628,11 +638,17 @@ func TestTagsDeleteCheckFailureProtects(t *testing.T) {
 	if !h.ui.HasText("verify tag lw") {
 		t.Fatalf("check failure error text not shown in the dialog; texts=%q", h.ui.Texts())
 	}
-	if err := h.ui.Click("Confirm Delete Tag"); err == nil {
-		t.Fatal("Confirm Delete Tag was clickable after the verification failed")
+	if btn, ok := h.ui.AccessByRole(ui.RoleButton, "Confirm Delete Tag"); !ok || !btn.Disabled {
+		t.Fatalf("Confirm Delete Tag after the check failed = %+v (found=%v), want present and disabled", btn, ok)
 	}
-	if btn, ok := h.ui.AccessByRole(ui.RoleButton, "Confirm Delete Tag"); ok {
-		t.Fatalf("Confirm Delete Tag present after the check failed: %+v", btn)
+	// A click on the disabled button is a no-op: the dialog stays open and
+	// nothing is deleted.
+	if err := h.ui.Click("Confirm Delete Tag"); err != nil {
+		t.Fatalf("click disabled Confirm Delete Tag: %v", err)
+	}
+	h.ui.Frame()
+	if _, ok := h.ui.AccessByRole(ui.RoleDialog, "Delete Tag"); !ok {
+		t.Fatalf("the dialog is gone after clicking the disabled confirm; texts=%q", h.ui.Texts())
 	}
 	if err := h.ui.Click("Cancel"); err != nil {
 		t.Fatalf("click Cancel: %v", err)
