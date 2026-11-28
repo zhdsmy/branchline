@@ -352,24 +352,33 @@ func (a *app) submitTagBatchDelete() {
 	})
 }
 
-// batchVerifyTagCommits re-reads the object every checked tag peels to and
-// refuses the whole batch — without pushing or deleting anything — when one
-// no longer matches what the dialog captured. Despite the name the
-// comparison is not the peeled commit but the fully peeled object, exactly
-// what the snapshot's Tag.Hash captures (%(*objectname), or %(objectname)
-// for a tag that peels no further): the commit for a tag of a commit — at
-// any depth of tag-of-tag nesting — and the blob or tree itself for a tag
-// of one. A commit-only comparison could never match those, refusing every
-// batch that holds them; the object comparison carries them and still
-// refuses a tag moved anywhere else. prefix is the operation's refusal
-// lead, such as cannot push tags.
+// batchVerifyTagCommits re-reads every checked tag with the same
+// for-each-ref fields the snapshot captured Tag.Hash from, and refuses the
+// whole batch — without pushing or deleting anything — when one no longer
+// matches what the dialog captured. The comparison takes the peeled object
+// when there is one and the reference's own object otherwise, exactly the
+// capture's rule: the two readings agree whatever the running git's
+// peel depth is, while rev-parse ^{commit} or ^{} answer by rules of
+// their own — the commit-only one never matches a tag of a blob or tree
+// at all, and the fully peeling one diverges from the capture for a tag
+// of a tag on a git whose %(*objectname) peels one level. One command
+// reads the whole batch: over SSH every command is a round trip. prefix
+// is the operation's refusal lead, such as cannot push tags.
 func batchVerifyTagCommits(repo *git.Repo, prefix string, rows []refBatchRow) error {
 	if len(rows) == 0 {
 		return fmt.Errorf("%s: no tag is checked", prefix)
 	}
+	names := make([]string, 0, len(rows))
 	for _, r := range rows {
-		gotOID, err := repo.PathHash("refs/tags/" + r.name + "^{}")
-		if err != nil || gotOID != r.hash {
+		names = append(names, r.name)
+	}
+	objects, err := repo.TagObjectIDs(names)
+	if err != nil {
+		return fmt.Errorf("%s: reading the tags failed; review the repository and try again: %w", prefix, err)
+	}
+	for _, r := range rows {
+		object, ok := objects[r.name]
+		if !ok || object.Shown() != r.hash {
 			return fmt.Errorf("%s: %s changed after the dialog opened; review the repository and try again", prefix, r.name)
 		}
 	}

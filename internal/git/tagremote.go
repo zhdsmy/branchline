@@ -26,6 +26,66 @@ func validOID(s string) bool {
 	return len(s) >= 40 && isHex(s)
 }
 
+// TagObjectID is what one local tag reference holds, read with the same
+// for-each-ref fields the reference scan captures Tag.Hash from: Object is
+// %(objectname), the object the reference itself names — the tag object of
+// an annotated tag, the target of a lightweight one — and Peeled is
+// %(*objectname), empty when the reference is not a tag object. How far the
+// star peels is the running git's business; reading both capture and
+// re-verification through these same two fields keeps them in agreement on
+// every version.
+type TagObjectID struct {
+	Object string
+	Peeled string
+}
+
+// Shown is the value the reference scan keeps in Tag.Hash for the tag: the
+// peeled object when there is one, the reference's own object otherwise.
+func (t TagObjectID) Shown() string {
+	if t.Peeled != "" {
+		return t.Peeled
+	}
+	return t.Object
+}
+
+// TagObjectIDs reads every named local tag in a single git for-each-ref —
+// over SSH, where every command is a round trip, the per-tag rev-parse this
+// replaces costs one trip per tag. The map keys are the bare tag names that
+// exist; a name missing from the map is a tag the repository does not have,
+// never an error. Only exactly matching rows count: a for-each-ref pattern
+// matches a whole slash-delimited prefix, never a partial one, but the
+// exact filter keeps that contract independent of git's matching rules.
+func (r *Repo) TagObjectIDs(names []string) (map[string]TagObjectID, error) {
+	args := []string{"for-each-ref", "--format=%(refname)%1f%(objectname)%1f%(*objectname)"}
+	want := map[string]bool{}
+	for _, name := range names {
+		if name = strings.TrimSpace(name); name == "" {
+			continue
+		}
+		args = append(args, "refs/tags/"+name)
+		want["refs/tags/"+name] = true
+	}
+	out := map[string]TagObjectID{}
+	if len(want) == 0 {
+		return out, nil
+	}
+	stdout, err := r.run(quick, args...)
+	if err != nil {
+		return nil, err
+	}
+	for _, line := range strings.Split(string(stdout), "\n") {
+		if line == "" {
+			continue
+		}
+		fields := strings.Split(line, "\x1f")
+		if len(fields) < 3 || !want[fields[0]] {
+			continue
+		}
+		out[strings.TrimPrefix(fields[0], "refs/tags/")] = TagObjectID{Object: fields[1], Peeled: fields[2]}
+	}
+	return out, nil
+}
+
 // RemoteTagOID reads the object id the tag name points at on remote through
 // ls-remote. The exact-ref match — never the peeled ^{} line — is the value a
 // force-with-lease push compares against: for an annotated tag it is the tag

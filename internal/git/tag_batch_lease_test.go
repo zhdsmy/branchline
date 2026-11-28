@@ -247,10 +247,13 @@ func TestTagBatchLeaseRefusesWhenOneRemoteMismatch(t *testing.T) {
 	}
 }
 
-// The commands of a remote deletion: one ls-remote and one push per remote,
-// the push carrying one force-with-lease per tag pinned to the object id
-// the check read, the remote behind the end-of-options separator. Without
-// remotes the deletion is the single git tag -d it has always been.
+// The commands of a remote deletion: one for-each-ref reads every local
+// tag — over SSH every command is a round trip, so a per-tag rev-parse
+// would cost one trip per tag — then one ls-remote and one push per
+// remote, the push carrying one force-with-lease per tag pinned to the
+// object id the check read, the remote behind the end-of-options
+// separator. Without remotes the deletion is the single git tag -d it has
+// always been.
 func TestTagBatchLeaseCommandShape(t *testing.T) {
 	dir, bare, r, _, _ := tagLeaseFixture(t)
 	pushTagLeaseFixture(t, dir, "v1-ann", true)
@@ -263,7 +266,7 @@ func TestTagBatchLeaseCommandShape(t *testing.T) {
 		t.Fatalf("DeleteTags: %v", err)
 	}
 	records, _ := log.Snapshot()
-	var lsRemote, push, tagDel []CommandRecord
+	var lsRemote, push, tagDel, forEachRef, revParse []CommandRecord
 	for _, rec := range records {
 		if len(rec.Args) == 0 {
 			continue
@@ -275,7 +278,21 @@ func TestTagBatchLeaseCommandShape(t *testing.T) {
 			push = append(push, rec)
 		case "tag":
 			tagDel = append(tagDel, rec)
+		case "for-each-ref":
+			forEachRef = append(forEachRef, rec)
+		case "rev-parse":
+			revParse = append(revParse, rec)
 		}
+	}
+	if len(forEachRef) != 1 {
+		t.Fatalf("%d for-each-ref invocations, want exactly 1 reading every local tag: %v", len(forEachRef), commandLines(records))
+	}
+	if len(revParse) != 0 {
+		t.Fatalf("%d rev-parse invocations, want none: the local tags read in one command: %v", len(revParse), commandLines(records))
+	}
+	fea := forEachRef[0].Args
+	if !containsArg(fea, "refs/tags/v1-ann") || !containsArg(fea, "refs/tags/v2-light") {
+		t.Fatalf("for-each-ref does not ask for both tags: %v", fea)
 	}
 	if len(lsRemote) != 1 {
 		t.Fatalf("%d ls-remote invocations, want exactly 1: %v", len(lsRemote), commandLines(records))

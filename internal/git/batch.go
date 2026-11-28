@@ -172,15 +172,20 @@ func (r *Repo) DeleteTags(names, remotes []string) error {
 	// reference, and the only value a force-with-lease can pin.
 	leases := map[string]map[string]string{}
 	if len(servers) > 0 {
-		local := map[string]string{}
 		var problems []string
-		for _, name := range tags {
-			oid, err := r.PathHash("refs/tags/" + name)
-			if err != nil {
-				problems = append(problems, fmt.Sprintf("cannot delete tags: %s does not exist locally; nothing was deleted", name))
-				continue
+		local := map[string]string{}
+		objects, err := r.TagObjectIDs(tags)
+		if err != nil {
+			problems = append(problems, fmt.Sprintf("cannot delete tags: reading the local tags failed; nothing was deleted: %s", err))
+		} else {
+			for _, name := range tags {
+				object, ok := objects[name]
+				if !ok || !validOID(object.Object) {
+					problems = append(problems, fmt.Sprintf("cannot delete tags: %s does not exist locally; nothing was deleted", name))
+					continue
+				}
+				local[name] = object.Object
 			}
-			local[name] = oid
 		}
 		if len(problems) == 0 {
 			for _, remote := range servers {

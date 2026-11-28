@@ -15,6 +15,98 @@ func tickRemoteDelete(t *testing.T, h *testHarness) {
 	h.ui.Frame()
 }
 
+// resetRecording drops the invocations a recordingRunExecutor collected so
+// far, so the count of one batch operation measures that operation alone.
+func resetRecording(e *recordingRunExecutor) {
+	e.mu.Lock()
+	e.cmds = nil
+	e.mu.Unlock()
+}
+
+// countMatching reports how many recorded invocations match the predicate.
+func countMatching(e *recordingRunExecutor, match func(args []string) bool) int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	n := 0
+	for _, args := range e.cmds {
+		if match(args) {
+			n++
+		}
+	}
+	return n
+}
+
+// anyArgContains reports whether any argument holds sub as a substring.
+func anyArgContains(args []string, sub string) bool {
+	for _, a := range args {
+		if strings.Contains(a, sub) {
+			return true
+		}
+	}
+	return false
+}
+
+// The batch re-verification reads every checked tag in one for-each-ref —
+// the same fields the snapshot scans with, so capture and comparison agree
+// on every git version — never one rev-parse per tag and never a fully
+// peeling ^{} read. The push and the delete each pass through it once.
+func TestTagBatchLeaseVerifyRunsOneCommand(t *testing.T) {
+	repo := newGitRepo(t, "tbl-verify-count")
+	repo.CommitFile("a.txt", "one\n", "initial commit")
+	bareDir := repo.AddBareRemote("origin")
+	repo.CreateTag("rel-1")
+	repo.CreateTag("rel-2")
+
+	h := newTestApp(t)
+	h.openRepo(repo.StoreRepo())
+	h.drain()
+	rec := installRecordingExecutor(t, h)
+
+	isTagScan := func(args []string) bool {
+		return len(args) > 0 && args[0] == "for-each-ref" && hasArg(args, "refs/tags/rel-1")
+	}
+	isPeelRead := func(args []string) bool {
+		return len(args) > 0 && args[0] == "rev-parse" && anyArgContains(args, "^{}")
+	}
+
+	selectTagsForBatch(t, h, "rel-1", "rel-2")
+	chooseBatchItem(t, h, "rel-1", "Push 2 Tags to 'origin'…")
+	resetRecording(rec)
+	if err := h.ui.Click("Confirm Push Tags"); err != nil {
+		t.Fatalf("click Confirm Push Tags: %v", err)
+	}
+	h.drain()
+	if err := h.app.session.ActionErr(); err != nil {
+		t.Fatalf("batch push failed: %v", err)
+	}
+	if n := countMatching(rec, isTagScan); n != 1 {
+		t.Fatalf("%d for-each-ref invocations naming rel-1 during the push, want exactly the one re-verification", n)
+	}
+	if n := countMatching(rec, isPeelRead); n != 0 {
+		t.Fatalf("%d rev-parse ^{} invocations during the push, want none: the comparison reads like the snapshot", n)
+	}
+
+	selectTagsForBatch(t, h, "rel-1", "rel-2")
+	chooseBatchItem(t, h, "rel-1", "Delete 2 Tags…")
+	resetRecording(rec)
+	if err := h.ui.Click("Confirm Delete Tags"); err != nil {
+		t.Fatalf("click Confirm Delete Tags: %v", err)
+	}
+	h.drain()
+	if err := h.app.session.ActionErr(); err != nil {
+		t.Fatalf("batch delete failed: %v", err)
+	}
+	if n := countMatching(rec, isTagScan); n != 1 {
+		t.Fatalf("%d for-each-ref invocations naming rel-1 during the delete, want exactly the one re-verification", n)
+	}
+	if n := countMatching(rec, isPeelRead); n != 0 {
+		t.Fatalf("%d rev-parse ^{} invocations during the delete, want none: the comparison reads like the snapshot", n)
+	}
+	if !bareHasTag(t, bareDir, "rel-1") {
+		t.Fatal("fixture broken: the pushed tags never reached the server")
+	}
+}
+
 // A tag somebody moved on the server since the last fetch refuses the whole
 // batch delete with the remote box ticked: nothing is deleted, not locally
 // and not on the server — not even the tag that still matches — and the
@@ -90,9 +182,10 @@ func TestTagBatchLeaseDeleteRefusesServerMovedTag(t *testing.T) {
 	}
 }
 
-// Tags of a blob, of a tree and of another tag delete through the batch
-// dialog like any commit tag: the re-verification compares the object the
-// tag peels to, which such tags have exactly as commit tags do.
+// Tags of a blob, of a tree, of another tag and an annotated tag of a
+// commit delete through the batch dialog like any lightweight commit tag:
+// the re-verification reads the same for-each-ref fields the snapshot
+// captured, so it matches the peeled object whatever the object type.
 func TestTagBatchLeaseDeleteNonCommitTags(t *testing.T) {
 	repo := newGitRepo(t, "tbl-noncommit-del")
 	repo.CommitFile("a.txt", "one\n", "initial commit")
@@ -102,13 +195,14 @@ func TestTagBatchLeaseDeleteNonCommitTags(t *testing.T) {
 	repo.Git("tag", "treetag", tree)
 	repo.Git("tag", "-a", "-m", "inner", "inner", "HEAD")
 	repo.Git("tag", "outer", "inner")
+	repo.Git("tag", "-a", "-m", "annotated", "anntag", "HEAD")
 
 	h := newTestApp(t)
 	h.openRepo(repo.StoreRepo())
 	h.drain()
 
-	selectTagsForBatch(t, h, "blobtag", "treetag", "outer")
-	chooseBatchItem(t, h, "blobtag", "Delete 3 Tags…")
+	selectTagsForBatch(t, h, "blobtag", "treetag", "outer", "anntag")
+	chooseBatchItem(t, h, "blobtag", "Delete 4 Tags…")
 	if !hasExactText(h.ui, "Delete Tags") {
 		t.Fatalf("Delete Tags dialog did not open; texts=%q", h.ui.Texts())
 	}
@@ -120,7 +214,7 @@ func TestTagBatchLeaseDeleteNonCommitTags(t *testing.T) {
 	if err := h.app.session.ActionErr(); err != nil {
 		t.Fatalf("batch delete of blob, tree and nested tags failed: %v", err)
 	}
-	for _, tag := range []string{"blobtag", "treetag", "outer"} {
+	for _, tag := range []string{"blobtag", "treetag", "outer", "anntag"} {
 		if tagRefExists(t, repo, tag) {
 			t.Fatalf("%s survived the confirmed batch delete", tag)
 		}
@@ -130,9 +224,10 @@ func TestTagBatchLeaseDeleteNonCommitTags(t *testing.T) {
 	}
 }
 
-// Tags of a blob, of a tree and of another tag push through the batch
-// dialog: git itself carries such tags by their full references, and the
-// re-verification no longer refuses them for never peeling to a commit.
+// Tags of a blob, of a tree, of another tag and an annotated tag of a
+// commit push through the batch dialog: git itself carries such tags by
+// their full references, and the re-verification matches the peeled object
+// the snapshot captured instead of refusing everything but commit peels.
 func TestTagBatchLeasePushNonCommitTags(t *testing.T) {
 	repo := newGitRepo(t, "tbl-noncommit-push")
 	repo.CommitFile("a.txt", "one\n", "initial commit")
@@ -143,13 +238,14 @@ func TestTagBatchLeasePushNonCommitTags(t *testing.T) {
 	repo.Git("tag", "treetag", tree)
 	repo.Git("tag", "-a", "-m", "inner", "inner", "HEAD")
 	repo.Git("tag", "outer", "inner")
+	repo.Git("tag", "-a", "-m", "annotated", "anntag", "HEAD")
 
 	h := newTestApp(t)
 	h.openRepo(repo.StoreRepo())
 	h.drain()
 
-	selectTagsForBatch(t, h, "blobtag", "treetag", "outer")
-	chooseBatchItem(t, h, "blobtag", "Push 3 Tags to 'origin'…")
+	selectTagsForBatch(t, h, "blobtag", "treetag", "outer", "anntag")
+	chooseBatchItem(t, h, "blobtag", "Push 4 Tags to 'origin'…")
 	if !hasExactText(h.ui, "Push Tags") {
 		t.Fatalf("Push Tags dialog did not open; texts=%q", h.ui.Texts())
 	}
@@ -161,7 +257,7 @@ func TestTagBatchLeasePushNonCommitTags(t *testing.T) {
 	if err := h.app.session.ActionErr(); err != nil {
 		t.Fatalf("batch push of blob, tree and nested tags failed: %v", err)
 	}
-	for _, tag := range []string{"blobtag", "treetag", "outer"} {
+	for _, tag := range []string{"blobtag", "treetag", "outer", "anntag"} {
 		if !bareHasTag(t, bareDir, tag) {
 			t.Fatalf("%s did not reach the server through the confirmed batch push", tag)
 		}
@@ -343,6 +439,91 @@ func TestTagBatchLeaseLoopbackSSHDelete(t *testing.T) {
 		}
 		if srv.RunGit(t, repo.Path, "tag", "--list", tag) != "" {
 			t.Fatalf("local %s survived the confirmed batch delete", tag)
+		}
+	}
+}
+
+// On a configured Linux SSH repository (sshlab, down to Git 2.25 on e2) a
+// tag of a tag batches like any other: the re-verification reads the same
+// for-each-ref fields the snapshot scans with, so the two agree however far
+// the server's git peels a star reference — the comparison never refuses
+// the batch for the nesting alone. Pushing and then deleting the nested
+// tag through the batch dialogs both succeed, locally and on the server's
+// own remote.
+func TestConfiguredLinuxTagBatchLeaseTagOfTag(t *testing.T) {
+	repo, srv := configuredLinuxRepo(t)
+	srv.RunGit(t, repo.Path, "tag", "-a", "-m", "inner release", "inner", "HEAD")
+	srv.RunGit(t, repo.Path, "tag", "outer", "inner")
+	srv.RunGit(t, repo.Path, "tag", "rel-keep")
+	bareDir := srv.InitBareRepo(t, "origin")
+	srv.RunGit(t, repo.Path, "remote", "add", "origin", bareDir)
+	srv.RunGit(t, repo.Path, "push", "-q", "origin", "main")
+
+	linuxHasTag := func(dir, tag string) bool {
+		return strings.TrimSpace(srv.RunGit(t, dir, "tag", "--list", tag)) != ""
+	}
+
+	h := newTestApp(t)
+	openSSHRepoThroughSwitcher(t, h, repo)
+	if err := h.app.session.LoadErr(); err != nil {
+		t.Fatalf("SSH snapshot load failed: %v", err)
+	}
+	for _, tag := range []string{"inner", "outer", "rel-keep"} {
+		if _, ok := h.ui.Find(tag); !ok {
+			t.Fatalf("%s missing from the SSH sidebar; texts=%q", tag, h.ui.Texts())
+		}
+	}
+
+	// The batch push of the nested tag must pass the re-verification: outer
+	// reaches the server's remote, the never-selected tags do not.
+	selectTagsForBatch(t, h, "outer")
+	chooseBatchItem(t, h, "outer", "Push 1 Tags to 'origin'…")
+	if !hasExactText(h.ui, "Push Tags") {
+		t.Fatalf("Push Tags dialog did not open on Linux SSH; texts=%q", h.ui.Texts())
+	}
+	if err := h.ui.Click("Confirm Push Tags"); err != nil {
+		t.Fatalf("click Confirm Push Tags: %v", err)
+	}
+	h.drain()
+	if err := h.app.session.ActionErr(); err != nil {
+		t.Fatalf("batch push of a tag of a tag on Linux SSH failed: %v", err)
+	}
+	if !linuxHasTag(bareDir, "outer") {
+		t.Fatal("outer did not reach the server's remote through the confirmed batch push")
+	}
+	if linuxHasTag(bareDir, "inner") || linuxHasTag(bareDir, "rel-keep") {
+		t.Fatal("a tag that was never selected reached the server's remote")
+	}
+
+	// The batch delete with the remote box ticked must pass it too: outer
+	// leaves the repository and the server's remote, the others stay.
+	srv.RunGit(t, repo.Path, "push", "-q", "origin", "refs/tags/outer:refs/tags/outer")
+	selectTagsForBatch(t, h, "outer", "rel-keep")
+	chooseBatchItem(t, h, "outer", "Delete 2 Tags…")
+	if !hasExactText(h.ui, "Delete Tags") {
+		t.Fatalf("Delete Tags dialog did not open on Linux SSH; texts=%q", h.ui.Texts())
+	}
+	if err := h.ui.Click("rel-keep"); err != nil {
+		t.Fatalf("uncheck rel-keep row: %v\ntexts=%q", err, h.ui.Texts())
+	}
+	h.ui.Frame()
+	tickRemoteDelete(t, h)
+	if err := h.ui.Click("Confirm Delete Tags"); err != nil {
+		t.Fatalf("click Confirm Delete Tags: %v", err)
+	}
+	h.drain()
+	if err := h.app.session.ActionErr(); err != nil {
+		t.Fatalf("batch delete of a tag of a tag on Linux SSH failed: %v", err)
+	}
+	if linuxHasTag(repo.Path, "outer") {
+		t.Fatal("outer survived the confirmed batch delete")
+	}
+	if linuxHasTag(bareDir, "outer") {
+		t.Fatal("outer survived on the server's remote even though the remote box was ticked")
+	}
+	for _, tag := range []string{"inner", "rel-keep"} {
+		if !linuxHasTag(repo.Path, tag) {
+			t.Fatalf("%s is gone even though it was never part of the batch", tag)
 		}
 	}
 }
